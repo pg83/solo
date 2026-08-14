@@ -84,8 +84,10 @@ def writeLibcxxConfig(output, source):
                 lines.append(f"#define {name} 0")
             else:
                 lines.append(f"/* #undef {name} */")
-        elif line in ("@_LIBCPP_ABI_DEFINES@", "@_LIBCPP_EXTRA_SITE_DEFINES@"):
+        elif line == "@_LIBCPP_ABI_DEFINES@":
             lines.append("")
+        elif line == "@_LIBCPP_EXTRA_SITE_DEFINES@":
+            lines.append("#define _LIBCPP_NO_ABI_TAG")
         else:
             lines.append(line)
     output.write_text("\n".join(lines) + "\n")
