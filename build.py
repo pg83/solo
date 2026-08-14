@@ -174,12 +174,13 @@ musl_version = command(
     ],
 )
 
+libcxx_config_path = "$(B)/bin/vulkan/libcxx/include/__config_site"
 libcxx_config = command(
     inputs=[
         f"{vulkan_root}/generate.py",
         f"{libcxx_root}/include/__config_site.in",
     ],
-    outputs=["$(B)/bin/vulkan/libcxx/include/__config_site"],
+    outputs=[libcxx_config_path],
     cmd=[
         "python3",
         f"{vulkan_root}/generate.py",
@@ -189,6 +190,7 @@ libcxx_config = command(
     ],
 )
 
+libcxx_assertion_handler_path = "$(B)/bin/vulkan/libcxx/include/__assertion_handler"
 libcxx_assertion_handler = command(
     inputs=[
         f"{libcxx_root}/vendor/llvm/default_assertion_handler.in",
@@ -196,7 +198,7 @@ libcxx_assertion_handler = command(
         f"{libcxx_root}/include/__availability",
         f"{libcxx_root}/include/__verbose_abort",
     ],
-    outputs=["$(B)/bin/vulkan/libcxx/include/__assertion_handler"],
+    outputs=[libcxx_assertion_handler_path],
     cmd=[
         "cp",
         f"{libcxx_root}/vendor/llvm/default_assertion_handler.in",
@@ -422,6 +424,7 @@ zlib = library(
             "src": source,
             "inputs": [
                 "$(B)/bin/vulkan/musl/include/bits/alltypes.h",
+                libcxx_config_path,
                 "$(B)/bin/vulkan/zlib/zconf.h",
             ],
         }
@@ -467,7 +470,13 @@ pnglibconf = command(
 png = library(
     name="vulkan_png",
     srcs=[
-        {"src": source, "inputs": [pnglibconf_path]}
+        {
+            "src": source,
+            "inputs": [
+                libcxx_config_path,
+                pnglibconf_path,
+            ],
+        }
         for source in vendorPaths(
             f"{vulkan_root}/png",
             [
@@ -538,7 +547,11 @@ vulkan_app = library(
         f"{vulkan_root}/host_symbols.cpp",
         {
             "src": f"{vulkan_root}/main.cpp",
-            "inputs": [pnglibconf_path],
+            "inputs": [
+                libcxx_config_path,
+                libcxx_assertion_handler_path,
+                pnglibconf_path,
+            ],
         },
     ],
     deps=[*runtime_generated, pnglibconf],
