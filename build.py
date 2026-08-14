@@ -17,9 +17,12 @@ build.cxxflags += [
 ]
 
 cc = os.environ.get("CC", "cc")
+
 linker_flags = []
+
 if shutil.which("ld") is None and (lld := shutil.which("ld.lld")):
     linker_flags.append(f"-fuse-ld={lld}")
+
 vulkanBuild = any(argument in ("vulkan", "vulkan_test") for argument in sys.argv[1:])
 
 dlfcn = library(
@@ -108,6 +111,7 @@ if vulkanBuild:
         f"{libunwind_root}/src",
         "$(B)/bin/vulkan/zlib",
         f"{vulkan_root}/zlib",
+        "$(B)/bin/vulkan/png",
         f"{vulkan_root}/png",
         f"{vulkan_loader_root}",
         f"{vulkan_loader_root}/generated",
