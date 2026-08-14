@@ -38,6 +38,7 @@ jobs:
         env:
           CC: gcc
           CXX: g++
+          VK_LOADER_DEBUG: all
         run: ./build vulkan_test
 
   fedora-gcc:
