@@ -59,7 +59,6 @@ jobs:
         env:
           CC: gcc
           CXX: g++
-          DL_GLIBC_STUB_DEBUG: 1
         run: ./build vulkan_test
 
   ubuntu-clang:
@@ -81,5 +80,4 @@ jobs:
         env:
           CC: clang
           CXX: clang++
-          DL_GLIBC_STUB_DEBUG: 1
         run: ./build vulkan_test

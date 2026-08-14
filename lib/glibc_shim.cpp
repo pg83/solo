@@ -10,6 +10,7 @@
 #include "elf_loader.h"
 #include "glibc_stubs.h"
 #include "hash.h"
+#include "musl_shim.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -76,6 +77,24 @@ static char* sh_strcat_chk(char* destination, const char* source, size_t size) {
 
 static int sh_bcmp(const void* left, const void* right, size_t size) {
     return memcmp(left, right, size);
+}
+
+static char* sh_strerror_result(char* result, char*, size_t) {
+    return result;
+}
+
+static char* sh_strerror_result(int result, char* buffer, size_t size) {
+    if (result) {
+        if (size) {
+            buffer[0] = '\0';
+        }
+    }
+
+    return buffer;
+}
+
+static char* sh_strerror_r(int error, char* buffer, size_t size) {
+    return sh_strerror_result(strerror_r(error, buffer, size), buffer, size);
 }
 
 static int sh_snprintf_chk(char* destination, size_t count, int flag, size_t destination_size, const char* format, ...) {
@@ -1538,6 +1557,7 @@ static const ShGlibcSymbol sh_glibc_symbols[] = {
     SH_FUNCTION("pthread_key_delete", "GLIBC_2.34", pthread_key_delete),
     SH_FUNCTION("pthread_setcanceltype", "GLIBC_2.2.5", pthread_setcanceltype),
     SH_FUNCTION("pthread_sigmask", "GLIBC_2.32", pthread_sigmask),
+    SH_FUNCTION("strerror_r", "GLIBC_2.2.5", sh_strerror_r),
     SH_FUNCTION("fopen64", "GLIBC_2.2.5", sh_fopen64),
     SH_FUNCTION("fseeko64", "GLIBC_2.2.5", sh_fseeko64),
     SH_FUNCTION("ftello64", "GLIBC_2.2.5", sh_ftello64),
@@ -1641,6 +1661,9 @@ void* resolveGlibcSymbol(std::string_view name, std::string_view version, bool w
         return host_address;
     }
     stub_dlerror();
+    if (auto* provider = resolveMuslSymbol(name); provider) {
+        return provider;
+    }
     if (auto* stub = resolveGlibcStub(name, version); stub) {
         return stub;
     }

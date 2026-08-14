@@ -45,6 +45,10 @@ namespace {
         return stub_dlerror();
     }
 
+    int muslDladdr(const void* address, Dl_info* info) {
+        return stub_dladdr(address, info);
+    }
+
     static const auto& muslProviders() {
         using Providers = std::unordered_map<std::string_view, void*>;
         static const auto* providers = [] {
@@ -62,6 +66,7 @@ namespace {
             result->insert_or_assign("dlsym", reinterpret_cast<void*>(muslDlsym));
             result->insert_or_assign("dlclose", reinterpret_cast<void*>(muslDlclose));
             result->insert_or_assign("dlerror", reinterpret_cast<void*>(muslDlerror));
+            result->insert_or_assign("dladdr", reinterpret_cast<void*>(muslDladdr));
 
             return result;
         }();
