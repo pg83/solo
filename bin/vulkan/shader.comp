@@ -1,0 +1,27 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, std430) buffer Output {
+    uint pixels[];
+};
+
+layout(push_constant) uniform Parameters {
+    uint width;
+    uint height;
+} parameters;
+
+void main() {
+    uvec2 point = gl_GlobalInvocationID.xy;
+    if (point.x >= parameters.width || point.y >= parameters.height) {
+        return;
+    }
+
+    float x = float(point.x) / float(max(parameters.width - 1, 1));
+    float y = float(point.y) / float(max(parameters.height - 1, 1));
+    uint checker = ((point.x / 32) ^ (point.y / 32)) & 1;
+    uint red = uint(255.0 * x);
+    uint green = uint(255.0 * y);
+    uint blue = checker == 0 ? 48 : 224;
+    pixels[point.y * parameters.width + point.x] = red | (green << 8) | (blue << 16) | 0xff000000;
+}
