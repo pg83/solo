@@ -39,7 +39,9 @@ _LIBCPP_PUSH_MACROS
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 namespace ranges {
-struct __nth_element {
+namespace __nth_element {
+
+struct __fn {
   template <class _Iter, class _Sent, class _Comp, class _Proj>
   _LIBCPP_HIDE_FROM_ABI constexpr static _Iter
   __nth_element_fn_impl(_Iter __first, _Iter __nth, _Sent __last, _Comp& __comp, _Proj& __proj) {
@@ -66,8 +68,10 @@ struct __nth_element {
   }
 };
 
+} // namespace __nth_element
+
 inline namespace __cpo {
-inline constexpr auto nth_element = __nth_element{};
+inline constexpr auto nth_element = __nth_element::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

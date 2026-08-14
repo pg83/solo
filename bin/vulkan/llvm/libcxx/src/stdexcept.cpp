@@ -19,8 +19,8 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-void __throw_runtime_error(const char* msg) {
-#if _LIBCPP_HAS_EXCEPTIONS
+_LIBCPP_NORETURN void __throw_runtime_error(const char* msg) {
+#ifndef _LIBCPP_HAS_NO_EXCEPTIONS
   throw runtime_error(msg);
 #else
   _LIBCPP_VERBOSE_ABORT("runtime_error was thrown in -fno-exceptions mode with message \"%s\"", msg);

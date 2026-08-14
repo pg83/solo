@@ -10,6 +10,7 @@
 #ifndef _LIBCPP___FILESYSTEM_PERMS_H
 #define _LIBCPP___FILESYSTEM_PERMS_H
 
+#include <__availability>
 #include <__config>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)

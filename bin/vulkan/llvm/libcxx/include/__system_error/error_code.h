@@ -17,6 +17,7 @@
 #include <__system_error/errc.h>
 #include <__system_error/error_category.h>
 #include <__system_error/error_condition.h>
+#include <cstddef>
 #include <string>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
@@ -26,7 +27,7 @@
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 template <class _Tp>
-struct is_error_code_enum : public false_type {};
+struct _LIBCPP_TEMPLATE_VIS is_error_code_enum : public false_type {};
 
 #if _LIBCPP_STD_VER >= 17
 template <class _Tp>
@@ -131,7 +132,7 @@ inline _LIBCPP_HIDE_FROM_ABI strong_ordering operator<=>(const error_code& __x, 
 #endif // _LIBCPP_STD_VER <= 17
 
 template <>
-struct hash<error_code> : public __unary_function<error_code, size_t> {
+struct _LIBCPP_TEMPLATE_VIS hash<error_code> : public __unary_function<error_code, size_t> {
   _LIBCPP_HIDE_FROM_ABI size_t operator()(const error_code& __ec) const _NOEXCEPT {
     return static_cast<size_t>(__ec.value());
   }

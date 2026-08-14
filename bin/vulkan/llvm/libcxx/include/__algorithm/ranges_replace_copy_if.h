@@ -52,7 +52,9 @@ _LIBCPP_HIDE_FROM_ABI constexpr replace_copy_if_result<_InIter, _OutIter> __repl
   return {std::move(__first), std::move(__result)};
 }
 
-struct __replace_copy_if {
+namespace __replace_copy_if {
+
+struct __fn {
   template <input_iterator _InIter,
             sentinel_for<_InIter> _Sent,
             class _Type,
@@ -80,8 +82,10 @@ struct __replace_copy_if {
   }
 };
 
+} // namespace __replace_copy_if
+
 inline namespace __cpo {
-inline constexpr auto replace_copy_if = __replace_copy_if{};
+inline constexpr auto replace_copy_if = __replace_copy_if::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

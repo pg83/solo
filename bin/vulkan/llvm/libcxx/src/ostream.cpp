@@ -6,8 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <__availability>
 #include <__config>
-#if _LIBCPP_HAS_FILESYSTEM
+#ifndef _LIBCPP_HAS_NO_FILESYSTEM
 #  include <fstream>
 #endif
 #include <ostream>
@@ -24,16 +25,16 @@ _LIBCPP_EXPORTED_FROM_ABI FILE* __get_ostream_file(ostream& __os) {
   // Returning a nullptr means the stream is not considered a terminal and the
   // special terminal handling is not done. The terminal handling is mainly of
   // importance on Windows.
-#if _LIBCPP_HAS_RTTI
+#ifndef _LIBCPP_HAS_NO_RTTI
   auto* __rdbuf = __os.rdbuf();
-#  if _LIBCPP_HAS_FILESYSTEM
+#  ifndef _LIBCPP_HAS_NO_FILESYSTEM
   if (auto* __buffer = dynamic_cast<filebuf*>(__rdbuf))
     return __buffer->__file_;
 #  endif
 
   if (auto* __buffer = dynamic_cast<__stdoutbuf<char>*>(__rdbuf))
     return __buffer->__file_;
-#endif // _LIBCPP_HAS_RTTI
+#endif // _LIBCPP_HAS_NO_RTTI
 
   return nullptr;
 }

@@ -52,7 +52,9 @@ distance(_InputIter __first, _InputIter __last) {
 // [range.iter.op.distance]
 
 namespace ranges {
-struct __distance {
+namespace __distance {
+
+struct __fn {
   template <class _Ip, sentinel_for<_Ip> _Sp>
     requires(!sized_sentinel_for<_Sp, _Ip>)
   _LIBCPP_HIDE_FROM_ABI constexpr iter_difference_t<_Ip> operator()(_Ip __first, _Sp __last) const {
@@ -83,8 +85,10 @@ struct __distance {
   }
 };
 
+} // namespace __distance
+
 inline namespace __cpo {
-inline constexpr auto distance = __distance{};
+inline constexpr auto distance = __distance::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

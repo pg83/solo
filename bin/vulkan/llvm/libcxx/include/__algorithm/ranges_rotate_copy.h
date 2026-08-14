@@ -34,7 +34,8 @@ namespace ranges {
 template <class _InIter, class _OutIter>
 using rotate_copy_result = in_out_result<_InIter, _OutIter>;
 
-struct __rotate_copy {
+namespace __rotate_copy {
+struct __fn {
   template <forward_iterator _InIter, sentinel_for<_InIter> _Sent, weakly_incrementable _OutIter>
     requires indirectly_copyable<_InIter, _OutIter>
   _LIBCPP_HIDE_FROM_ABI constexpr rotate_copy_result<_InIter, _OutIter>
@@ -51,9 +52,10 @@ struct __rotate_copy {
     return (*this)(ranges::begin(__range), std::move(__middle), ranges::end(__range), std::move(__result));
   }
 };
+} // namespace __rotate_copy
 
 inline namespace __cpo {
-inline constexpr auto rotate_copy = __rotate_copy{};
+inline constexpr auto rotate_copy = __rotate_copy::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

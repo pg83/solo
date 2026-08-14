@@ -10,6 +10,7 @@
 #ifndef _LIBCPP___FILESYSTEM_RECURSIVE_DIRECTORY_ITERATOR_H
 #define _LIBCPP___FILESYSTEM_RECURSIVE_DIRECTORY_ITERATOR_H
 
+#include <__availability>
 #include <__config>
 #include <__filesystem/directory_entry.h>
 #include <__filesystem/directory_options.h>
@@ -21,6 +22,7 @@
 #include <__ranges/enable_view.h>
 #include <__system_error/error_code.h>
 #include <__utility/move.h>
+#include <cstddef>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -29,7 +31,7 @@
 _LIBCPP_PUSH_MACROS
 #include <__undef_macros>
 
-#if _LIBCPP_STD_VER >= 17 && _LIBCPP_HAS_FILESYSTEM
+#if _LIBCPP_STD_VER >= 17 && !defined(_LIBCPP_HAS_NO_FILESYSTEM)
 
 _LIBCPP_BEGIN_NAMESPACE_FILESYSTEM
 
@@ -156,7 +158,7 @@ _LIBCPP_AVAILABILITY_FILESYSTEM_LIBRARY inline constexpr bool
 
 #  endif // _LIBCPP_STD_VER >= 20
 
-#endif // _LIBCPP_STD_VER >= 17 && _LIBCPP_HAS_FILESYSTEM
+#endif // _LIBCPP_STD_VER >= 17 && !defined(_LIBCPP_HAS_NO_FILESYSTEM)
 
 _LIBCPP_POP_MACROS
 

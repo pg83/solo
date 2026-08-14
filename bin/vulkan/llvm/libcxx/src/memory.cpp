@@ -11,11 +11,9 @@
 #  define _LIBCPP_SHARED_PTR_DEFINE_LEGACY_INLINE_FUNCTIONS
 #endif
 
-#include <__functional/hash.h>
 #include <memory>
-#include <typeinfo>
 
-#if _LIBCPP_HAS_THREADS
+#ifndef _LIBCPP_HAS_NO_THREADS
 #  include <mutex>
 #  include <thread>
 #  if defined(__ELF__) && defined(_LIBCPP_LINK_PTHREAD_LIB)
@@ -98,7 +96,7 @@ __shared_weak_count* __shared_weak_count::lock() noexcept {
 
 const void* __shared_weak_count::__get_deleter(const type_info&) const noexcept { return nullptr; }
 
-#if _LIBCPP_HAS_THREADS
+#if !defined(_LIBCPP_HAS_NO_THREADS)
 
 static constexpr std::size_t __sp_mut_count                = 32;
 static constinit __libcpp_mutex_t mut_back[__sp_mut_count] = {
@@ -130,7 +128,7 @@ __sp_mut& __get_sp_mut(const void* p) {
   return muts[hash<const void*>()(p) & (__sp_mut_count - 1)];
 }
 
-#endif // _LIBCPP_HAS_THREADS
+#endif // !defined(_LIBCPP_HAS_NO_THREADS)
 
 void* align(size_t alignment, size_t size, void*& ptr, size_t& space) {
   void* r = nullptr;

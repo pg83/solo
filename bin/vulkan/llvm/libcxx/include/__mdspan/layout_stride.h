@@ -18,23 +18,19 @@
 #define _LIBCPP___MDSPAN_LAYOUT_STRIDE_H
 
 #include <__assert>
-#include <__concepts/same_as.h>
 #include <__config>
 #include <__fwd/mdspan.h>
 #include <__mdspan/extents.h>
-#include <__memory/addressof.h>
-#include <__type_traits/common_type.h>
 #include <__type_traits/is_constructible.h>
 #include <__type_traits/is_convertible.h>
-#include <__type_traits/is_integral.h>
 #include <__type_traits/is_nothrow_constructible.h>
-#include <__type_traits/is_same.h>
 #include <__utility/as_const.h>
 #include <__utility/integer_sequence.h>
 #include <__utility/swap.h>
 #include <array>
+#include <cinttypes>
+#include <cstddef>
 #include <limits>
-#include <span>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -87,7 +83,7 @@ private:
 
     index_type __prod = __ext.extent(0);
     for (rank_type __r = 1; __r < __rank_; __r++) {
-      bool __overflowed = __builtin_mul_overflow(__prod, __ext.extent(__r), std::addressof(__prod));
+      bool __overflowed = __builtin_mul_overflow(__prod, __ext.extent(__r), &__prod);
       if (__overflowed)
         return false;
     }
@@ -110,12 +106,11 @@ private:
       }
       if (__ext.extent(__r) == static_cast<index_type>(0))
         return true;
-      index_type __prod = (__ext.extent(__r) - 1);
-      bool __overflowed_mul =
-          __builtin_mul_overflow(__prod, static_cast<index_type>(__strides[__r]), std::addressof(__prod));
+      index_type __prod     = (__ext.extent(__r) - 1);
+      bool __overflowed_mul = __builtin_mul_overflow(__prod, static_cast<index_type>(__strides[__r]), &__prod);
       if (__overflowed_mul)
         return false;
-      bool __overflowed_add = __builtin_add_overflow(__size, __prod, std::addressof(__size));
+      bool __overflowed_add = __builtin_add_overflow(__size, __prod, &__size);
       if (__overflowed_add)
         return false;
     }
@@ -154,7 +149,7 @@ private:
     }
   }
 
-  static_assert(extents_type::rank_dynamic() > 0 || __required_span_size_is_representable(extents_type()),
+  static_assert((extents_type::rank_dynamic() > 0) || __required_span_size_is_representable(extents_type()),
                 "layout_stride::mapping product of static extents must be representable as index_type.");
 
 public:

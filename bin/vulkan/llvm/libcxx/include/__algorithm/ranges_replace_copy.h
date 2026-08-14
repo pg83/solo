@@ -38,7 +38,9 @@ namespace ranges {
 template <class _InIter, class _OutIter>
 using replace_copy_result = in_out_result<_InIter, _OutIter>;
 
-struct __replace_copy {
+namespace __replace_copy {
+
+struct __fn {
   template <input_iterator _InIter,
             sentinel_for<_InIter> _Sent,
             class _OldType,
@@ -75,8 +77,10 @@ struct __replace_copy {
   }
 };
 
+} // namespace __replace_copy
+
 inline namespace __cpo {
-inline constexpr auto replace_copy = __replace_copy{};
+inline constexpr auto replace_copy = __replace_copy::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

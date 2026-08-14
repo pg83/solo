@@ -35,7 +35,8 @@ namespace ranges {
 template <class _InIter, class _OutIter>
 using move_result = in_out_result<_InIter, _OutIter>;
 
-struct __move {
+namespace __move {
+struct __fn {
   template <class _InIter, class _Sent, class _OutIter>
   _LIBCPP_HIDE_FROM_ABI constexpr static move_result<_InIter, _OutIter>
   __move_impl(_InIter __first, _Sent __last, _OutIter __result) {
@@ -57,9 +58,10 @@ struct __move {
     return __move_impl(ranges::begin(__range), ranges::end(__range), std::move(__result));
   }
 };
+} // namespace __move
 
 inline namespace __cpo {
-inline constexpr auto move = __move{};
+inline constexpr auto move = __move::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

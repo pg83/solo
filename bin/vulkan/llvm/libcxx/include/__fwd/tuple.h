@@ -10,7 +10,6 @@
 #define _LIBCPP___FWD_TUPLE_H
 
 #include <__config>
-#include <__cstddef/size_t.h>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -18,32 +17,10 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-template <size_t, class>
-struct tuple_element;
-
 #ifndef _LIBCPP_CXX03_LANG
 
 template <class...>
-class tuple;
-
-template <class>
-struct tuple_size;
-
-template <size_t _Ip, class... _Tp>
-_LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX14 typename tuple_element<_Ip, tuple<_Tp...> >::type&
-get(tuple<_Tp...>&) _NOEXCEPT;
-
-template <size_t _Ip, class... _Tp>
-_LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX14 const typename tuple_element<_Ip, tuple<_Tp...> >::type&
-get(const tuple<_Tp...>&) _NOEXCEPT;
-
-template <size_t _Ip, class... _Tp>
-_LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX14 typename tuple_element<_Ip, tuple<_Tp...> >::type&&
-get(tuple<_Tp...>&&) _NOEXCEPT;
-
-template <size_t _Ip, class... _Tp>
-_LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX14 const typename tuple_element<_Ip, tuple<_Tp...> >::type&&
-get(const tuple<_Tp...>&&) _NOEXCEPT;
+class _LIBCPP_TEMPLATE_VIS tuple;
 
 #endif // _LIBCPP_CXX03_LANG
 

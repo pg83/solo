@@ -11,6 +11,7 @@
 
 #include <__config>
 #include <__type_traits/integral_constant.h>
+#include <cstddef>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -18,13 +19,33 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-template <class _Tp>
-struct _LIBCPP_NO_SPECIALIZATIONS is_array : _BoolConstant<__is_array(_Tp)> {};
+// TODO: Clang incorrectly reports that __is_array is true for T[0].
+//       Re-enable the branch once https://llvm.org/PR54705 is fixed.
+#if __has_builtin(__is_array) && 0
 
-#if _LIBCPP_STD_VER >= 17
 template <class _Tp>
-_LIBCPP_NO_SPECIALIZATIONS inline constexpr bool is_array_v = __is_array(_Tp);
-#endif
+struct _LIBCPP_TEMPLATE_VIS is_array : _BoolConstant<__is_array(_Tp)> {};
+
+#  if _LIBCPP_STD_VER >= 17
+template <class _Tp>
+inline constexpr bool is_array_v = __is_array(_Tp);
+#  endif
+
+#else
+
+template <class _Tp>
+struct _LIBCPP_TEMPLATE_VIS is_array : public false_type {};
+template <class _Tp>
+struct _LIBCPP_TEMPLATE_VIS is_array<_Tp[]> : public true_type {};
+template <class _Tp, size_t _Np>
+struct _LIBCPP_TEMPLATE_VIS is_array<_Tp[_Np]> : public true_type {};
+
+#  if _LIBCPP_STD_VER >= 17
+template <class _Tp>
+inline constexpr bool is_array_v = is_array<_Tp>::value;
+#  endif
+
+#endif // __has_builtin(__is_array)
 
 _LIBCPP_END_NAMESPACE_STD
 

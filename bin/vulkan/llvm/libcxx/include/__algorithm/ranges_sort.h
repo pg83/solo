@@ -39,7 +39,9 @@ _LIBCPP_PUSH_MACROS
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 namespace ranges {
-struct __sort {
+namespace __sort {
+
+struct __fn {
   template <class _Iter, class _Sent, class _Comp, class _Proj>
   _LIBCPP_HIDE_FROM_ABI constexpr static _Iter
   __sort_fn_impl(_Iter __first, _Sent __last, _Comp& __comp, _Proj& __proj) {
@@ -66,8 +68,10 @@ struct __sort {
   }
 };
 
+} // namespace __sort
+
 inline namespace __cpo {
-inline constexpr auto sort = __sort{};
+inline constexpr auto sort = __sort::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

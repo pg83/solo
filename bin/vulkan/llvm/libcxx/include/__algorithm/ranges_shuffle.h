@@ -39,7 +39,9 @@ _LIBCPP_PUSH_MACROS
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 namespace ranges {
-struct __shuffle {
+namespace __shuffle {
+
+struct __fn {
   template <random_access_iterator _Iter, sentinel_for<_Iter> _Sent, class _Gen>
     requires permutable<_Iter> && uniform_random_bit_generator<remove_reference_t<_Gen>>
   _LIBCPP_HIDE_FROM_ABI _Iter operator()(_Iter __first, _Sent __last, _Gen&& __gen) const {
@@ -54,8 +56,10 @@ struct __shuffle {
   }
 };
 
+} // namespace __shuffle
+
 inline namespace __cpo {
-inline constexpr auto shuffle = __shuffle{};
+inline constexpr auto shuffle = __shuffle::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

@@ -18,41 +18,27 @@
 // }
 
 #if defined(COMPILER_RT_ARMHF_TARGET)
-#  define CONVERT_DCMP_ARGS_TO_DF2_ARGS \
-     VMOV_TO_DOUBLE(d0, r0, r1)         \
-     VMOV_TO_DOUBLE(d1, r2, r3)
+#  define CONVERT_DCMP_ARGS_TO_DF2_ARGS                    \
+        vmov      d0, r0, r1                     SEPARATOR \
+        vmov      d1, r2, r3
 #else
 #  define CONVERT_DCMP_ARGS_TO_DF2_ARGS
-#endif
-
-#if defined(__ARM_FEATURE_PAC_DEFAULT)
-#  define PROLOGUE PACBTI_LANDING        SEPARATOR \
-                   push      { r12, lr }
-#  define EPILOGUE pop       { r12, lr } SEPARATOR \
-                   PAC_RETURN
-#elif defined(__ARM_FEATURE_BTI_DEFAULT)
-#  define PROLOGUE PACBTI_LANDING        SEPARATOR \
-                   push      { r4, lr }
-#  define EPILOGUE pop       { r4, pc }
-#else
-#  define PROLOGUE push      { r4, lr }
-#  define EPILOGUE pop       { r4, pc }
 #endif
 
 #define DEFINE_AEABI_DCMP(cond)                            \
         .syntax unified                          SEPARATOR \
         .p2align 2                               SEPARATOR \
 DEFINE_COMPILERRT_FUNCTION(__aeabi_dcmp ## cond)           \
-        PROLOGUE                                 SEPARATOR \
+        push      { r4, lr }                     SEPARATOR \
         CONVERT_DCMP_ARGS_TO_DF2_ARGS            SEPARATOR \
         bl        SYMBOL_NAME(__ ## cond ## df2) SEPARATOR \
         cmp       r0, #0                         SEPARATOR \
         b ## cond 1f                             SEPARATOR \
         movs      r0, #0                         SEPARATOR \
-        EPILOGUE                                 SEPARATOR \
+        pop       { r4, pc }                     SEPARATOR \
 1:                                               SEPARATOR \
         movs      r0, #1                         SEPARATOR \
-        EPILOGUE                                 SEPARATOR \
+        pop       { r4, pc }                     SEPARATOR \
 END_COMPILERRT_FUNCTION(__aeabi_dcmp ## cond)
 
 DEFINE_AEABI_DCMP(eq)

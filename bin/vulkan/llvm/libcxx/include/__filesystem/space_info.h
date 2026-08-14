@@ -10,6 +10,7 @@
 #ifndef _LIBCPP___FILESYSTEM_SPACE_INFO_H
 #define _LIBCPP___FILESYSTEM_SPACE_INFO_H
 
+#include <__availability>
 #include <__config>
 #include <cstdint>
 

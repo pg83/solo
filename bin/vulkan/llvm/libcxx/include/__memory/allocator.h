@@ -11,19 +11,16 @@
 #define _LIBCPP___MEMORY_ALLOCATOR_H
 
 #include <__config>
-#include <__cstddef/ptrdiff_t.h>
-#include <__cstddef/size_t.h>
 #include <__memory/addressof.h>
 #include <__memory/allocate_at_least.h>
 #include <__memory/allocator_traits.h>
-#include <__new/allocate.h>
-#include <__new/exceptions.h>
-#include <__type_traits/is_const.h>
 #include <__type_traits/is_constant_evaluated.h>
 #include <__type_traits/is_same.h>
 #include <__type_traits/is_void.h>
 #include <__type_traits/is_volatile.h>
 #include <__utility/forward.h>
+#include <cstddef>
+#include <new>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -34,11 +31,19 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 template <class _Tp>
 class allocator;
 
-#if _LIBCPP_STD_VER <= 17
+#if defined(_LIBCPP_ENABLE_CXX20_REMOVED_ALLOCATOR_MEMBERS) && !defined(_LIBCPP_DISABLE_DEPRECATION_WARNINGS)
+#  pragma clang deprecated(                                                                                            \
+      _LIBCPP_ENABLE_CXX20_REMOVED_ALLOCATOR_MEMBERS,                                                                  \
+      "_LIBCPP_ENABLE_CXX20_REMOVED_ALLOCATOR_MEMBERS is deprecated in LLVM 18 and will be removed in LLVM 19")
+#endif
+
+#if _LIBCPP_STD_VER <= 17 || defined(_LIBCPP_ENABLE_CXX20_REMOVED_ALLOCATOR_VOID_SPECIALIZATION)
 // These specializations shouldn't be marked _LIBCPP_DEPRECATED_IN_CXX17.
 // Specializing allocator<void> is deprecated, but not using it.
 template <>
-class allocator<void> {
+class _LIBCPP_TEMPLATE_VIS allocator<void> {
+#  if _LIBCPP_STD_VER <= 17 || defined(_LIBCPP_ENABLE_CXX20_REMOVED_ALLOCATOR_MEMBERS)
+
 public:
   _LIBCPP_DEPRECATED_IN_CXX17 typedef void* pointer;
   _LIBCPP_DEPRECATED_IN_CXX17 typedef const void* const_pointer;
@@ -48,8 +53,25 @@ public:
   struct _LIBCPP_DEPRECATED_IN_CXX17 rebind {
     typedef allocator<_Up> other;
   };
+#  endif
 };
-#endif // _LIBCPP_STD_VER <= 17
+
+template <>
+class _LIBCPP_TEMPLATE_VIS allocator<const void> {
+#  if _LIBCPP_STD_VER <= 17 || defined(_LIBCPP_ENABLE_CXX20_REMOVED_ALLOCATOR_MEMBERS)
+
+public:
+  _LIBCPP_DEPRECATED_IN_CXX17 typedef const void* pointer;
+  _LIBCPP_DEPRECATED_IN_CXX17 typedef const void* const_pointer;
+  _LIBCPP_DEPRECATED_IN_CXX17 typedef const void value_type;
+
+  template <class _Up>
+  struct _LIBCPP_DEPRECATED_IN_CXX17 rebind {
+    typedef allocator<_Up> other;
+  };
+#  endif
+};
+#endif
 
 // This class provides a non-trivial default constructor to the class that derives from it
 // if the condition is satisfied.
@@ -77,8 +99,7 @@ struct __non_trivial_if<true, _Unique> {
 //       allocator<void> trivial in C++20.
 
 template <class _Tp>
-class allocator : private __non_trivial_if<!is_void<_Tp>::value, allocator<_Tp> > {
-  static_assert(!is_const<_Tp>::value, "std::allocator does not support const types");
+class _LIBCPP_TEMPLATE_VIS allocator : private __non_trivial_if<!is_void<_Tp>::value, allocator<_Tp> > {
   static_assert(!is_volatile<_Tp>::value, "std::allocator does not support volatile types");
 
 public:
@@ -95,20 +116,18 @@ public:
   template <class _Up>
   _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 allocator(const allocator<_Up>&) _NOEXCEPT {}
 
-  [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 _Tp* allocate(size_t __n) {
-    static_assert(sizeof(_Tp) >= 0, "cannot allocate memory for an incomplete type");
+  _LIBCPP_NODISCARD_AFTER_CXX17 _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 _Tp* allocate(size_t __n) {
     if (__n > allocator_traits<allocator>::max_size(*this))
-      std::__throw_bad_array_new_length();
+      __throw_bad_array_new_length();
     if (__libcpp_is_constant_evaluated()) {
       return static_cast<_Tp*>(::operator new(__n * sizeof(_Tp)));
     } else {
-      return std::__libcpp_allocate<_Tp>(__element_count(__n));
+      return static_cast<_Tp*>(std::__libcpp_allocate(__n * sizeof(_Tp), _LIBCPP_ALIGNOF(_Tp)));
     }
   }
 
 #if _LIBCPP_STD_VER >= 23
   [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr allocation_result<_Tp*> allocate_at_least(size_t __n) {
-    static_assert(sizeof(_Tp) >= 0, "cannot allocate memory for an incomplete type");
     return {allocate(__n), __n};
   }
 #endif
@@ -117,12 +136,12 @@ public:
     if (__libcpp_is_constant_evaluated()) {
       ::operator delete(__p);
     } else {
-      std::__libcpp_deallocate<_Tp>(__p, __element_count(__n));
+      std::__libcpp_deallocate((void*)__p, __n * sizeof(_Tp), _LIBCPP_ALIGNOF(_Tp));
     }
   }
 
   // C++20 Removed members
-#if _LIBCPP_STD_VER <= 17
+#if _LIBCPP_STD_VER <= 17 || defined(_LIBCPP_ENABLE_CXX20_REMOVED_ALLOCATOR_MEMBERS)
   _LIBCPP_DEPRECATED_IN_CXX17 typedef _Tp* pointer;
   _LIBCPP_DEPRECATED_IN_CXX17 typedef const _Tp* const_pointer;
   _LIBCPP_DEPRECATED_IN_CXX17 typedef _Tp& reference;
@@ -140,7 +159,85 @@ public:
     return std::addressof(__x);
   }
 
-  [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI _LIBCPP_DEPRECATED_IN_CXX17 _Tp* allocate(size_t __n, const void*) {
+  _LIBCPP_NODISCARD_AFTER_CXX17 _LIBCPP_HIDE_FROM_ABI _LIBCPP_DEPRECATED_IN_CXX17 _Tp*
+  allocate(size_t __n, const void*) {
+    return allocate(__n);
+  }
+
+  _LIBCPP_DEPRECATED_IN_CXX17 _LIBCPP_HIDE_FROM_ABI size_type max_size() const _NOEXCEPT {
+    return size_type(~0) / sizeof(_Tp);
+  }
+
+  template <class _Up, class... _Args>
+  _LIBCPP_DEPRECATED_IN_CXX17 _LIBCPP_HIDE_FROM_ABI void construct(_Up* __p, _Args&&... __args) {
+    ::new ((void*)__p) _Up(std::forward<_Args>(__args)...);
+  }
+
+  _LIBCPP_DEPRECATED_IN_CXX17 _LIBCPP_HIDE_FROM_ABI void destroy(pointer __p) { __p->~_Tp(); }
+#endif
+};
+
+template <class _Tp>
+class _LIBCPP_TEMPLATE_VIS allocator<const _Tp>
+    : private __non_trivial_if<!is_void<_Tp>::value, allocator<const _Tp> > {
+  static_assert(!is_volatile<_Tp>::value, "std::allocator does not support volatile types");
+
+public:
+  typedef size_t size_type;
+  typedef ptrdiff_t difference_type;
+  typedef const _Tp value_type;
+  typedef true_type propagate_on_container_move_assignment;
+#if _LIBCPP_STD_VER <= 23 || defined(_LIBCPP_ENABLE_CXX26_REMOVED_ALLOCATOR_MEMBERS)
+  _LIBCPP_DEPRECATED_IN_CXX23 typedef true_type is_always_equal;
+#endif
+
+  _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 allocator() _NOEXCEPT = default;
+
+  template <class _Up>
+  _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 allocator(const allocator<_Up>&) _NOEXCEPT {}
+
+  _LIBCPP_NODISCARD_AFTER_CXX17 _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 const _Tp* allocate(size_t __n) {
+    if (__n > allocator_traits<allocator>::max_size(*this))
+      __throw_bad_array_new_length();
+    if (__libcpp_is_constant_evaluated()) {
+      return static_cast<const _Tp*>(::operator new(__n * sizeof(_Tp)));
+    } else {
+      return static_cast<const _Tp*>(std::__libcpp_allocate(__n * sizeof(_Tp), _LIBCPP_ALIGNOF(_Tp)));
+    }
+  }
+
+#if _LIBCPP_STD_VER >= 23
+  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr allocation_result<const _Tp*> allocate_at_least(size_t __n) {
+    return {allocate(__n), __n};
+  }
+#endif
+
+  _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 void deallocate(const _Tp* __p, size_t __n) {
+    if (__libcpp_is_constant_evaluated()) {
+      ::operator delete(const_cast<_Tp*>(__p));
+    } else {
+      std::__libcpp_deallocate((void*)const_cast<_Tp*>(__p), __n * sizeof(_Tp), _LIBCPP_ALIGNOF(_Tp));
+    }
+  }
+
+  // C++20 Removed members
+#if _LIBCPP_STD_VER <= 17 || defined(_LIBCPP_ENABLE_CXX20_REMOVED_ALLOCATOR_MEMBERS)
+  _LIBCPP_DEPRECATED_IN_CXX17 typedef const _Tp* pointer;
+  _LIBCPP_DEPRECATED_IN_CXX17 typedef const _Tp* const_pointer;
+  _LIBCPP_DEPRECATED_IN_CXX17 typedef const _Tp& reference;
+  _LIBCPP_DEPRECATED_IN_CXX17 typedef const _Tp& const_reference;
+
+  template <class _Up>
+  struct _LIBCPP_DEPRECATED_IN_CXX17 rebind {
+    typedef allocator<_Up> other;
+  };
+
+  _LIBCPP_DEPRECATED_IN_CXX17 _LIBCPP_HIDE_FROM_ABI const_pointer address(const_reference __x) const _NOEXCEPT {
+    return std::addressof(__x);
+  }
+
+  _LIBCPP_NODISCARD_AFTER_CXX17 _LIBCPP_HIDE_FROM_ABI _LIBCPP_DEPRECATED_IN_CXX17 const _Tp*
+  allocate(size_t __n, const void*) {
     return allocate(__n);
   }
 

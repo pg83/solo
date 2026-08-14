@@ -44,10 +44,12 @@ namespace ranges {
 template <class _InIter, class _OutIter>
 using unique_copy_result = in_out_result<_InIter, _OutIter>;
 
+namespace __unique_copy {
+
 template <class _InIter, class _OutIter>
 concept __can_reread_from_output = (input_iterator<_OutIter> && same_as<iter_value_t<_InIter>, iter_value_t<_OutIter>>);
 
-struct __unique_copy {
+struct __fn {
   template <class _InIter, class _OutIter>
   static consteval auto __get_algo_tag() {
     if constexpr (forward_iterator<_InIter>) {
@@ -60,7 +62,7 @@ struct __unique_copy {
   }
 
   template <class _InIter, class _OutIter>
-  using __algo_tag_t _LIBCPP_NODEBUG = decltype(__get_algo_tag<_InIter, _OutIter>());
+  using __algo_tag_t = decltype(__get_algo_tag<_InIter, _OutIter>());
 
   template <input_iterator _InIter,
             sentinel_for<_InIter> _Sent,
@@ -102,8 +104,10 @@ struct __unique_copy {
   }
 };
 
+} // namespace __unique_copy
+
 inline namespace __cpo {
-inline constexpr auto unique_copy = __unique_copy{};
+inline constexpr auto unique_copy = __unique_copy::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

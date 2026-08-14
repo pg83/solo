@@ -44,7 +44,6 @@
 
 #include <__assert>
 #include <__config>
-#include <cstdint>
 #include <cstring>
 
 _LIBCPP_BEGIN_NAMESPACE_STD

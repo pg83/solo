@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include <__config>
-#include <__memory/shared_ptr.h>
 #include <__utility/unreachable.h>
 #include <filesystem>
 #include <system_error>

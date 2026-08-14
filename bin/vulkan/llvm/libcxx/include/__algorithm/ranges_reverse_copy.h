@@ -37,7 +37,8 @@ namespace ranges {
 template <class _InIter, class _OutIter>
 using reverse_copy_result = in_out_result<_InIter, _OutIter>;
 
-struct __reverse_copy {
+namespace __reverse_copy {
+struct __fn {
   template <bidirectional_iterator _InIter, sentinel_for<_InIter> _Sent, weakly_incrementable _OutIter>
     requires indirectly_copyable<_InIter, _OutIter>
   _LIBCPP_HIDE_FROM_ABI constexpr reverse_copy_result<_InIter, _OutIter>
@@ -53,9 +54,10 @@ struct __reverse_copy {
     return {ranges::next(ranges::begin(__range), ranges::end(__range)), std::move(__ret.out)};
   }
 };
+} // namespace __reverse_copy
 
 inline namespace __cpo {
-inline constexpr auto reverse_copy = __reverse_copy{};
+inline constexpr auto reverse_copy = __reverse_copy::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

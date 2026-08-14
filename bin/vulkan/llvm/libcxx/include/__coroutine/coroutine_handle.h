@@ -11,12 +11,11 @@
 
 #include <__assert>
 #include <__config>
-#include <__cstddef/nullptr_t.h>
-#include <__cstddef/size_t.h>
 #include <__functional/hash.h>
 #include <__memory/addressof.h>
 #include <__type_traits/remove_cv.h>
 #include <compare>
+#include <cstddef>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -28,10 +27,10 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
 // [coroutine.handle]
 template <class _Promise = void>
-struct coroutine_handle;
+struct _LIBCPP_TEMPLATE_VIS coroutine_handle;
 
 template <>
-struct coroutine_handle<void> {
+struct _LIBCPP_TEMPLATE_VIS coroutine_handle<void> {
 public:
   // [coroutine.handle.con], construct/reset
   constexpr coroutine_handle() noexcept = default;
@@ -93,7 +92,7 @@ operator<=>(coroutine_handle<> __x, coroutine_handle<> __y) noexcept {
 }
 
 template <class _Promise>
-struct coroutine_handle {
+struct _LIBCPP_TEMPLATE_VIS coroutine_handle {
 public:
   // [coroutine.handle.con], construct/reset
   constexpr coroutine_handle() noexcept = default;
@@ -172,6 +171,6 @@ struct hash<coroutine_handle<_Tp>> {
 
 _LIBCPP_END_NAMESPACE_STD
 
-#endif // _LIBCPP_STD_VER >= 20
+#endif // __LIBCPP_STD_VER >= 20
 
 #endif // _LIBCPP___COROUTINE_COROUTINE_HANDLE_H

@@ -40,7 +40,9 @@ _LIBCPP_PUSH_MACROS
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 namespace ranges {
-struct __make_heap {
+namespace __make_heap {
+
+struct __fn {
   template <class _Iter, class _Sent, class _Comp, class _Proj>
   _LIBCPP_HIDE_FROM_ABI constexpr static _Iter
   __make_heap_fn_impl(_Iter __first, _Sent __last, _Comp& __comp, _Proj& __proj) {
@@ -67,8 +69,10 @@ struct __make_heap {
   }
 };
 
+} // namespace __make_heap
+
 inline namespace __cpo {
-inline constexpr auto make_heap = __make_heap{};
+inline constexpr auto make_heap = __make_heap::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

@@ -47,8 +47,7 @@ class reverse_view : public view_interface<reverse_view<_View>> {
   // We cache begin() whenever ranges::next is not guaranteed O(1) to provide an
   // amortized O(1) begin() method.
   static constexpr bool _UseCache = !random_access_range<_View> && !common_range<_View>;
-  using _Cache _LIBCPP_NODEBUG =
-      _If<_UseCache, __non_propagating_cache<reverse_iterator<iterator_t<_View>>>, __empty_cache>;
+  using _Cache = _If<_UseCache, __non_propagating_cache<reverse_iterator<iterator_t<_View>>>, __empty_cache>;
   _LIBCPP_NO_UNIQUE_ADDRESS _Cache __cached_begin_ = _Cache();
   _LIBCPP_NO_UNIQUE_ADDRESS _View __base_          = _View();
 
@@ -144,13 +143,13 @@ inline constexpr bool __is_unsized_reverse_subrange<subrange<reverse_iterator<_I
 
 template <class _Tp>
 struct __unwrapped_reverse_subrange {
-  using type _LIBCPP_NODEBUG =
+  using type =
       void; // avoid SFINAE-ing out the overload below -- let the concept requirements do it for better diagnostics
 };
 
 template <class _Iter, subrange_kind _Kind>
 struct __unwrapped_reverse_subrange<subrange<reverse_iterator<_Iter>, reverse_iterator<_Iter>, _Kind>> {
-  using type _LIBCPP_NODEBUG = subrange<_Iter, _Iter, _Kind>;
+  using type = subrange<_Iter, _Iter, _Kind>;
 };
 
 struct __fn : __range_adaptor_closure<__fn> {
@@ -182,8 +181,9 @@ struct __fn : __range_adaptor_closure<__fn> {
   template <class _Range>
     requires(!__is_reverse_view<remove_cvref_t<_Range>> && !__is_sized_reverse_subrange<remove_cvref_t<_Range>> &&
              !__is_unsized_reverse_subrange<remove_cvref_t<_Range>>)
-  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr auto operator()(_Range&& __range) const noexcept(noexcept(reverse_view{
-      std::forward<_Range>(__range)})) -> decltype(reverse_view{std::forward<_Range>(__range)}) {
+  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr auto operator()(_Range&& __range) const
+      noexcept(noexcept(reverse_view{std::forward<_Range>(__range)}))
+          -> decltype(reverse_view{std::forward<_Range>(__range)}) {
     return reverse_view{std::forward<_Range>(__range)};
   }
 };

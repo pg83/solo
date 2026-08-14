@@ -13,10 +13,9 @@
 #  define _CRT_RAND_S
 #endif // defined(_LIBCPP_USING_WIN32_RANDOM)
 
-#include <__system_error/throw_system_error.h>
+#include <__system_error/system_error.h>
 #include <limits>
 #include <random>
-#include <string>
 
 #include <errno.h>
 #include <stdio.h>
@@ -43,7 +42,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
 random_device::random_device(const string& __token) {
   if (__token != "/dev/urandom")
-    std::__throw_system_error(ENOENT, ("random device not supported " + __token).c_str());
+    __throw_system_error(ENOENT, ("random device not supported " + __token).c_str());
 }
 
 random_device::~random_device() {}
@@ -53,7 +52,7 @@ unsigned random_device::operator()() {
   size_t n = sizeof(r);
   int err  = getentropy(&r, n);
   if (err)
-    std::__throw_system_error(errno, "random_device getentropy failed");
+    __throw_system_error(errno, "random_device getentropy failed");
   return r;
 }
 
@@ -69,7 +68,7 @@ unsigned random_device::operator()() { return arc4random(); }
 
 random_device::random_device(const string& __token) : __f_(open(__token.c_str(), O_RDONLY)) {
   if (__f_ < 0)
-    std::__throw_system_error(errno, ("random_device failed to open " + __token).c_str());
+    __throw_system_error(errno, ("random_device failed to open " + __token).c_str());
 }
 
 random_device::~random_device() { close(__f_); }
@@ -81,10 +80,10 @@ unsigned random_device::operator()() {
   while (n > 0) {
     ssize_t s = read(__f_, p, n);
     if (s == 0)
-      std::__throw_system_error(ENOMSG, "random_device got EOF");
+      __throw_system_error(ENODATA, "random_device got EOF");
     if (s == -1) {
       if (errno != EINTR)
-        std::__throw_system_error(errno, "random_device got an unexpected error");
+        __throw_system_error(errno, "random_device got an unexpected error");
       continue;
     }
     n -= static_cast<size_t>(s);
@@ -97,10 +96,10 @@ unsigned random_device::operator()() {
 
 random_device::random_device(const string& __token) {
   if (__token != "/dev/urandom")
-    std::__throw_system_error(ENOENT, ("random device not supported " + __token).c_str());
+    __throw_system_error(ENOENT, ("random device not supported " + __token).c_str());
   int error = nacl_secure_random_init();
   if (error)
-    std::__throw_system_error(error, ("random device failed to open " + __token).c_str());
+    __throw_system_error(error, ("random device failed to open " + __token).c_str());
 }
 
 random_device::~random_device() {}
@@ -111,9 +110,9 @@ unsigned random_device::operator()() {
   size_t bytes_written;
   int error = nacl_secure_random(&r, n, &bytes_written);
   if (error != 0)
-    std::__throw_system_error(error, "random_device failed getting bytes");
+    __throw_system_error(error, "random_device failed getting bytes");
   else if (bytes_written != n)
-    std::__throw_runtime_error("random_device failed to obtain enough bytes");
+    __throw_runtime_error("random_device failed to obtain enough bytes");
   return r;
 }
 
@@ -121,7 +120,7 @@ unsigned random_device::operator()() {
 
 random_device::random_device(const string& __token) {
   if (__token != "/dev/urandom")
-    std::__throw_system_error(ENOENT, ("random device not supported " + __token).c_str());
+    __throw_system_error(ENOENT, ("random device not supported " + __token).c_str());
 }
 
 random_device::~random_device() {}
@@ -130,7 +129,7 @@ unsigned random_device::operator()() {
   unsigned r;
   errno_t err = rand_s(&r);
   if (err)
-    std::__throw_system_error(err, "random_device rand_s failed.");
+    __throw_system_error(err, "random_device rand_s failed.");
   return r;
 }
 
@@ -138,7 +137,7 @@ unsigned random_device::operator()() {
 
 random_device::random_device(const string& __token) {
   if (__token != "/dev/urandom")
-    std::__throw_system_error(ENOENT, ("random device not supported " + __token).c_str());
+    __throw_system_error(ENOENT, ("random device not supported " + __token).c_str());
 }
 
 random_device::~random_device() {}

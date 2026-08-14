@@ -19,17 +19,19 @@
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 template <class>
-inline const bool __is_unbounded_array_v = false;
+struct _LIBCPP_TEMPLATE_VIS __libcpp_is_unbounded_array : false_type {};
 template <class _Tp>
-inline const bool __is_unbounded_array_v<_Tp[]> = true;
+struct _LIBCPP_TEMPLATE_VIS __libcpp_is_unbounded_array<_Tp[]> : true_type {};
 
 #if _LIBCPP_STD_VER >= 20
 
+template <class>
+struct _LIBCPP_TEMPLATE_VIS is_unbounded_array : false_type {};
 template <class _Tp>
-struct _LIBCPP_NO_SPECIALIZATIONS is_unbounded_array : bool_constant<__is_unbounded_array_v<_Tp>> {};
+struct _LIBCPP_TEMPLATE_VIS is_unbounded_array<_Tp[]> : true_type {};
 
 template <class _Tp>
-_LIBCPP_NO_SPECIALIZATIONS inline constexpr bool is_unbounded_array_v = __is_unbounded_array_v<_Tp>;
+inline constexpr bool is_unbounded_array_v = is_unbounded_array<_Tp>::value;
 
 #endif
 

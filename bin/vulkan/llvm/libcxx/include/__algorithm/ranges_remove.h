@@ -33,10 +33,11 @@ _LIBCPP_PUSH_MACROS
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 namespace ranges {
-struct __remove {
+namespace __remove {
+struct __fn {
   template <permutable _Iter, sentinel_for<_Iter> _Sent, class _Type, class _Proj = identity>
     requires indirect_binary_predicate<ranges::equal_to, projected<_Iter, _Proj>, const _Type*>
-  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr subrange<_Iter>
+  _LIBCPP_NODISCARD_EXT _LIBCPP_HIDE_FROM_ABI constexpr subrange<_Iter>
   operator()(_Iter __first, _Sent __last, const _Type& __value, _Proj __proj = {}) const {
     auto __pred = [&](auto&& __other) -> bool { return __value == __other; };
     return ranges::__remove_if_impl(std::move(__first), std::move(__last), __pred, __proj);
@@ -45,15 +46,16 @@ struct __remove {
   template <forward_range _Range, class _Type, class _Proj = identity>
     requires permutable<iterator_t<_Range>> &&
              indirect_binary_predicate<ranges::equal_to, projected<iterator_t<_Range>, _Proj>, const _Type*>
-  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr borrowed_subrange_t<_Range>
+  _LIBCPP_NODISCARD_EXT _LIBCPP_HIDE_FROM_ABI constexpr borrowed_subrange_t<_Range>
   operator()(_Range&& __range, const _Type& __value, _Proj __proj = {}) const {
     auto __pred = [&](auto&& __other) -> bool { return __value == __other; };
     return ranges::__remove_if_impl(ranges::begin(__range), ranges::end(__range), __pred, __proj);
   }
 };
+} // namespace __remove
 
 inline namespace __cpo {
-inline constexpr auto remove = __remove{};
+inline constexpr auto remove = __remove::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

@@ -18,17 +18,11 @@
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 template <bool, class _Tp = void>
-struct _LIBCPP_NO_SPECIALIZATIONS enable_if{};
-
-_LIBCPP_DIAGNOSTIC_PUSH
-#if __has_warning("-Winvalid-specialization")
-_LIBCPP_CLANG_DIAGNOSTIC_IGNORED("-Winvalid-specialization")
-#endif
+struct _LIBCPP_TEMPLATE_VIS enable_if {};
 template <class _Tp>
-struct enable_if<true, _Tp> {
+struct _LIBCPP_TEMPLATE_VIS enable_if<true, _Tp> {
   typedef _Tp type;
 };
-_LIBCPP_DIAGNOSTIC_POP
 
 template <bool _Bp, class _Tp = void>
 using __enable_if_t _LIBCPP_NODEBUG = typename enable_if<_Bp, _Tp>::type;

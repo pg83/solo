@@ -53,12 +53,13 @@ __remove_if_impl(_Iter __first, _Sent __last, _Pred& __pred, _Proj& __proj) {
   return {__new_end, __i};
 }
 
-struct __remove_if {
+namespace __remove_if {
+struct __fn {
   template <permutable _Iter,
             sentinel_for<_Iter> _Sent,
             class _Proj = identity,
             indirect_unary_predicate<projected<_Iter, _Proj>> _Pred>
-  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr subrange<_Iter>
+  _LIBCPP_NODISCARD_EXT _LIBCPP_HIDE_FROM_ABI constexpr subrange<_Iter>
   operator()(_Iter __first, _Sent __last, _Pred __pred, _Proj __proj = {}) const {
     return ranges::__remove_if_impl(std::move(__first), std::move(__last), __pred, __proj);
   }
@@ -67,14 +68,15 @@ struct __remove_if {
             class _Proj = identity,
             indirect_unary_predicate<projected<iterator_t<_Range>, _Proj>> _Pred>
     requires permutable<iterator_t<_Range>>
-  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr borrowed_subrange_t<_Range>
+  _LIBCPP_NODISCARD_EXT _LIBCPP_HIDE_FROM_ABI constexpr borrowed_subrange_t<_Range>
   operator()(_Range&& __range, _Pred __pred, _Proj __proj = {}) const {
     return ranges::__remove_if_impl(ranges::begin(__range), ranges::end(__range), __pred, __proj);
   }
 };
+} // namespace __remove_if
 
 inline namespace __cpo {
-inline constexpr auto remove_if = __remove_if{};
+inline constexpr auto remove_if = __remove_if::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

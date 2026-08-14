@@ -10,6 +10,7 @@
 #ifndef _LIBCPP___ITERATOR_NEXT_H
 #define _LIBCPP___ITERATOR_NEXT_H
 
+#include <__assert>
 #include <__config>
 #include <__iterator/advance.h>
 #include <__iterator/concepts.h>
@@ -24,8 +25,13 @@
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 template <class _InputIter, __enable_if_t<__has_input_iterator_category<_InputIter>::value, int> = 0>
-[[__nodiscard__]] inline _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX17 _InputIter
+inline _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX17 _InputIter
 next(_InputIter __x, typename iterator_traits<_InputIter>::difference_type __n = 1) {
+  // Calling `advance` with a negative value on a non-bidirectional iterator is a no-op in the current implementation.
+  // Note that this check duplicates the similar check in `std::advance`.
+  _LIBCPP_ASSERT_PEDANTIC(__n >= 0 || __has_bidirectional_iterator_category<_InputIter>::value,
+                          "Attempt to next(it, n) with negative n on a non-bidirectional iterator");
+
   std::advance(__x, __n);
   return __x;
 }
@@ -35,35 +41,38 @@ next(_InputIter __x, typename iterator_traits<_InputIter>::difference_type __n =
 // [range.iter.op.next]
 
 namespace ranges {
-struct __next {
+namespace __next {
+
+struct __fn {
   template <input_or_output_iterator _Ip>
-  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr _Ip operator()(_Ip __x) const {
+  _LIBCPP_HIDE_FROM_ABI constexpr _Ip operator()(_Ip __x) const {
     ++__x;
     return __x;
   }
 
   template <input_or_output_iterator _Ip>
-  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr _Ip operator()(_Ip __x, iter_difference_t<_Ip> __n) const {
+  _LIBCPP_HIDE_FROM_ABI constexpr _Ip operator()(_Ip __x, iter_difference_t<_Ip> __n) const {
     ranges::advance(__x, __n);
     return __x;
   }
 
   template <input_or_output_iterator _Ip, sentinel_for<_Ip> _Sp>
-  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr _Ip operator()(_Ip __x, _Sp __bound_sentinel) const {
+  _LIBCPP_HIDE_FROM_ABI constexpr _Ip operator()(_Ip __x, _Sp __bound_sentinel) const {
     ranges::advance(__x, __bound_sentinel);
     return __x;
   }
 
   template <input_or_output_iterator _Ip, sentinel_for<_Ip> _Sp>
-  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr _Ip
-  operator()(_Ip __x, iter_difference_t<_Ip> __n, _Sp __bound_sentinel) const {
+  _LIBCPP_HIDE_FROM_ABI constexpr _Ip operator()(_Ip __x, iter_difference_t<_Ip> __n, _Sp __bound_sentinel) const {
     ranges::advance(__x, __n, __bound_sentinel);
     return __x;
   }
 };
 
+} // namespace __next
+
 inline namespace __cpo {
-inline constexpr auto next = __next{};
+inline constexpr auto next = __next::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

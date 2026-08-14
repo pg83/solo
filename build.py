@@ -97,6 +97,7 @@ vulkan_loader_root = f"{vulkan_root}/vulkan/loader/loader"
 if vulkanBuild:
     build.includes += [
         "$(S)/lib",
+        "$(B)/bin/vulkan/libcxx/include",
         f"{libcxx_root}/include",
         f"{libcxxabi_root}/include",
         f"{libunwind_root}/include",
@@ -173,7 +174,43 @@ musl_version = command(
     ],
 )
 
-musl_generated = [musl_alltypes, musl_syscall, musl_version]
+libcxx_config = command(
+    inputs=[
+        f"{vulkan_root}/generate.py",
+        f"{libcxx_root}/include/__config_site.in",
+    ],
+    outputs=["$(B)/bin/vulkan/libcxx/include/__config_site"],
+    cmd=[
+        "python3",
+        f"{vulkan_root}/generate.py",
+        "libcxx-config",
+        "$(B)/bin/vulkan/libcxx/include/__config_site",
+        f"{libcxx_root}/include/__config_site.in",
+    ],
+)
+
+libcxx_assertion_handler = command(
+    inputs=[
+        f"{libcxx_root}/vendor/llvm/default_assertion_handler.in",
+        f"{libcxx_root}/include/__config",
+        f"{libcxx_root}/include/__availability",
+        f"{libcxx_root}/include/__verbose_abort",
+    ],
+    outputs=["$(B)/bin/vulkan/libcxx/include/__assertion_handler"],
+    cmd=[
+        "cp",
+        f"{libcxx_root}/vendor/llvm/default_assertion_handler.in",
+        "$(B)/bin/vulkan/libcxx/include/__assertion_handler",
+    ],
+)
+
+runtime_generated = [
+    musl_alltypes,
+    musl_syscall,
+    musl_version,
+    libcxx_config,
+    libcxx_assertion_handler,
+]
 target_flags = [
     "-ffunction-sections",
     "-fdata-sections",
@@ -192,7 +229,7 @@ cxx_runtime_flags = [
 musl = library(
     name="vulkan_musl",
     srcs=muslSources(),
-    deps=musl_generated,
+    deps=runtime_generated,
     includes=musl_internal_includes,
     cflags=[
         *c_runtime_flags,
@@ -211,7 +248,7 @@ compiler_rt_sources = [
 compiler_rt = library(
     name="vulkan_compiler_rt",
     srcs=compiler_rt_sources,
-    deps=musl_generated,
+    deps=runtime_generated,
     cflags=[*c_runtime_flags, "-ffreestanding", "-w"],
     output="$(B)/bin/vulkan/lib/libcompiler_rt.a",
 )
@@ -232,7 +269,7 @@ libunwind = library(
             "UnwindRegistersSave.S",
         ],
     ),
-    deps=musl_generated,
+    deps=runtime_generated,
     cflags=[*c_runtime_flags, "-fexceptions", "-w"],
     cxxflags=[*cxx_runtime_flags, "-fno-rtti"],
     cppflags=[
@@ -267,7 +304,7 @@ libcxxabi = library(
             "cxa_thread_atexit.cpp",
         ],
     ),
-    deps=musl_generated,
+    deps=runtime_generated,
     cflags=[*c_runtime_flags, "-w"],
     cxxflags=cxx_runtime_flags,
     cppflags=[
@@ -287,7 +324,6 @@ libcxx_sources = vendorPaths(
         "chrono.cpp",
         "error_category.cpp",
         "exception.cpp",
-        "expected.cpp",
         "filesystem/filesystem_clock.cpp",
         "filesystem/filesystem_error.cpp",
         "filesystem/path.cpp",
@@ -337,7 +373,7 @@ libcxx_sources = vendorPaths(
 libcxx = library(
     name="vulkan_libcxx",
     srcs=libcxx_sources,
-    deps=musl_generated,
+    deps=runtime_generated,
     cflags=[*c_runtime_flags, "-w"],
     cxxflags=cxx_runtime_flags,
     cppflags=[
@@ -357,7 +393,7 @@ dlfcn_static = library(
         "$(S)/lib/hash.cpp",
         "$(S)/lib/tlsdesc.S",
     ],
-    deps=musl_generated,
+    deps=runtime_generated,
     cflags=c_runtime_flags,
     cxxflags=[
         *cxx_runtime_flags,
@@ -410,7 +446,7 @@ zlib = library(
             ],
         )
     ],
-    deps=[*musl_generated, zconf],
+    deps=[*runtime_generated, zconf],
     cflags=[*c_runtime_flags, "-w"],
     cppflags=["-DHAVE_UNISTD_H=1"],
     output="$(B)/bin/vulkan/lib/libz.a",
@@ -453,7 +489,7 @@ png = library(
             ],
         )
     ],
-    deps=[*musl_generated, pnglibconf],
+    deps=[*runtime_generated, pnglibconf],
     cflags=[*c_runtime_flags, "-w"],
     output="$(B)/bin/vulkan/lib/libpng.a",
 )
@@ -480,7 +516,7 @@ vulkan_loader = library(
             "loader_linux.c",
         ],
     ),
-    deps=musl_generated,
+    deps=runtime_generated,
     cflags=[*c_runtime_flags, "-w"],
     cppflags=[
         "-D_GNU_SOURCE",
@@ -505,7 +541,7 @@ vulkan_app = library(
             "inputs": [pnglibconf_path],
         },
     ],
-    deps=[*musl_generated, pnglibconf],
+    deps=[*runtime_generated, pnglibconf],
     cflags=c_runtime_flags,
     cxxflags=cxx_runtime_flags,
     output="$(B)/bin/vulkan/lib/libvulkan_app.a",
@@ -516,7 +552,7 @@ def muslCrt(name, source):
     return library(
         name=f"vulkan_{name}",
         srcs=[source],
-        deps=musl_generated,
+        deps=runtime_generated,
         includes=musl_internal_includes,
         cflags=[
             *target_flags,

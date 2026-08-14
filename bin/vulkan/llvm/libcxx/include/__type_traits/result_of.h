@@ -10,7 +10,7 @@
 #define _LIBCPP___TYPE_TRAITS_RESULT_OF_H
 
 #include <__config>
-#include <__type_traits/invoke.h>
+#include <__functional/invoke.h>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -22,15 +22,10 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
 #if _LIBCPP_STD_VER <= 17 || defined(_LIBCPP_ENABLE_CXX20_REMOVED_TYPE_TRAITS)
 template <class _Callable>
-struct _LIBCPP_DEPRECATED_IN_CXX17 _LIBCPP_NO_SPECIALIZATIONS result_of;
+class _LIBCPP_DEPRECATED_IN_CXX17 result_of;
 
-_LIBCPP_DIAGNOSTIC_PUSH
-#if __has_warning("-Winvalid-specialization")
-_LIBCPP_CLANG_DIAGNOSTIC_IGNORED("-Winvalid-specialization")
-#endif
 template <class _Fp, class... _Args>
-struct result_of<_Fp(_Args...)> : __invoke_result<_Fp, _Args...> {};
-_LIBCPP_DIAGNOSTIC_POP
+class _LIBCPP_TEMPLATE_VIS result_of<_Fp(_Args...)> : public __invoke_of<_Fp, _Args...> {};
 
 #  if _LIBCPP_STD_VER >= 14
 template <class _Tp>

@@ -35,7 +35,9 @@ _LIBCPP_PUSH_MACROS
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 namespace ranges {
-struct __sample {
+namespace __sample {
+
+struct __fn {
   template <input_iterator _Iter, sentinel_for<_Iter> _Sent, weakly_incrementable _OutIter, class _Gen>
     requires(forward_iterator<_Iter> || random_access_iterator<_OutIter>) && indirectly_copyable<_Iter, _OutIter> &&
             uniform_random_bit_generator<remove_reference_t<_Gen>>
@@ -56,8 +58,10 @@ struct __sample {
   }
 };
 
+} // namespace __sample
+
 inline namespace __cpo {
-inline constexpr auto sample = __sample{};
+inline constexpr auto sample = __sample::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

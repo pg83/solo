@@ -21,7 +21,6 @@
 #include <__ranges/access.h>
 #include <__ranges/concepts.h>
 #include <__ranges/empty.h>
-#include <__ranges/size.h>
 #include <__type_traits/is_class.h>
 #include <__type_traits/make_unsigned.h>
 #include <__type_traits/remove_cv.h>
@@ -52,24 +51,16 @@ class view_interface {
 public:
   template <class _D2 = _Derived>
   [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr bool empty()
-    requires sized_range<_D2> || forward_range<_D2>
+    requires forward_range<_D2>
   {
-    if constexpr (sized_range<_D2>) {
-      return ranges::size(__derived()) == 0;
-    } else {
-      return ranges::begin(__derived()) == ranges::end(__derived());
-    }
+    return ranges::begin(__derived()) == ranges::end(__derived());
   }
 
   template <class _D2 = _Derived>
   [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr bool empty() const
-    requires sized_range<const _D2> || forward_range<const _D2>
+    requires forward_range<const _D2>
   {
-    if constexpr (sized_range<const _D2>) {
-      return ranges::size(__derived()) == 0;
-    } else {
-      return ranges::begin(__derived()) == ranges::end(__derived());
-    }
+    return ranges::begin(__derived()) == ranges::end(__derived());
   }
 
   template <class _D2 = _Derived>

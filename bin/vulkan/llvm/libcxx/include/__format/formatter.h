@@ -10,8 +10,9 @@
 #ifndef _LIBCPP___FORMAT_FORMATTER_H
 #define _LIBCPP___FORMAT_FORMATTER_H
 
+#include <__availability>
 #include <__config>
-#include <__fwd/format.h>
+#include <__format/format_fwd.h>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -21,12 +22,6 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
 #if _LIBCPP_STD_VER >= 20
 
-struct __disabled_formatter {
-  __disabled_formatter()                                       = delete;
-  __disabled_formatter(const __disabled_formatter&)            = delete;
-  __disabled_formatter& operator=(const __disabled_formatter&) = delete;
-};
-
 /// The default formatter template.
 ///
 /// [format.formatter.spec]/5
@@ -34,15 +29,16 @@ struct __disabled_formatter {
 /// - is_default_constructible_v<F>,
 /// - is_copy_constructible_v<F>,
 /// - is_move_constructible_v<F>,
-/// - is_copy_assignable_v<F>, and
-/// - is_move_assignable_v<F>.
+/// - is_copy_assignable<F>, and
+/// - is_move_assignable<F>.
 template <class _Tp, class _CharT>
-struct formatter : __disabled_formatter {};
+struct _LIBCPP_TEMPLATE_VIS formatter {
+  formatter()                            = delete;
+  formatter(const formatter&)            = delete;
+  formatter& operator=(const formatter&) = delete;
+};
 
 #  if _LIBCPP_STD_VER >= 23
-
-template <class _Tp>
-constexpr bool enable_nonlocking_formatter_optimization = false;
 
 template <class _Tp>
 _LIBCPP_HIDE_FROM_ABI constexpr void __set_debug_format(_Tp& __formatter) {

@@ -41,7 +41,8 @@ using unary_transform_result = in_out_result<_Ip, _Op>;
 template <class _I1, class _I2, class _O1>
 using binary_transform_result = in_in_out_result<_I1, _I2, _O1>;
 
-struct __transform {
+namespace __transform {
+struct __fn {
 private:
   template <class _InIter, class _Sent, class _OutIter, class _Func, class _Proj>
   _LIBCPP_HIDE_FROM_ABI static constexpr unary_transform_result<_InIter, _OutIter>
@@ -160,9 +161,10 @@ public:
         __projection2);
   }
 };
+} // namespace __transform
 
 inline namespace __cpo {
-inline constexpr auto transform = __transform{};
+inline constexpr auto transform = __transform::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

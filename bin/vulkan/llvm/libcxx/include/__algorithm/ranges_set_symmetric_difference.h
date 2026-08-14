@@ -10,6 +10,7 @@
 #define _LIBCPP___ALGORITHM_RANGES_SET_SYMMETRIC_DIFFERENCE_H
 
 #include <__algorithm/in_in_out_result.h>
+#include <__algorithm/iterator_operations.h>
 #include <__algorithm/make_projected.h>
 #include <__algorithm/set_symmetric_difference.h>
 #include <__config>
@@ -39,7 +40,9 @@ namespace ranges {
 template <class _InIter1, class _InIter2, class _OutIter>
 using set_symmetric_difference_result = in_in_out_result<_InIter1, _InIter2, _OutIter>;
 
-struct __set_symmetric_difference {
+namespace __set_symmetric_difference {
+
+struct __fn {
   template <input_iterator _InIter1,
             sentinel_for<_InIter1> _Sent1,
             input_iterator _InIter2,
@@ -58,7 +61,7 @@ struct __set_symmetric_difference {
       _Comp __comp   = {},
       _Proj1 __proj1 = {},
       _Proj2 __proj2 = {}) const {
-    auto __ret = std::__set_symmetric_difference(
+    auto __ret = std::__set_symmetric_difference<_RangeAlgPolicy>(
         std::move(__first1),
         std::move(__last1),
         std::move(__first2),
@@ -84,7 +87,7 @@ struct __set_symmetric_difference {
              _Comp __comp   = {},
              _Proj1 __proj1 = {},
              _Proj2 __proj2 = {}) const {
-    auto __ret = std::__set_symmetric_difference(
+    auto __ret = std::__set_symmetric_difference<_RangeAlgPolicy>(
         ranges::begin(__range1),
         ranges::end(__range1),
         ranges::begin(__range2),
@@ -95,8 +98,10 @@ struct __set_symmetric_difference {
   }
 };
 
+} // namespace __set_symmetric_difference
+
 inline namespace __cpo {
-inline constexpr auto set_symmetric_difference = __set_symmetric_difference{};
+inline constexpr auto set_symmetric_difference = __set_symmetric_difference::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

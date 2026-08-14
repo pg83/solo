@@ -42,8 +42,6 @@
 #include <__assert>
 #include <__config>
 #include <charconv>
-#include <cstdint>
-#include <cstddef>
 
 #include "include/ryu/common.h"
 #include "include/ryu/d2fixed.h"

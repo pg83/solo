@@ -19,15 +19,15 @@
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 template <class _CharT, class _Traits = char_traits<_CharT> >
-class basic_istream;
+class _LIBCPP_TEMPLATE_VIS basic_istream;
 
 template <class _CharT, class _Traits = char_traits<_CharT> >
-class basic_iostream;
+class _LIBCPP_TEMPLATE_VIS basic_iostream;
 
 using istream  = basic_istream<char>;
 using iostream = basic_iostream<char>;
 
-#if _LIBCPP_HAS_WIDE_CHARACTERS
+#ifndef _LIBCPP_HAS_NO_WIDE_CHARACTERS
 using wistream  = basic_istream<wchar_t>;
 using wiostream = basic_iostream<wchar_t>;
 #endif

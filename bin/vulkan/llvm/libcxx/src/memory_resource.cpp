@@ -6,13 +6,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <cstddef>
 #include <memory>
 #include <memory_resource>
 
-#if _LIBCPP_HAS_ATOMIC_HEADER
+#ifndef _LIBCPP_HAS_NO_ATOMIC_HEADER
 #  include <atomic>
-#elif _LIBCPP_HAS_THREADS
+#elif !defined(_LIBCPP_HAS_NO_THREADS)
 #  include <mutex>
 #  if defined(__ELF__) && defined(_LIBCPP_LINK_PTHREAD_LIB)
 #    pragma comment(lib, "pthread")
@@ -29,7 +28,7 @@ memory_resource::~memory_resource() = default;
 
 // new_delete_resource()
 
-#if !_LIBCPP_HAS_ALIGNED_ALLOCATION
+#ifdef _LIBCPP_HAS_NO_ALIGNED_ALLOCATION
 static bool is_aligned_to(void* ptr, size_t align) {
   void* p2     = ptr;
   size_t space = 1;
@@ -38,33 +37,31 @@ static bool is_aligned_to(void* ptr, size_t align) {
 }
 #endif
 
-class _LIBCPP_HIDDEN __new_delete_memory_resource_imp : public memory_resource {
+class _LIBCPP_EXPORTED_FROM_ABI __new_delete_memory_resource_imp : public memory_resource {
   void* do_allocate(size_t bytes, size_t align) override {
-#if _LIBCPP_HAS_ALIGNED_ALLOCATION
-    return std::__libcpp_allocate<std::byte>(__element_count(bytes), align);
+#ifndef _LIBCPP_HAS_NO_ALIGNED_ALLOCATION
+    return std::__libcpp_allocate(bytes, align);
 #else
     if (bytes == 0)
       bytes = 1;
-    std::byte* result = std::__libcpp_allocate<std::byte>(__element_count(bytes), align);
+    void* result = std::__libcpp_allocate(bytes, align);
     if (!is_aligned_to(result, align)) {
-      std::__libcpp_deallocate<std::byte>(result, __element_count(bytes), align);
-      std::__throw_bad_alloc();
+      std::__libcpp_deallocate(result, bytes, align);
+      __throw_bad_alloc();
     }
     return result;
 #endif
   }
 
-  void do_deallocate(void* p, size_t bytes, size_t align) override {
-    std::__libcpp_deallocate<std::byte>(static_cast<std::byte*>(p), __element_count(bytes), align);
-  }
+  void do_deallocate(void* p, size_t bytes, size_t align) override { std::__libcpp_deallocate(p, bytes, align); }
 
   bool do_is_equal(const memory_resource& other) const noexcept override { return &other == this; }
 };
 
 // null_memory_resource()
 
-class _LIBCPP_HIDDEN __null_memory_resource_imp : public memory_resource {
-  void* do_allocate(size_t, size_t) override { std::__throw_bad_alloc(); }
+class _LIBCPP_EXPORTED_FROM_ABI __null_memory_resource_imp : public memory_resource {
+  void* do_allocate(size_t, size_t) override { __throw_bad_alloc(); }
   void do_deallocate(void*, size_t, size_t) override {}
   bool do_is_equal(const memory_resource& other) const noexcept override { return &other == this; }
 };
@@ -85,7 +82,7 @@ union ResourceInitHelper {
 // attribute with a value that's reserved for the implementation (we're the implementation).
 #include "memory_resource_init_helper.h"
 
-} // namespace
+} // end namespace
 
 memory_resource* new_delete_resource() noexcept { return &res_init.resources.new_delete_res; }
 
@@ -94,7 +91,7 @@ memory_resource* null_memory_resource() noexcept { return &res_init.resources.nu
 // default_memory_resource()
 
 static memory_resource* __default_memory_resource(bool set = false, memory_resource* new_res = nullptr) noexcept {
-#if _LIBCPP_HAS_ATOMIC_HEADER
+#ifndef _LIBCPP_HAS_NO_ATOMIC_HEADER
   static constinit atomic<memory_resource*> __res{&res_init.resources.new_delete_res};
   if (set) {
     new_res = new_res ? new_res : new_delete_resource();
@@ -103,7 +100,7 @@ static memory_resource* __default_memory_resource(bool set = false, memory_resou
   } else {
     return std::atomic_load_explicit(&__res, memory_order_acquire);
   }
-#elif _LIBCPP_HAS_THREADS
+#elif !defined(_LIBCPP_HAS_NO_THREADS)
   static constinit memory_resource* res = &res_init.resources.new_delete_res;
   static mutex res_lock;
   if (set) {
@@ -415,8 +412,6 @@ bool synchronized_pool_resource::do_is_equal(const memory_resource& other) const
 
 // 23.12.6, mem.res.monotonic.buffer
 
-constexpr size_t __default_growth_factor = 2;
-
 static void* align_down(size_t align, size_t size, void*& ptr, size_t& space) {
   if (size > space)
     return nullptr;
@@ -433,20 +428,23 @@ static void* align_down(size_t align, size_t size, void*& ptr, size_t& space) {
   return ptr;
 }
 
-template <bool is_initial, typename Chunk>
-void* __try_allocate_from_chunk(Chunk& self, size_t bytes, size_t align) {
-  if constexpr (is_initial) {
-    // only for __initial_descriptor.
-    // if __initial_descriptor.__cur_ equals nullptr, means no available buffer given when ctor.
-    // here we just return nullptr, let the caller do the next handling.
-    if (!self.__cur_)
-      return nullptr;
-  }
-  void* new_ptr       = static_cast<void*>(self.__cur_);
-  size_t new_capacity = (self.__cur_ - self.__start_);
+void* monotonic_buffer_resource::__initial_descriptor::__try_allocate_from_chunk(size_t bytes, size_t align) {
+  if (!__cur_)
+    return nullptr;
+  void* new_ptr       = static_cast<void*>(__cur_);
+  size_t new_capacity = (__cur_ - __start_);
   void* aligned_ptr   = align_down(align, bytes, new_ptr, new_capacity);
   if (aligned_ptr != nullptr)
-    self.__cur_ = static_cast<char*>(new_ptr);
+    __cur_ = static_cast<char*>(new_ptr);
+  return aligned_ptr;
+}
+
+void* monotonic_buffer_resource::__chunk_footer::__try_allocate_from_chunk(size_t bytes, size_t align) {
+  void* new_ptr       = static_cast<void*>(__cur_);
+  size_t new_capacity = (__cur_ - __start_);
+  void* aligned_ptr   = align_down(align, bytes, new_ptr, new_capacity);
+  if (aligned_ptr != nullptr)
+    __cur_ = static_cast<char*>(new_ptr);
   return aligned_ptr;
 }
 
@@ -463,10 +461,10 @@ void* monotonic_buffer_resource::do_allocate(size_t bytes, size_t align) {
     return roundup(newsize, footer_align) + footer_size;
   };
 
-  if (void* result = __try_allocate_from_chunk<true, __initial_descriptor>(__initial_, bytes, align))
+  if (void* result = __initial_.__try_allocate_from_chunk(bytes, align))
     return result;
   if (__chunks_ != nullptr) {
-    if (void* result = __try_allocate_from_chunk<false, __chunk_footer>(*__chunks_, bytes, align))
+    if (void* result = __chunks_->__try_allocate_from_chunk(bytes, align))
       return result;
   }
 
@@ -479,7 +477,7 @@ void* monotonic_buffer_resource::do_allocate(size_t bytes, size_t align) {
   size_t previous_capacity = previous_allocation_size();
 
   if (aligned_capacity <= previous_capacity) {
-    size_t newsize   = __default_growth_factor * (previous_capacity - footer_size);
+    size_t newsize   = 2 * (previous_capacity - footer_size);
     aligned_capacity = roundup(newsize, footer_align) + footer_size;
   }
 
@@ -492,7 +490,7 @@ void* monotonic_buffer_resource::do_allocate(size_t bytes, size_t align) {
   footer->__align_       = align;
   __chunks_              = footer;
 
-  return __try_allocate_from_chunk<false, __chunk_footer>(*__chunks_, bytes, align);
+  return __chunks_->__try_allocate_from_chunk(bytes, align);
 }
 
 } // namespace pmr

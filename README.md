@@ -11,7 +11,7 @@ ICD. It creates a compute pipeline, renders a 512x512 RGBA image, and writes it
 as a PNG. The executable itself is static: it has neither `PT_INTERP` nor
 `DT_NEEDED`; Vulkan and the selected driver are loaded only at runtime.
 
-Build on x86-64 Linux with Python 3 and a Clang/LLVM toolchain in `PATH`:
+Build on x86-64 Linux with Python 3 and a C/C++ toolchain in `PATH`:
 
 ```sh
 ./build vulkan
@@ -39,8 +39,8 @@ directly; none of their CMake, configure, Meson, or Make build systems are
 invoked. The pinned inputs are:
 
 - musl 1.2.5 (`0784374d561435f7c787a555aeab8ede699ed298`)
-- LLVM runtimes 21.1.8: libc++, libc++abi, libunwind, and compiler-rt builtins
-  (`2078da43e25a4623cab2d0d60decddf709aaea28`)
+- LLVM runtimes 18.1.8: libc++, libc++abi, libunwind, and compiler-rt builtins
+  (`3b5b5c1ec4a3095ab096dd780e84d7ab81f3d7ff`)
 - Vulkan Headers 1.4.357 (`e3b1eec08173d6b825cd3ac88c885a63b621504a`)
 - Vulkan Loader 1.4.357 (`5f157b62e333c63260d05d81bf66faa216ab0fb8`)
 - zlib 1.3.2 (`da607da739fa6047df13e66a2af6b8bec7c2a498`)

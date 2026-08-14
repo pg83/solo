@@ -38,13 +38,15 @@ _LIBCPP_PUSH_MACROS
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 namespace ranges {
-struct __equal_range {
+namespace __equal_range {
+
+struct __fn {
   template <forward_iterator _Iter,
             sentinel_for<_Iter> _Sent,
             class _Tp,
             class _Proj                                                           = identity,
             indirect_strict_weak_order<const _Tp*, projected<_Iter, _Proj>> _Comp = ranges::less>
-  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr subrange<_Iter>
+  _LIBCPP_NODISCARD_EXT _LIBCPP_HIDE_FROM_ABI constexpr subrange<_Iter>
   operator()(_Iter __first, _Sent __last, const _Tp& __value, _Comp __comp = {}, _Proj __proj = {}) const {
     auto __ret = std::__equal_range<_RangeAlgPolicy>(std::move(__first), std::move(__last), __value, __comp, __proj);
     return {std::move(__ret.first), std::move(__ret.second)};
@@ -54,7 +56,7 @@ struct __equal_range {
             class _Tp,
             class _Proj                                                                        = identity,
             indirect_strict_weak_order<const _Tp*, projected<iterator_t<_Range>, _Proj>> _Comp = ranges::less>
-  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr borrowed_subrange_t<_Range>
+  _LIBCPP_NODISCARD_EXT _LIBCPP_HIDE_FROM_ABI constexpr borrowed_subrange_t<_Range>
   operator()(_Range&& __range, const _Tp& __value, _Comp __comp = {}, _Proj __proj = {}) const {
     auto __ret =
         std::__equal_range<_RangeAlgPolicy>(ranges::begin(__range), ranges::end(__range), __value, __comp, __proj);
@@ -62,8 +64,10 @@ struct __equal_range {
   }
 };
 
+} // namespace __equal_range
+
 inline namespace __cpo {
-inline constexpr auto equal_range = __equal_range{};
+inline constexpr auto equal_range = __equal_range::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

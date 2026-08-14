@@ -35,7 +35,8 @@ _LIBCPP_PUSH_MACROS
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 namespace ranges {
-struct __find_end {
+namespace __find_end {
+struct __fn {
   template <forward_iterator _Iter1,
             sentinel_for<_Iter1> _Sent1,
             forward_iterator _Iter2,
@@ -44,7 +45,7 @@ struct __find_end {
             class _Proj1 = identity,
             class _Proj2 = identity>
     requires indirectly_comparable<_Iter1, _Iter2, _Pred, _Proj1, _Proj2>
-  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr subrange<_Iter1> operator()(
+  _LIBCPP_NODISCARD_EXT _LIBCPP_HIDE_FROM_ABI constexpr subrange<_Iter1> operator()(
       _Iter1 __first1,
       _Sent1 __last1,
       _Iter2 __first2,
@@ -71,7 +72,7 @@ struct __find_end {
             class _Proj1 = identity,
             class _Proj2 = identity>
     requires indirectly_comparable<iterator_t<_Range1>, iterator_t<_Range2>, _Pred, _Proj1, _Proj2>
-  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI constexpr borrowed_subrange_t<_Range1> operator()(
+  _LIBCPP_NODISCARD_EXT _LIBCPP_HIDE_FROM_ABI constexpr borrowed_subrange_t<_Range1> operator()(
       _Range1&& __range1, _Range2&& __range2, _Pred __pred = {}, _Proj1 __proj1 = {}, _Proj2 __proj2 = {}) const {
     auto __ret = std::__find_end_impl<_RangeAlgPolicy>(
         ranges::begin(__range1),
@@ -86,9 +87,10 @@ struct __find_end {
     return {__ret.first, __ret.second};
   }
 };
+} // namespace __find_end
 
 inline namespace __cpo {
-inline constexpr auto find_end = __find_end{};
+inline constexpr auto find_end = __find_end::__fn{};
 } // namespace __cpo
 } // namespace ranges
 

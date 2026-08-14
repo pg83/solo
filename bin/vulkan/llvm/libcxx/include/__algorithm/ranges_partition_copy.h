@@ -38,7 +38,9 @@ namespace ranges {
 template <class _InIter, class _OutIter1, class _OutIter2>
 using partition_copy_result = in_out_out_result<_InIter, _OutIter1, _OutIter2>;
 
-struct __partition_copy {
+namespace __partition_copy {
+
+struct __fn {
   // TODO(ranges): delegate to the classic algorithm.
   template <class _InIter, class _Sent, class _OutIter1, class _OutIter2, class _Proj, class _Pred>
   _LIBCPP_HIDE_FROM_ABI constexpr static partition_copy_result<__remove_cvref_t<_InIter>,
@@ -92,8 +94,10 @@ struct __partition_copy {
   }
 };
 
+} // namespace __partition_copy
+
 inline namespace __cpo {
-inline constexpr auto partition_copy = __partition_copy{};
+inline constexpr auto partition_copy = __partition_copy::__fn{};
 } // namespace __cpo
 } // namespace ranges
 
