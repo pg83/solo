@@ -16,8 +16,6 @@ build.cxxflags += [
     "-std=c++20",
 ]
 
-build.includes += ["$(S)/lib"]
-
 cc = os.environ.get("CC", "cc")
 linker_flags = []
 if shutil.which("ld") is None and (lld := shutil.which("ld.lld")):
@@ -95,6 +93,7 @@ vulkan_loader_root = f"{vulkan_root}/vulkan/loader/loader"
 
 if vulkanBuild:
     build.includes += [
+        "$(S)/lib",
         f"{libcxx_root}/include",
         f"{libcxxabi_root}/include",
         f"{libunwind_root}/include",
@@ -378,27 +377,36 @@ zconf = command(
 
 zlib = library(
     name="vulkan_zlib",
-    srcs=vendorPaths(
-        f"{vulkan_root}/zlib",
-        [
-            "adler32.c",
-            "compress.c",
-            "crc32.c",
-            "deflate.c",
-            "gzclose.c",
-            "gzlib.c",
-            "gzread.c",
-            "gzwrite.c",
-            "inflate.c",
-            "infback.c",
-            "inftrees.c",
-            "inffast.c",
-            "trees.c",
-            "uncompr.c",
-            "zutil.c",
-        ],
-    ),
-    deps=musl_generated,
+    srcs=[
+        {
+            "src": source,
+            "inputs": [
+                "$(B)/bin/vulkan/musl/include/bits/alltypes.h",
+                "$(B)/bin/vulkan/zlib/zconf.h",
+            ],
+        }
+        for source in vendorPaths(
+            f"{vulkan_root}/zlib",
+            [
+                "adler32.c",
+                "compress.c",
+                "crc32.c",
+                "deflate.c",
+                "gzclose.c",
+                "gzlib.c",
+                "gzread.c",
+                "gzwrite.c",
+                "inflate.c",
+                "infback.c",
+                "inftrees.c",
+                "inffast.c",
+                "trees.c",
+                "uncompr.c",
+                "zutil.c",
+            ],
+        )
+    ],
+    deps=[*musl_generated, zconf],
     cflags=[*c_runtime_flags, "-w"],
     cppflags=["-DHAVE_UNISTD_H=1"],
     output="$(B)/bin/vulkan/lib/libz.a",
