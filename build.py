@@ -412,29 +412,44 @@ zlib = library(
     output="$(B)/bin/vulkan/lib/libz.a",
 )
 
+pnglibconf_path = "$(B)/bin/vulkan/png/pnglibconf.h"
+pnglibconf = command(
+    name="vulkan_pnglibconf",
+    inputs=[f"{vulkan_root}/png/scripts/pnglibconf.h.prebuilt"],
+    outputs=[pnglibconf_path],
+    cmd=[
+        "cp",
+        f"{vulkan_root}/png/scripts/pnglibconf.h.prebuilt",
+        pnglibconf_path,
+    ],
+)
+
 png = library(
     name="vulkan_png",
-    srcs=vendorPaths(
-        f"{vulkan_root}/png",
-        [
-            "png.c",
-            "pngerror.c",
-            "pngget.c",
-            "pngmem.c",
-            "pngpread.c",
-            "pngread.c",
-            "pngrio.c",
-            "pngrtran.c",
-            "pngrutil.c",
-            "pngset.c",
-            "pngtrans.c",
-            "pngwio.c",
-            "pngwrite.c",
-            "pngwtran.c",
-            "pngwutil.c",
-        ],
-    ),
-    deps=musl_generated,
+    srcs=[
+        {"src": source, "inputs": [pnglibconf_path]}
+        for source in vendorPaths(
+            f"{vulkan_root}/png",
+            [
+                "png.c",
+                "pngerror.c",
+                "pngget.c",
+                "pngmem.c",
+                "pngpread.c",
+                "pngread.c",
+                "pngrio.c",
+                "pngrtran.c",
+                "pngrutil.c",
+                "pngset.c",
+                "pngtrans.c",
+                "pngwio.c",
+                "pngwrite.c",
+                "pngwtran.c",
+                "pngwutil.c",
+            ],
+        )
+    ],
+    deps=[*musl_generated, pnglibconf],
     cflags=[*c_runtime_flags, "-w"],
     output="$(B)/bin/vulkan/lib/libpng.a",
 )
@@ -481,9 +496,12 @@ vulkan_app = library(
     name="vulkan_app",
     srcs=[
         f"{vulkan_root}/host_symbols.cpp",
-        f"{vulkan_root}/main.cpp",
+        {
+            "src": f"{vulkan_root}/main.cpp",
+            "inputs": [pnglibconf_path],
+        },
     ],
-    deps=musl_generated,
+    deps=[*musl_generated, pnglibconf],
     cflags=c_runtime_flags,
     cxxflags=cxx_runtime_flags,
     output="$(B)/bin/vulkan/lib/libvulkan_app.a",

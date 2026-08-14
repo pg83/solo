@@ -9,6 +9,7 @@
 #ifndef _LIBCPP___BIT_COUNTL_H
 #define _LIBCPP___BIT_COUNTL_H
 
+#include <__bit/rotate.h>
 #include <__config>
 #include <__type_traits/integer_traits.h>
 #include <limits>
@@ -22,10 +23,60 @@ _LIBCPP_PUSH_MACROS
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
+#if !__has_builtin(__builtin_clzg)
+
+_LIBCPP_NODISCARD inline _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR int __libcpp_clz(unsigned __x) _NOEXCEPT {
+  return __builtin_clz(__x);
+}
+
+_LIBCPP_NODISCARD inline _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR int __libcpp_clz(unsigned long __x) _NOEXCEPT {
+  return __builtin_clzl(__x);
+}
+
+_LIBCPP_NODISCARD inline _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR int __libcpp_clz(unsigned long long __x) _NOEXCEPT {
+  return __builtin_clzll(__x);
+}
+
+#  ifndef _LIBCPP_HAS_NO_INT128
+inline _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR int __libcpp_clz(__uint128_t __x) _NOEXCEPT {
+  return ((__x >> 64) == 0) ? (64 + __builtin_clzll(static_cast<unsigned long long>(__x)))
+                            : __builtin_clzll(static_cast<unsigned long long>(__x >> 64));
+}
+#  endif
+
+#endif
+
 template <class _Tp>
 _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX14 int __countl_zero(_Tp __t) _NOEXCEPT {
   static_assert(__is_unsigned_integer_v<_Tp>, "__countl_zero requires an unsigned integer type");
+#if __has_builtin(__builtin_clzg)
   return __builtin_clzg(__t, numeric_limits<_Tp>::digits);
+#else
+  if (__t == 0)
+    return numeric_limits<_Tp>::digits;
+
+  if (sizeof(_Tp) <= sizeof(unsigned int))
+    return std::__libcpp_clz(static_cast<unsigned int>(__t)) -
+           (numeric_limits<unsigned int>::digits - numeric_limits<_Tp>::digits);
+  else if (sizeof(_Tp) <= sizeof(unsigned long))
+    return std::__libcpp_clz(static_cast<unsigned long>(__t)) -
+           (numeric_limits<unsigned long>::digits - numeric_limits<_Tp>::digits);
+  else if (sizeof(_Tp) <= sizeof(unsigned long long))
+    return std::__libcpp_clz(static_cast<unsigned long long>(__t)) -
+           (numeric_limits<unsigned long long>::digits - numeric_limits<_Tp>::digits);
+  else {
+    int __ret                      = 0;
+    int __iter                     = 0;
+    const unsigned int __ulldigits = numeric_limits<unsigned long long>::digits;
+    while (true) {
+      __t = std::__rotl(__t, __ulldigits);
+      if ((__iter = std::__countl_zero(static_cast<unsigned long long>(__t))) != __ulldigits)
+        break;
+      __ret += __iter;
+    }
+    return __ret + __iter;
+  }
+#endif
 }
 
 #if _LIBCPP_STD_VER >= 20
