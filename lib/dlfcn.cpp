@@ -116,13 +116,13 @@ namespace {
             return nullptr;
         }
 
-        inline void registar(const char* lib, const char* symbol, void* ptr) noexcept {
+        inline void registar(const char* lib, const char* symbol, void* ptr) {
             DBG("register " << lib << ", " << symbol);
 
             (*this)[lib][symbol] = ptr;
         }
 
-        static inline Handles* instance() noexcept {
+        static inline Handles* instance() {
             static Handles* h = new Handles();
 
             return h;
