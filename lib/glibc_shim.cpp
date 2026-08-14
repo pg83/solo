@@ -1354,6 +1354,7 @@ static const ShGlibcSymbol sh_glibc_symbols[] = {
     SH_FUNCTION("sigaction", "GLIBC_2.2.5", sigaction),
     SH_FUNCTION("nl_langinfo", "GLIBC_2.2.5", nl_langinfo),
     SH_FUNCTION("wctob", "GLIBC_2.2.5", wctob),
+    SH_FUNCTION("btowc", "GLIBC_2.2.5", btowc),
     SH_FUNCTION("getauxval", "GLIBC_2.16", getauxval),
     SH_FUNCTION("__wcrtomb_chk", "GLIBC_2.4", sh_wcrtomb_chk),
     SH_FUNCTION("__ctype_b_loc", "GLIBC_2.3", sh_ctype_b_loc),
