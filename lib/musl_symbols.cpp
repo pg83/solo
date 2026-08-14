@@ -11,39 +11,12 @@ extern "C" {
     extern void* _IO_putc;
     extern void* _IO_putc_unlocked;
     extern void* ___environ;
-    extern void* ___errno_location;
-    extern void* __abort_lock;
     extern void* __acquire_ptc;
     extern void* __aio_atfork;
-    extern void* __aio_close;
-    extern void* __aio_fut;
-    extern void* __aligned_alloc_replaced;
-    extern void* __asctime_r;
     extern void* __assert_fail;
-    extern void* __at_quick_exit_lockptr;
-    extern void* __atexit_lockptr;
-    extern void* __block_all_sigs;
-    extern void* __block_app_sigs;
-    extern void* __bump_lockptr;
-    extern void* __c_dot_utf8;
-    extern void* __c_dot_utf8_locale;
-    extern void* __c_locale;
-    extern void* __cancel;
-    extern void* __clock_gettime;
-    extern void* __clock_nanosleep;
-    extern void* __clone;
-    extern void* __convert_scm_timestamps;
-    extern void* __copy_tls;
-    extern void* __cos;
-    extern void* __cosdf;
-    extern void* __cosl;
-    extern void* __cp_begin;
-    extern void* __cp_cancel;
-    extern void* __cp_end;
     extern void* __crypt_blowfish;
     extern void* __crypt_des;
     extern void* __crypt_md5;
-    extern void* __crypt_r;
     extern void* __crypt_sha256;
     extern void* __crypt_sha512;
     extern void* __ctype_b_loc;
@@ -53,38 +26,14 @@ extern "C" {
     extern void* __cxa_atexit;
     extern void* __cxa_finalize;
     extern void* __daylight;
-    extern void* __default_guardsize;
-    extern void* __default_stacksize;
-    extern void* __des_setkey;
-    extern void* __dl_thread_cleanup;
-    extern void* __dn_expand;
-    extern void* __dns_parse;
-    extern void* __do_cleanup_pop;
-    extern void* __do_cleanup_push;
-    extern void* __do_des;
-    extern void* __do_orphaned_stdio_locks;
-    extern void* __dup3;
     extern void* __duplocale;
-    extern void* __eintr_valid_flag;
-    extern void* __env_rm_add;
     extern void* __environ;
     extern void* __errno_location;
-    extern void* __execvpe;
-    extern void* __exp2f_data;
-    extern void* __exp_data;
-    extern void* __expo2;
-    extern void* __expo2f;
     extern void* __fbufsize;
-    extern void* __fclose_ca;
-    extern void* __fdopen;
-    extern void* __fesetround;
     extern void* __fgetwc_unlocked;
     extern void* __flbf;
-    extern void* __floatscan;
     extern void* __flt_rounds;
     extern void* __fmodeflags;
-    extern void* __fopen_rb_ca;
-    extern void* __fork_handler;
     extern void* __fpclassify;
     extern void* __fpclassifyf;
     extern void* __fpclassifyl;
@@ -97,44 +46,16 @@ extern "C" {
     extern void* __freadptr;
     extern void* __freadptrinc;
     extern void* __freelocale;
-    extern void* __fseeko;
-    extern void* __fseeko_unlocked;
     extern void* __fseterr;
     extern void* __fsetlocking;
-    extern void* __fsmu8;
-    extern void* __fstat;
-    extern void* __fstatat;
-    extern void* __ftello;
-    extern void* __ftello_unlocked;
-    extern void* __funcs_on_exit;
-    extern void* __funcs_on_quick_exit;
-    extern void* __futimesat;
     extern void* __fwritable;
-    extern void* __fwritex;
     extern void* __fwriting;
     extern void* __fxstat;
     extern void* __fxstatat;
-    extern void* __get_handler_set;
-    extern void* __get_locale;
-    extern void* __get_resolv_conf;
-    extern void* __getauxval;
     extern void* __getdelim;
-    extern void* __getgr_a;
-    extern void* __getgrent_a;
-    extern void* __getopt_msg;
-    extern void* __getpw_a;
-    extern void* __getpwent_a;
-    extern void* __gettext_lockptr;
     extern void* __gettextdomain;
-    extern void* __gmtime_r;
     extern void* __h_errno_location;
-    extern void* __hwcap;
-    extern void* __inet_aton;
     extern void* __inhibit_ptc;
-    extern void* __init_libc;
-    extern void* __init_ssp;
-    extern void* __init_tls;
-    extern void* __init_tp;
     extern void* __intscan;
     extern void* __isalnum_l;
     extern void* __isalpha_l;
@@ -173,192 +94,40 @@ extern "C" {
     extern void* __iswupper_l;
     extern void* __iswxdigit_l;
     extern void* __isxdigit_l;
-    extern void* __lctrans;
-    extern void* __lctrans_cur;
-    extern void* __lctrans_impl;
-    extern void* __ldexp_cexp;
-    extern void* __ldexp_cexpf;
-    extern void* __ldso_atfork;
-    extern void* __lgamma_r;
-    extern void* __lgammaf_r;
     extern void* __lgammal_r;
-    extern void* __libc;
-    extern void* __libc_calloc;
     extern void* __libc_current_sigrtmax;
     extern void* __libc_current_sigrtmin;
-    extern void* __libc_exit_fini;
-    extern void* __libc_free;
-    extern void* __libc_malloc;
-    extern void* __libc_malloc_impl;
-    extern void* __libc_realloc;
-    extern void* __libc_sigaction;
-    extern void* __libc_start_init;
     extern void* __libc_start_main;
-    extern void* __libc_version;
-    extern void* __loc_is_allocated;
-    extern void* __locale_lock;
-    extern void* __locale_lockptr;
-    extern void* __localtime_r;
     extern void* __lock;
-    extern void* __lockfile;
-    extern void* __log2_data;
-    extern void* __log2f_data;
-    extern void* __log_data;
-    extern void* __logf_data;
-    extern void* __lookup_ipliteral;
-    extern void* __lookup_name;
-    extern void* __lookup_serv;
-    extern void* __lseek;
-    extern void* __lsysinfo;
     extern void* __lxstat;
-    extern void* __madvise;
-    extern void* __malloc_alloc_meta;
-    extern void* __malloc_allzerop;
     extern void* __malloc_atfork;
-    extern void* __malloc_context;
-    extern void* __malloc_donate;
-    extern void* __malloc_lock;
-    extern void* __malloc_replaced;
-    extern void* __malloc_size_classes;
-    extern void* __map_file;
-    extern void* __math_divzero;
-    extern void* __math_divzerof;
-    extern void* __math_invalid;
-    extern void* __math_invalidf;
-    extern void* __math_invalidl;
-    extern void* __math_oflow;
-    extern void* __math_oflowf;
-    extern void* __math_uflow;
-    extern void* __math_uflowf;
-    extern void* __math_xflow;
-    extern void* __math_xflowf;
-    extern void* __membarrier;
-    extern void* __membarrier_init;
-    extern void* __memcpy_fwd;
-    extern void* __memrchr;
-    extern void* __mkostemps;
-    extern void* __mmap;
     extern void* __mo_lookup;
     extern void* __month_to_secs;
-    extern void* __mprotect;
-    extern void* __mremap;
-    extern void* __munmap;
     extern void* __newlocale;
     extern void* __nl_langinfo;
     extern void* __nl_langinfo_l;
-    extern void* __nscd_query;
-    extern void* __ofl_add;
-    extern void* __ofl_lock;
-    extern void* __ofl_unlock;
     extern void* __optpos;
     extern void* __optreset;
     extern void* __overflow;
-    extern void* __p1evll;
-    extern void* __parsespent;
-    extern void* __pleval;
-    extern void* __polevll;
     extern void* __posix_getopt;
-    extern void* __post_Fork;
-    extern void* __pow_log_data;
-    extern void* __powf_log2_data;
-    extern void* __private_cond_signal;
-    extern void* __procfdname;
     extern void* __progname;
     extern void* __progname_full;
-    extern void* __pthread_cond_timedwait;
-    extern void* __pthread_create;
-    extern void* __pthread_exit;
-    extern void* __pthread_join;
-    extern void* __pthread_key_atfork;
-    extern void* __pthread_key_create;
-    extern void* __pthread_key_delete;
-    extern void* __pthread_mutex_lock;
-    extern void* __pthread_mutex_timedlock;
-    extern void* __pthread_mutex_trylock;
-    extern void* __pthread_mutex_trylock_owner;
-    extern void* __pthread_mutex_unlock;
-    extern void* __pthread_once;
-    extern void* __pthread_once_full;
-    extern void* __pthread_rwlock_rdlock;
-    extern void* __pthread_rwlock_timedrdlock;
-    extern void* __pthread_rwlock_timedwrlock;
-    extern void* __pthread_rwlock_tryrdlock;
-    extern void* __pthread_rwlock_trywrlock;
-    extern void* __pthread_rwlock_unlock;
-    extern void* __pthread_rwlock_wrlock;
-    extern void* __pthread_setcancelstate;
-    extern void* __pthread_testcancel;
-    extern void* __pthread_tsd_main;
-    extern void* __pthread_tsd_run_dtors;
-    extern void* __pthread_tsd_size;
-    extern void* __ptsname_r;
-    extern void* __putenv;
-    extern void* __qsort_r;
-    extern void* __rand48_step;
-    extern void* __randname;
-    extern void* __random_lockptr;
-    extern void* __register_locked_file;
     extern void* __release_ptc;
-    extern void* __rem_pio2;
-    extern void* __rem_pio2_large;
-    extern void* __rem_pio2f;
-    extern void* __rem_pio2l;
-    extern void* __res_mkquery;
     extern void* __res_msend;
-    extern void* __res_msend_rc;
-    extern void* __res_send;
     extern void* __res_state;
-    extern void* __reset_tls;
-    extern void* __restore_rt;
-    extern void* __restore_sigs;
-    extern void* __rsqrt_tab;
-    extern void* __rtnetlink_enumerate;
     extern void* __sched_cpucount;
-    extern void* __secs_to_tm;
-    extern void* __secs_to_zone;
-    extern void* __seed48;
-    extern void* __sem_open_lockptr;
-    extern void* __set_thread_area;
     extern void* __setjmp;
-    extern void* __setxid;
-    extern void* __shgetc;
-    extern void* __shlim;
-    extern void* __shm_mapname;
-    extern void* __sigaction;
     extern void* __signbit;
     extern void* __signbitf;
     extern void* __signbitl;
     extern void* __signgam;
     extern void* __sigsetjmp;
-    extern void* __sigsetjmp_tail;
-    extern void* __sin;
-    extern void* __sindf;
-    extern void* __sinl;
     extern void* __stack_chk_fail;
-    extern void* __stack_chk_fail_local;
     extern void* __stack_chk_guard;
-    extern void* __stderr_FILE;
-    extern void* __stderr_used;
-    extern void* __stdin_FILE;
-    extern void* __stdin_used;
-    extern void* __stdio_close;
     extern void* __stdio_exit;
-    extern void* __stdio_exit_needed;
-    extern void* __stdio_ofl_lockptr;
-    extern void* __stdio_read;
-    extern void* __stdio_seek;
-    extern void* __stdio_write;
-    extern void* __stdout_FILE;
-    extern void* __stdout_used;
-    extern void* __stdout_write;
-    extern void* __stpcpy;
-    extern void* __stpncpy;
     extern void* __strcasecmp_l;
-    extern void* __strchrnul;
     extern void* __strcoll_l;
     extern void* __strerror_l;
-    extern void* __strftime_fmt_1;
-    extern void* __strftime_l;
     extern void* __strncasecmp_l;
     extern void* __strtod_l;
     extern void* __strtof_l;
@@ -370,58 +139,19 @@ extern "C" {
     extern void* __strtoull_internal;
     extern void* __strtoumax_internal;
     extern void* __strxfrm_l;
-    extern void* __synccall;
-    extern void* __syscall_cp;
-    extern void* __syscall_cp_asm;
-    extern void* __syscall_cp_c;
-    extern void* __syscall_ret;
-    extern void* __sysinfo;
-    extern void* __syslog_lockptr;
     extern void* __sysv_signal;
-    extern void* __tan;
-    extern void* __tandf;
-    extern void* __tanl;
-    extern void* __testcancel;
-    extern void* __thread_list_lock;
-    extern void* __timedwait;
-    extern void* __timedwait_cp;
     extern void* __timezone;
-    extern void* __timezone_lockptr;
-    extern void* __tl_lock;
-    extern void* __tl_sync;
-    extern void* __tl_unlock;
     extern void* __tls_get_addr;
-    extern void* __tlsdesc_dynamic;
-    extern void* __tlsdesc_static;
-    extern void* __tm_to_secs;
-    extern void* __tm_to_tzname;
     extern void* __tolower_l;
-    extern void* __toread;
-    extern void* __toread_needs_stdio_exit;
     extern void* __toupper_l;
     extern void* __towctrans_l;
     extern void* __towlower_l;
-    extern void* __towrite;
-    extern void* __towrite_needs_stdio_exit;
     extern void* __towupper_l;
-    extern void* __tre_mem_alloc_impl;
-    extern void* __tre_mem_destroy;
-    extern void* __tre_mem_new_impl;
-    extern void* __tsearch_balance;
     extern void* __tzname;
     extern void* __uflow;
-    extern void* __unlist_locked_file;
     extern void* __unlock;
-    extern void* __unlockfile;
     extern void* __unmapself;
     extern void* __uselocale;
-    extern void* __utc;
-    extern void* __vdsosym;
-    extern void* __vm_lock;
-    extern void* __vm_unlock;
-    extern void* __vm_wait;
-    extern void* __vmlock_lockptr;
-    extern void* __wait;
     extern void* __wcscoll_l;
     extern void* __wcsftime_l;
     extern void* __wcsxfrm_l;
@@ -1941,39 +1671,12 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"_IO_putc", &_IO_putc},
     {"_IO_putc_unlocked", &_IO_putc_unlocked},
     {"___environ", &___environ},
-    {"___errno_location", &___errno_location},
-    {"__abort_lock", &__abort_lock},
     {"__acquire_ptc", &__acquire_ptc},
     {"__aio_atfork", &__aio_atfork},
-    {"__aio_close", &__aio_close},
-    {"__aio_fut", &__aio_fut},
-    {"__aligned_alloc_replaced", &__aligned_alloc_replaced},
-    {"__asctime_r", &__asctime_r},
     {"__assert_fail", &__assert_fail},
-    {"__at_quick_exit_lockptr", &__at_quick_exit_lockptr},
-    {"__atexit_lockptr", &__atexit_lockptr},
-    {"__block_all_sigs", &__block_all_sigs},
-    {"__block_app_sigs", &__block_app_sigs},
-    {"__bump_lockptr", &__bump_lockptr},
-    {"__c_dot_utf8", &__c_dot_utf8},
-    {"__c_dot_utf8_locale", &__c_dot_utf8_locale},
-    {"__c_locale", &__c_locale},
-    {"__cancel", &__cancel},
-    {"__clock_gettime", &__clock_gettime},
-    {"__clock_nanosleep", &__clock_nanosleep},
-    {"__clone", &__clone},
-    {"__convert_scm_timestamps", &__convert_scm_timestamps},
-    {"__copy_tls", &__copy_tls},
-    {"__cos", &__cos},
-    {"__cosdf", &__cosdf},
-    {"__cosl", &__cosl},
-    {"__cp_begin", &__cp_begin},
-    {"__cp_cancel", &__cp_cancel},
-    {"__cp_end", &__cp_end},
     {"__crypt_blowfish", &__crypt_blowfish},
     {"__crypt_des", &__crypt_des},
     {"__crypt_md5", &__crypt_md5},
-    {"__crypt_r", &__crypt_r},
     {"__crypt_sha256", &__crypt_sha256},
     {"__crypt_sha512", &__crypt_sha512},
     {"__ctype_b_loc", &__ctype_b_loc},
@@ -1983,38 +1686,14 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"__cxa_atexit", &__cxa_atexit},
     {"__cxa_finalize", &__cxa_finalize},
     {"__daylight", &__daylight},
-    {"__default_guardsize", &__default_guardsize},
-    {"__default_stacksize", &__default_stacksize},
-    {"__des_setkey", &__des_setkey},
-    {"__dl_thread_cleanup", &__dl_thread_cleanup},
-    {"__dn_expand", &__dn_expand},
-    {"__dns_parse", &__dns_parse},
-    {"__do_cleanup_pop", &__do_cleanup_pop},
-    {"__do_cleanup_push", &__do_cleanup_push},
-    {"__do_des", &__do_des},
-    {"__do_orphaned_stdio_locks", &__do_orphaned_stdio_locks},
-    {"__dup3", &__dup3},
     {"__duplocale", &__duplocale},
-    {"__eintr_valid_flag", &__eintr_valid_flag},
-    {"__env_rm_add", &__env_rm_add},
     {"__environ", &__environ},
     {"__errno_location", &__errno_location},
-    {"__execvpe", &__execvpe},
-    {"__exp2f_data", &__exp2f_data},
-    {"__exp_data", &__exp_data},
-    {"__expo2", &__expo2},
-    {"__expo2f", &__expo2f},
     {"__fbufsize", &__fbufsize},
-    {"__fclose_ca", &__fclose_ca},
-    {"__fdopen", &__fdopen},
-    {"__fesetround", &__fesetround},
     {"__fgetwc_unlocked", &__fgetwc_unlocked},
     {"__flbf", &__flbf},
-    {"__floatscan", &__floatscan},
     {"__flt_rounds", &__flt_rounds},
     {"__fmodeflags", &__fmodeflags},
-    {"__fopen_rb_ca", &__fopen_rb_ca},
-    {"__fork_handler", &__fork_handler},
     {"__fpclassify", &__fpclassify},
     {"__fpclassifyf", &__fpclassifyf},
     {"__fpclassifyl", &__fpclassifyl},
@@ -2027,44 +1706,16 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"__freadptr", &__freadptr},
     {"__freadptrinc", &__freadptrinc},
     {"__freelocale", &__freelocale},
-    {"__fseeko", &__fseeko},
-    {"__fseeko_unlocked", &__fseeko_unlocked},
     {"__fseterr", &__fseterr},
     {"__fsetlocking", &__fsetlocking},
-    {"__fsmu8", &__fsmu8},
-    {"__fstat", &__fstat},
-    {"__fstatat", &__fstatat},
-    {"__ftello", &__ftello},
-    {"__ftello_unlocked", &__ftello_unlocked},
-    {"__funcs_on_exit", &__funcs_on_exit},
-    {"__funcs_on_quick_exit", &__funcs_on_quick_exit},
-    {"__futimesat", &__futimesat},
     {"__fwritable", &__fwritable},
-    {"__fwritex", &__fwritex},
     {"__fwriting", &__fwriting},
     {"__fxstat", &__fxstat},
     {"__fxstatat", &__fxstatat},
-    {"__get_handler_set", &__get_handler_set},
-    {"__get_locale", &__get_locale},
-    {"__get_resolv_conf", &__get_resolv_conf},
-    {"__getauxval", &__getauxval},
     {"__getdelim", &__getdelim},
-    {"__getgr_a", &__getgr_a},
-    {"__getgrent_a", &__getgrent_a},
-    {"__getopt_msg", &__getopt_msg},
-    {"__getpw_a", &__getpw_a},
-    {"__getpwent_a", &__getpwent_a},
-    {"__gettext_lockptr", &__gettext_lockptr},
     {"__gettextdomain", &__gettextdomain},
-    {"__gmtime_r", &__gmtime_r},
     {"__h_errno_location", &__h_errno_location},
-    {"__hwcap", &__hwcap},
-    {"__inet_aton", &__inet_aton},
     {"__inhibit_ptc", &__inhibit_ptc},
-    {"__init_libc", &__init_libc},
-    {"__init_ssp", &__init_ssp},
-    {"__init_tls", &__init_tls},
-    {"__init_tp", &__init_tp},
     {"__intscan", &__intscan},
     {"__isalnum_l", &__isalnum_l},
     {"__isalpha_l", &__isalpha_l},
@@ -2103,192 +1754,40 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"__iswupper_l", &__iswupper_l},
     {"__iswxdigit_l", &__iswxdigit_l},
     {"__isxdigit_l", &__isxdigit_l},
-    {"__lctrans", &__lctrans},
-    {"__lctrans_cur", &__lctrans_cur},
-    {"__lctrans_impl", &__lctrans_impl},
-    {"__ldexp_cexp", &__ldexp_cexp},
-    {"__ldexp_cexpf", &__ldexp_cexpf},
-    {"__ldso_atfork", &__ldso_atfork},
-    {"__lgamma_r", &__lgamma_r},
-    {"__lgammaf_r", &__lgammaf_r},
     {"__lgammal_r", &__lgammal_r},
-    {"__libc", &__libc},
-    {"__libc_calloc", &__libc_calloc},
     {"__libc_current_sigrtmax", &__libc_current_sigrtmax},
     {"__libc_current_sigrtmin", &__libc_current_sigrtmin},
-    {"__libc_exit_fini", &__libc_exit_fini},
-    {"__libc_free", &__libc_free},
-    {"__libc_malloc", &__libc_malloc},
-    {"__libc_malloc_impl", &__libc_malloc_impl},
-    {"__libc_realloc", &__libc_realloc},
-    {"__libc_sigaction", &__libc_sigaction},
-    {"__libc_start_init", &__libc_start_init},
     {"__libc_start_main", &__libc_start_main},
-    {"__libc_version", &__libc_version},
-    {"__loc_is_allocated", &__loc_is_allocated},
-    {"__locale_lock", &__locale_lock},
-    {"__locale_lockptr", &__locale_lockptr},
-    {"__localtime_r", &__localtime_r},
     {"__lock", &__lock},
-    {"__lockfile", &__lockfile},
-    {"__log2_data", &__log2_data},
-    {"__log2f_data", &__log2f_data},
-    {"__log_data", &__log_data},
-    {"__logf_data", &__logf_data},
-    {"__lookup_ipliteral", &__lookup_ipliteral},
-    {"__lookup_name", &__lookup_name},
-    {"__lookup_serv", &__lookup_serv},
-    {"__lseek", &__lseek},
-    {"__lsysinfo", &__lsysinfo},
     {"__lxstat", &__lxstat},
-    {"__madvise", &__madvise},
-    {"__malloc_alloc_meta", &__malloc_alloc_meta},
-    {"__malloc_allzerop", &__malloc_allzerop},
     {"__malloc_atfork", &__malloc_atfork},
-    {"__malloc_context", &__malloc_context},
-    {"__malloc_donate", &__malloc_donate},
-    {"__malloc_lock", &__malloc_lock},
-    {"__malloc_replaced", &__malloc_replaced},
-    {"__malloc_size_classes", &__malloc_size_classes},
-    {"__map_file", &__map_file},
-    {"__math_divzero", &__math_divzero},
-    {"__math_divzerof", &__math_divzerof},
-    {"__math_invalid", &__math_invalid},
-    {"__math_invalidf", &__math_invalidf},
-    {"__math_invalidl", &__math_invalidl},
-    {"__math_oflow", &__math_oflow},
-    {"__math_oflowf", &__math_oflowf},
-    {"__math_uflow", &__math_uflow},
-    {"__math_uflowf", &__math_uflowf},
-    {"__math_xflow", &__math_xflow},
-    {"__math_xflowf", &__math_xflowf},
-    {"__membarrier", &__membarrier},
-    {"__membarrier_init", &__membarrier_init},
-    {"__memcpy_fwd", &__memcpy_fwd},
-    {"__memrchr", &__memrchr},
-    {"__mkostemps", &__mkostemps},
-    {"__mmap", &__mmap},
     {"__mo_lookup", &__mo_lookup},
     {"__month_to_secs", &__month_to_secs},
-    {"__mprotect", &__mprotect},
-    {"__mremap", &__mremap},
-    {"__munmap", &__munmap},
     {"__newlocale", &__newlocale},
     {"__nl_langinfo", &__nl_langinfo},
     {"__nl_langinfo_l", &__nl_langinfo_l},
-    {"__nscd_query", &__nscd_query},
-    {"__ofl_add", &__ofl_add},
-    {"__ofl_lock", &__ofl_lock},
-    {"__ofl_unlock", &__ofl_unlock},
     {"__optpos", &__optpos},
     {"__optreset", &__optreset},
     {"__overflow", &__overflow},
-    {"__p1evll", &__p1evll},
-    {"__parsespent", &__parsespent},
-    {"__pleval", &__pleval},
-    {"__polevll", &__polevll},
     {"__posix_getopt", &__posix_getopt},
-    {"__post_Fork", &__post_Fork},
-    {"__pow_log_data", &__pow_log_data},
-    {"__powf_log2_data", &__powf_log2_data},
-    {"__private_cond_signal", &__private_cond_signal},
-    {"__procfdname", &__procfdname},
     {"__progname", &__progname},
     {"__progname_full", &__progname_full},
-    {"__pthread_cond_timedwait", &__pthread_cond_timedwait},
-    {"__pthread_create", &__pthread_create},
-    {"__pthread_exit", &__pthread_exit},
-    {"__pthread_join", &__pthread_join},
-    {"__pthread_key_atfork", &__pthread_key_atfork},
-    {"__pthread_key_create", &__pthread_key_create},
-    {"__pthread_key_delete", &__pthread_key_delete},
-    {"__pthread_mutex_lock", &__pthread_mutex_lock},
-    {"__pthread_mutex_timedlock", &__pthread_mutex_timedlock},
-    {"__pthread_mutex_trylock", &__pthread_mutex_trylock},
-    {"__pthread_mutex_trylock_owner", &__pthread_mutex_trylock_owner},
-    {"__pthread_mutex_unlock", &__pthread_mutex_unlock},
-    {"__pthread_once", &__pthread_once},
-    {"__pthread_once_full", &__pthread_once_full},
-    {"__pthread_rwlock_rdlock", &__pthread_rwlock_rdlock},
-    {"__pthread_rwlock_timedrdlock", &__pthread_rwlock_timedrdlock},
-    {"__pthread_rwlock_timedwrlock", &__pthread_rwlock_timedwrlock},
-    {"__pthread_rwlock_tryrdlock", &__pthread_rwlock_tryrdlock},
-    {"__pthread_rwlock_trywrlock", &__pthread_rwlock_trywrlock},
-    {"__pthread_rwlock_unlock", &__pthread_rwlock_unlock},
-    {"__pthread_rwlock_wrlock", &__pthread_rwlock_wrlock},
-    {"__pthread_setcancelstate", &__pthread_setcancelstate},
-    {"__pthread_testcancel", &__pthread_testcancel},
-    {"__pthread_tsd_main", &__pthread_tsd_main},
-    {"__pthread_tsd_run_dtors", &__pthread_tsd_run_dtors},
-    {"__pthread_tsd_size", &__pthread_tsd_size},
-    {"__ptsname_r", &__ptsname_r},
-    {"__putenv", &__putenv},
-    {"__qsort_r", &__qsort_r},
-    {"__rand48_step", &__rand48_step},
-    {"__randname", &__randname},
-    {"__random_lockptr", &__random_lockptr},
-    {"__register_locked_file", &__register_locked_file},
     {"__release_ptc", &__release_ptc},
-    {"__rem_pio2", &__rem_pio2},
-    {"__rem_pio2_large", &__rem_pio2_large},
-    {"__rem_pio2f", &__rem_pio2f},
-    {"__rem_pio2l", &__rem_pio2l},
-    {"__res_mkquery", &__res_mkquery},
     {"__res_msend", &__res_msend},
-    {"__res_msend_rc", &__res_msend_rc},
-    {"__res_send", &__res_send},
     {"__res_state", &__res_state},
-    {"__reset_tls", &__reset_tls},
-    {"__restore_rt", &__restore_rt},
-    {"__restore_sigs", &__restore_sigs},
-    {"__rsqrt_tab", &__rsqrt_tab},
-    {"__rtnetlink_enumerate", &__rtnetlink_enumerate},
     {"__sched_cpucount", &__sched_cpucount},
-    {"__secs_to_tm", &__secs_to_tm},
-    {"__secs_to_zone", &__secs_to_zone},
-    {"__seed48", &__seed48},
-    {"__sem_open_lockptr", &__sem_open_lockptr},
-    {"__set_thread_area", &__set_thread_area},
     {"__setjmp", &__setjmp},
-    {"__setxid", &__setxid},
-    {"__shgetc", &__shgetc},
-    {"__shlim", &__shlim},
-    {"__shm_mapname", &__shm_mapname},
-    {"__sigaction", &__sigaction},
     {"__signbit", &__signbit},
     {"__signbitf", &__signbitf},
     {"__signbitl", &__signbitl},
     {"__signgam", &__signgam},
     {"__sigsetjmp", &__sigsetjmp},
-    {"__sigsetjmp_tail", &__sigsetjmp_tail},
-    {"__sin", &__sin},
-    {"__sindf", &__sindf},
-    {"__sinl", &__sinl},
     {"__stack_chk_fail", &__stack_chk_fail},
-    {"__stack_chk_fail_local", &__stack_chk_fail_local},
     {"__stack_chk_guard", &__stack_chk_guard},
-    {"__stderr_FILE", &__stderr_FILE},
-    {"__stderr_used", &__stderr_used},
-    {"__stdin_FILE", &__stdin_FILE},
-    {"__stdin_used", &__stdin_used},
-    {"__stdio_close", &__stdio_close},
     {"__stdio_exit", &__stdio_exit},
-    {"__stdio_exit_needed", &__stdio_exit_needed},
-    {"__stdio_ofl_lockptr", &__stdio_ofl_lockptr},
-    {"__stdio_read", &__stdio_read},
-    {"__stdio_seek", &__stdio_seek},
-    {"__stdio_write", &__stdio_write},
-    {"__stdout_FILE", &__stdout_FILE},
-    {"__stdout_used", &__stdout_used},
-    {"__stdout_write", &__stdout_write},
-    {"__stpcpy", &__stpcpy},
-    {"__stpncpy", &__stpncpy},
     {"__strcasecmp_l", &__strcasecmp_l},
-    {"__strchrnul", &__strchrnul},
     {"__strcoll_l", &__strcoll_l},
     {"__strerror_l", &__strerror_l},
-    {"__strftime_fmt_1", &__strftime_fmt_1},
-    {"__strftime_l", &__strftime_l},
     {"__strncasecmp_l", &__strncasecmp_l},
     {"__strtod_l", &__strtod_l},
     {"__strtof_l", &__strtof_l},
@@ -2300,58 +1799,19 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"__strtoull_internal", &__strtoull_internal},
     {"__strtoumax_internal", &__strtoumax_internal},
     {"__strxfrm_l", &__strxfrm_l},
-    {"__synccall", &__synccall},
-    {"__syscall_cp", &__syscall_cp},
-    {"__syscall_cp_asm", &__syscall_cp_asm},
-    {"__syscall_cp_c", &__syscall_cp_c},
-    {"__syscall_ret", &__syscall_ret},
-    {"__sysinfo", &__sysinfo},
-    {"__syslog_lockptr", &__syslog_lockptr},
     {"__sysv_signal", &__sysv_signal},
-    {"__tan", &__tan},
-    {"__tandf", &__tandf},
-    {"__tanl", &__tanl},
-    {"__testcancel", &__testcancel},
-    {"__thread_list_lock", &__thread_list_lock},
-    {"__timedwait", &__timedwait},
-    {"__timedwait_cp", &__timedwait_cp},
     {"__timezone", &__timezone},
-    {"__timezone_lockptr", &__timezone_lockptr},
-    {"__tl_lock", &__tl_lock},
-    {"__tl_sync", &__tl_sync},
-    {"__tl_unlock", &__tl_unlock},
     {"__tls_get_addr", &__tls_get_addr},
-    {"__tlsdesc_dynamic", &__tlsdesc_dynamic},
-    {"__tlsdesc_static", &__tlsdesc_static},
-    {"__tm_to_secs", &__tm_to_secs},
-    {"__tm_to_tzname", &__tm_to_tzname},
     {"__tolower_l", &__tolower_l},
-    {"__toread", &__toread},
-    {"__toread_needs_stdio_exit", &__toread_needs_stdio_exit},
     {"__toupper_l", &__toupper_l},
     {"__towctrans_l", &__towctrans_l},
     {"__towlower_l", &__towlower_l},
-    {"__towrite", &__towrite},
-    {"__towrite_needs_stdio_exit", &__towrite_needs_stdio_exit},
     {"__towupper_l", &__towupper_l},
-    {"__tre_mem_alloc_impl", &__tre_mem_alloc_impl},
-    {"__tre_mem_destroy", &__tre_mem_destroy},
-    {"__tre_mem_new_impl", &__tre_mem_new_impl},
-    {"__tsearch_balance", &__tsearch_balance},
     {"__tzname", &__tzname},
     {"__uflow", &__uflow},
-    {"__unlist_locked_file", &__unlist_locked_file},
     {"__unlock", &__unlock},
-    {"__unlockfile", &__unlockfile},
     {"__unmapself", &__unmapself},
     {"__uselocale", &__uselocale},
-    {"__utc", &__utc},
-    {"__vdsosym", &__vdsosym},
-    {"__vm_lock", &__vm_lock},
-    {"__vm_unlock", &__vm_unlock},
-    {"__vm_wait", &__vm_wait},
-    {"__vmlock_lockptr", &__vmlock_lockptr},
-    {"__wait", &__wait},
     {"__wcscoll_l", &__wcscoll_l},
     {"__wcsftime_l", &__wcsftime_l},
     {"__wcsxfrm_l", &__wcsxfrm_l},
@@ -3862,4 +3322,3 @@ const MuslSymbol MUSL_SYMBOLS[] = {
 };
 
 const size_t MUSL_SYMBOL_COUNT = sizeof(MUSL_SYMBOLS) / sizeof(MUSL_SYMBOLS[0]);
-

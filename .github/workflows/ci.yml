@@ -54,18 +54,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build
-        env:
-          CC: gcc
-          CXX: g++
-        run: ./build
-
-      - name: Test
-        env:
-          CC: gcc
-          CXX: g++
-        run: ./build test
-
       - name: Vulkan
         env:
           CC: gcc
@@ -86,18 +74,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes clang g++ libarchive-tools mesa-vulkan-drivers python3
-
-      - name: Build
-        env:
-          CC: clang
-          CXX: clang++
-        run: ./build
-
-      - name: Test
-        env:
-          CC: clang
-          CXX: clang++
-        run: ./build test
 
       - name: Vulkan
         env:

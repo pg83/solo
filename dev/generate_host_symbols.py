@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -11,15 +10,16 @@ from pathlib import Path
 
 def archive_symbols(archive: Path) -> set[str]:
     output = subprocess.check_output(
-        ["llvm-nm", "--defined-only", "--extern-only", str(archive)],
+        ["llvm-readelf", "--symbols", str(archive)],
         text=True,
         stderr=subprocess.DEVNULL,
     )
     result: set[str] = set()
     for line in output.splitlines():
-        match = re.match(r"^[0-9a-fA-F]+\s+[A-Za-z]\s+(.+)$", line)
-        if match:
-            result.add(match.group(1))
+        fields = line.split()
+
+        if len(fields) == 8 and fields[0].endswith(":") and fields[4] in ("GLOBAL", "WEAK") and fields[5] in ("DEFAULT", "PROTECTED") and fields[6] != "UND":
+            result.add(fields[7])
     return result
 
 
@@ -60,7 +60,7 @@ def main() -> None:
     output = Path(sys.argv[2])
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines))
-    print(f"generated {len(direct)} musl factory providers in {output}")
+    print(f"generated {len(direct)} musl identity providers in {output}")
 
 
 if __name__ == "__main__":
