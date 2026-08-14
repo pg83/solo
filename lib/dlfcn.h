@@ -1,6 +1,16 @@
 #pragma once
 
 // interface
+#undef RTLD_LAZY
+#undef RTLD_NOW
+#undef RTLD_GLOBAL
+#undef RTLD_LOCAL
+#undef RTLD_NODELETE
+#undef RTLD_NOLOAD
+#undef RTLD_DEEPBIND
+#undef RTLD_NEXT
+#undef RTLD_DEFAULT
+
 #define RTLD_LAZY 1
 #define RTLD_NOW 2
 #define RTLD_GLOBAL 4
@@ -24,12 +34,14 @@
 extern "C" {
 #endif
 
+#if !defined(_DLFCN_H)
     typedef struct {
         const char* dli_fname;
         void* dli_fbase;
         const char* dli_sname;
         void* dli_saddr;
     } Dl_info;
+#endif
 
     void* stub_dlsym(void* handle, const char* symbol);
     void* stub_dlopen(const char* filename, int flags);

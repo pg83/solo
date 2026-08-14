@@ -565,6 +565,8 @@ namespace {
                 std::string_view("/lib"),
                 std::string_view("/usr/lib64"),
                 std::string_view("/lib64"),
+                std::string_view("/usr/lib/x86_64-linux-gnu"),
+                std::string_view("/lib/x86_64-linux-gnu"),
             };
 
             for (auto directory : systemDirectories) {

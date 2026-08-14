@@ -1,3 +1,5 @@
+import os
+
 import build
 
 
@@ -11,6 +13,8 @@ build.cflags += [
 build.cxxflags += [
     "-std=c++20",
 ]
+
+cc = os.environ.get("CC", "cc")
 
 dlfcn = library(
     srcs=[
@@ -62,503 +66,517 @@ def muslSources():
     ] + architecture
 
 
-if build.target.startswith("x86_64"):
-    vulkan_root = "$(S)/bin/vulkan"
-    musl_root = f"{vulkan_root}/musl"
-    llvm_root = f"{vulkan_root}/llvm"
-    libcxx_root = f"{llvm_root}/libcxx"
-    libcxxabi_root = f"{llvm_root}/libcxxabi"
-    libunwind_root = f"{llvm_root}/libunwind"
-    compiler_rt_root = f"{llvm_root}/compiler-rt/builtins"
-    vulkan_headers_root = f"{vulkan_root}/vulkan/headers/include"
-    vulkan_loader_root = f"{vulkan_root}/vulkan/loader/loader"
+vulkan_root = "$(S)/bin/vulkan"
+musl_root = f"{vulkan_root}/musl"
+llvm_root = f"{vulkan_root}/llvm"
+libcxx_root = f"{llvm_root}/libcxx"
+libcxxabi_root = f"{llvm_root}/libcxxabi"
+libunwind_root = f"{llvm_root}/libunwind"
+compiler_rt_root = f"{llvm_root}/compiler-rt/builtins"
+vulkan_headers_root = f"{vulkan_root}/vulkan/headers/include"
+vulkan_loader_root = f"{vulkan_root}/vulkan/loader/loader"
 
-    musl_alltypes = command(
-        inputs=[
-            f"{vulkan_root}/generate.py",
-            f"{musl_root}/arch/x86_64/bits/alltypes.h.in",
-            f"{musl_root}/include/alltypes.h.in",
-        ],
-        outputs=["$(B)/bin/vulkan/musl/include/bits/alltypes.h"],
-        cmd=[
-            "python3",
-            f"{vulkan_root}/generate.py",
-            "alltypes",
-            "$(B)/bin/vulkan/musl/include/bits/alltypes.h",
-            f"{musl_root}/arch/x86_64/bits/alltypes.h.in",
-            f"{musl_root}/include/alltypes.h.in",
-        ],
-    )
+musl_alltypes = command(
+    inputs=[
+        f"{vulkan_root}/generate.py",
+        f"{musl_root}/arch/x86_64/bits/alltypes.h.in",
+        f"{musl_root}/include/alltypes.h.in",
+    ],
+    outputs=["$(B)/bin/vulkan/musl/include/bits/alltypes.h"],
+    cmd=[
+        "python3",
+        f"{vulkan_root}/generate.py",
+        "alltypes",
+        "$(B)/bin/vulkan/musl/include/bits/alltypes.h",
+        f"{musl_root}/arch/x86_64/bits/alltypes.h.in",
+        f"{musl_root}/include/alltypes.h.in",
+    ],
+)
 
-    musl_syscall = command(
-        inputs=[
-            f"{vulkan_root}/generate.py",
-            f"{musl_root}/arch/x86_64/bits/syscall.h.in",
-        ],
-        outputs=["$(B)/bin/vulkan/musl/include/bits/syscall.h"],
-        cmd=[
-            "python3",
-            f"{vulkan_root}/generate.py",
-            "syscall",
-            "$(B)/bin/vulkan/musl/include/bits/syscall.h",
-            f"{musl_root}/arch/x86_64/bits/syscall.h.in",
-        ],
-    )
+musl_syscall = command(
+    inputs=[
+        f"{vulkan_root}/generate.py",
+        f"{musl_root}/arch/x86_64/bits/syscall.h.in",
+    ],
+    outputs=["$(B)/bin/vulkan/musl/include/bits/syscall.h"],
+    cmd=[
+        "python3",
+        f"{vulkan_root}/generate.py",
+        "syscall",
+        "$(B)/bin/vulkan/musl/include/bits/syscall.h",
+        f"{musl_root}/arch/x86_64/bits/syscall.h.in",
+    ],
+)
 
-    musl_version = command(
-        inputs=[f"{vulkan_root}/generate.py", f"{musl_root}/VERSION"],
-        outputs=["$(B)/bin/vulkan/musl/internal/version.h"],
-        cmd=[
-            "python3",
-            f"{vulkan_root}/generate.py",
-            "version",
-            "$(B)/bin/vulkan/musl/internal/version.h",
-            f"{musl_root}/VERSION",
-        ],
-    )
+musl_version = command(
+    inputs=[f"{vulkan_root}/generate.py", f"{musl_root}/VERSION"],
+    outputs=["$(B)/bin/vulkan/musl/internal/version.h"],
+    cmd=[
+        "python3",
+        f"{vulkan_root}/generate.py",
+        "version",
+        "$(B)/bin/vulkan/musl/internal/version.h",
+        f"{musl_root}/VERSION",
+    ],
+)
 
-    musl_generated = [musl_alltypes, musl_syscall, musl_version]
-    target_flags = [
-        "--target=x86_64-linux-musl",
-        "-ffunction-sections",
-        "-fdata-sections",
-        "-fno-stack-protector",
-        "-fno-omit-frame-pointer",
-    ]
-    musl_include_flags = [
-        f"-I{musl_root}/arch/x86_64",
-        f"-I{musl_root}/arch/generic",
-        "-I$(B)/bin/vulkan/musl/include",
-        f"-I{musl_root}/include",
-    ]
-    musl_internal_include_flags = [
-        f"-I{musl_root}/arch/x86_64",
-        f"-I{musl_root}/arch/generic",
-        "-I$(B)/bin/vulkan/musl/internal",
-        f"-I{musl_root}/src/include",
-        f"-I{musl_root}/src/internal",
-        "-I$(B)/bin/vulkan/musl/include",
-        f"-I{musl_root}/include",
-    ]
-    c_runtime_flags = [
-        *target_flags,
-        "-nostdinc",
-    ]
-    cxx_runtime_flags = [
-        "-std=c++23",
-        "-nostdinc++",
-    ]
-    libcxx_include_flags = [
+musl_generated = [musl_alltypes, musl_syscall, musl_version]
+target_flags = [
+    "-ffunction-sections",
+    "-fdata-sections",
+    "-fno-stack-protector",
+    "-fno-omit-frame-pointer",
+]
+musl_include_flags = [
+    f"-I{musl_root}/arch/x86_64",
+    f"-I{musl_root}/arch/generic",
+    "-I$(B)/bin/vulkan/musl/include",
+    f"-I{musl_root}/include",
+]
+musl_internal_include_flags = [
+    f"-I{musl_root}/arch/x86_64",
+    f"-I{musl_root}/arch/generic",
+    "-I$(B)/bin/vulkan/musl/internal",
+    f"-I{musl_root}/src/include",
+    f"-I{musl_root}/src/internal",
+    "-I$(B)/bin/vulkan/musl/include",
+    f"-I{musl_root}/include",
+]
+c_runtime_flags = [
+    *target_flags,
+    "-nostdinc",
+]
+cxx_runtime_flags = [
+    "-std=c++23",
+    "-nostdinc++",
+]
+libcxx_include_flags = [
+    f"-I{libcxx_root}/include",
+    f"-I{libcxxabi_root}/include",
+    f"-I{libunwind_root}/include",
+]
+
+musl = library(
+    name="vulkan_musl",
+    srcs=muslSources(),
+    deps=musl_generated,
+    cflags=[
+        *c_runtime_flags,
+        "-std=c99",
+        "-ffreestanding",
+        "-w",
+    ],
+    cppflags=[
+        "-D_XOPEN_SOURCE=700",
+        *musl_internal_include_flags,
+    ],
+    output="$(B)/bin/vulkan/lib/libc.a",
+)
+
+compiler_rt_sources = [
+    source for source in build.glob(f"{compiler_rt_root}/*.c")
+    if not source.rsplit("/", 1)[1].startswith("atomic")
+]
+compiler_rt = library(
+    name="vulkan_compiler_rt",
+    srcs=compiler_rt_sources,
+    deps=musl_generated,
+    cflags=[*c_runtime_flags, "-ffreestanding", "-w"],
+    cppflags=[f"-I{compiler_rt_root}", *musl_include_flags],
+    output="$(B)/bin/vulkan/lib/libcompiler_rt.a",
+)
+
+libunwind = library(
+    name="vulkan_libunwind",
+    srcs=vendorPaths(
+        f"{libunwind_root}/src",
+        [
+            "libunwind.cpp",
+            "Unwind-EHABI.cpp",
+            "Unwind-seh.cpp",
+            "UnwindLevel1.c",
+            "UnwindLevel1-gcc-ext.c",
+            "Unwind-sjlj.c",
+            "Unwind-wasm.c",
+            "UnwindRegistersRestore.S",
+            "UnwindRegistersSave.S",
+        ],
+    ),
+    deps=musl_generated,
+    cflags=[*c_runtime_flags, "-fexceptions", "-w"],
+    cxxflags=[*cxx_runtime_flags, "-fno-rtti"],
+    cppflags=[
+        "-D_LIBUNWIND_IS_NATIVE_ONLY",
+        "-D_LIBUNWIND_USE_DLADDR=0",
+        f"-I{libunwind_root}/src",
+        f"-I{libunwind_root}/include",
+        *musl_include_flags,
+    ],
+    output="$(B)/bin/vulkan/lib/libunwind.a",
+)
+
+libcxxabi = library(
+    name="vulkan_libcxxabi",
+    srcs=vendorPaths(
+        f"{libcxxabi_root}/src",
+        [
+            "cxa_aux_runtime.cpp",
+            "cxa_default_handlers.cpp",
+            "cxa_demangle.cpp",
+            "cxa_exception_storage.cpp",
+            "cxa_guard.cpp",
+            "cxa_handlers.cpp",
+            "cxa_vector.cpp",
+            "cxa_virtual.cpp",
+            "stdlib_exception.cpp",
+            "stdlib_stdexcept.cpp",
+            "stdlib_typeinfo.cpp",
+            "abort_message.cpp",
+            "fallback_malloc.cpp",
+            "private_typeinfo.cpp",
+            "stdlib_new_delete.cpp",
+            "cxa_exception.cpp",
+            "cxa_personality.cpp",
+            "cxa_thread_atexit.cpp",
+        ],
+    ),
+    deps=musl_generated,
+    cflags=[*c_runtime_flags, "-w"],
+    cxxflags=cxx_runtime_flags,
+    cppflags=[
+        "-D_LIBCXXABI_BUILDING_LIBRARY",
+        "-D_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS",
+        f"-I{libcxxabi_root}/src",
+        f"-I{libcxxabi_root}/include",
+        f"-I{libcxx_root}/src",
+        f"-I{libcxx_root}/include",
+        f"-I{libunwind_root}/include",
+        *musl_include_flags,
+    ],
+    output="$(B)/bin/vulkan/lib/libc++abi.a",
+)
+
+libcxx_sources = vendorPaths(
+    f"{libcxx_root}/src",
+    [
+        "algorithm.cpp",
+        "any.cpp",
+        "bind.cpp",
+        "call_once.cpp",
+        "chrono.cpp",
+        "error_category.cpp",
+        "exception.cpp",
+        "expected.cpp",
+        "filesystem/filesystem_clock.cpp",
+        "filesystem/filesystem_error.cpp",
+        "filesystem/path.cpp",
+        "functional.cpp",
+        "hash.cpp",
+        "memory.cpp",
+        "memory_resource.cpp",
+        "new_handler.cpp",
+        "new_helpers.cpp",
+        "optional.cpp",
+        "print.cpp",
+        "random_shuffle.cpp",
+        "ryu/d2fixed.cpp",
+        "ryu/d2s.cpp",
+        "ryu/f2s.cpp",
+        "stdexcept.cpp",
+        "string.cpp",
+        "system_error.cpp",
+        "typeinfo.cpp",
+        "valarray.cpp",
+        "variant.cpp",
+        "vector.cpp",
+        "verbose_abort.cpp",
+        "barrier.cpp",
+        "condition_variable_destructor.cpp",
+        "condition_variable.cpp",
+        "future.cpp",
+        "mutex_destructor.cpp",
+        "mutex.cpp",
+        "shared_mutex.cpp",
+        "thread.cpp",
+        "random.cpp",
+        "fstream.cpp",
+        "ios.cpp",
+        "ios.instantiations.cpp",
+        "iostream.cpp",
+        "locale.cpp",
+        "ostream.cpp",
+        "regex.cpp",
+        "strstream.cpp",
+        "filesystem/directory_entry.cpp",
+        "filesystem/directory_iterator.cpp",
+        "filesystem/operations.cpp",
+        "new.cpp",
+    ],
+)
+libcxx = library(
+    name="vulkan_libcxx",
+    srcs=libcxx_sources,
+    deps=musl_generated,
+    cflags=[*c_runtime_flags, "-w"],
+    cxxflags=cxx_runtime_flags,
+    cppflags=[
+        "-D_LIBCPP_BUILDING_LIBRARY",
+        "-DLIBCXX_BUILDING_LIBCXXABI",
+        f"-I{libcxx_root}/src",
+        f"-I{libcxx_root}/src/include",
         f"-I{libcxx_root}/include",
         f"-I{libcxxabi_root}/include",
         f"-I{libunwind_root}/include",
-    ]
+        *musl_include_flags,
+    ],
+    output="$(B)/bin/vulkan/lib/libc++.a",
+)
 
-    musl = library(
-        name="vulkan_musl",
-        srcs=muslSources(),
-        deps=musl_generated,
-        cflags=[
-            *c_runtime_flags,
-            "-std=c99",
-            "-ffreestanding",
-            "-w",
-        ],
-        cppflags=[
-            "-D_XOPEN_SOURCE=700",
-            *musl_internal_include_flags,
-        ],
-        output="$(B)/bin/vulkan/lib/libc.a",
-    )
+dlfcn_static = library(
+    name="vulkan_dlfcn",
+    srcs=[
+        "$(S)/lib/dlfcn.cpp",
+        "$(S)/lib/elf_loader.cpp",
+        "$(S)/lib/glibc_shim.cpp",
+        "$(S)/lib/glibc_stubs.cpp",
+        "$(S)/lib/hash.cpp",
+        "$(S)/lib/tlsdesc.S",
+    ],
+    deps=musl_generated,
+    cflags=c_runtime_flags,
+    cxxflags=[
+        *cxx_runtime_flags,
+        "-Wno-bitwise-op-parentheses",
+        "-Wno-shift-op-parentheses",
+    ],
+    cppflags=[
+        "-DCOMPILE_DLOPEN",
+        *libcxx_include_flags,
+        "-I$(S)/lib",
+        *musl_include_flags,
+    ],
+    output="$(B)/bin/vulkan/lib/libdlfcn.a",
+)
 
-    compiler_rt_sources = [
-        source for source in build.glob(f"{compiler_rt_root}/*.c")
-        if not source.rsplit("/", 1)[1].startswith("atomic")
-    ]
-    compiler_rt = library(
-        name="vulkan_compiler_rt",
-        srcs=compiler_rt_sources,
-        deps=musl_generated,
-        cflags=[*c_runtime_flags, "-ffreestanding", "-w"],
-        cppflags=[f"-I{compiler_rt_root}", *musl_include_flags],
-        output="$(B)/bin/vulkan/lib/libcompiler_rt.a",
-    )
-
-    libunwind = library(
-        name="vulkan_libunwind",
-        srcs=vendorPaths(
-            f"{libunwind_root}/src",
-            [
-                "libunwind.cpp",
-                "Unwind-EHABI.cpp",
-                "Unwind-seh.cpp",
-                "UnwindLevel1.c",
-                "UnwindLevel1-gcc-ext.c",
-                "Unwind-sjlj.c",
-                "Unwind-wasm.c",
-                "UnwindRegistersRestore.S",
-                "UnwindRegistersSave.S",
-            ],
-        ),
-        deps=musl_generated,
-        cflags=[*c_runtime_flags, "-fexceptions", "-w"],
-        cxxflags=[*cxx_runtime_flags, "-fno-rtti"],
-        cppflags=[
-            "-D_LIBUNWIND_IS_NATIVE_ONLY",
-            "-D_LIBUNWIND_USE_DLADDR=0",
-            f"-I{libunwind_root}/src",
-            f"-I{libunwind_root}/include",
-            *musl_include_flags,
-        ],
-        output="$(B)/bin/vulkan/lib/libunwind.a",
-    )
-
-    libcxxabi = library(
-        name="vulkan_libcxxabi",
-        srcs=vendorPaths(
-            f"{libcxxabi_root}/src",
-            [
-                "cxa_aux_runtime.cpp",
-                "cxa_default_handlers.cpp",
-                "cxa_demangle.cpp",
-                "cxa_exception_storage.cpp",
-                "cxa_guard.cpp",
-                "cxa_handlers.cpp",
-                "cxa_vector.cpp",
-                "cxa_virtual.cpp",
-                "stdlib_exception.cpp",
-                "stdlib_stdexcept.cpp",
-                "stdlib_typeinfo.cpp",
-                "abort_message.cpp",
-                "fallback_malloc.cpp",
-                "private_typeinfo.cpp",
-                "stdlib_new_delete.cpp",
-                "cxa_exception.cpp",
-                "cxa_personality.cpp",
-                "cxa_thread_atexit.cpp",
-            ],
-        ),
-        deps=musl_generated,
-        cflags=[*c_runtime_flags, "-w"],
-        cxxflags=cxx_runtime_flags,
-        cppflags=[
-            "-D_LIBCXXABI_BUILDING_LIBRARY",
-            "-D_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS",
-            f"-I{libcxxabi_root}/src",
-            f"-I{libcxxabi_root}/include",
-            f"-I{libcxx_root}/src",
-            f"-I{libcxx_root}/include",
-            f"-I{libunwind_root}/include",
-            *musl_include_flags,
-        ],
-        output="$(B)/bin/vulkan/lib/libc++abi.a",
-    )
-
-    libcxx_sources = vendorPaths(
-        f"{libcxx_root}/src",
+zlib = library(
+    name="vulkan_zlib",
+    srcs=vendorPaths(
+        f"{vulkan_root}/zlib",
         [
-            "algorithm.cpp",
-            "any.cpp",
-            "bind.cpp",
-            "call_once.cpp",
-            "chrono.cpp",
-            "error_category.cpp",
-            "exception.cpp",
-            "expected.cpp",
-            "filesystem/filesystem_clock.cpp",
-            "filesystem/filesystem_error.cpp",
-            "filesystem/path.cpp",
-            "functional.cpp",
-            "hash.cpp",
-            "memory.cpp",
-            "memory_resource.cpp",
-            "new_handler.cpp",
-            "new_helpers.cpp",
-            "optional.cpp",
-            "print.cpp",
-            "random_shuffle.cpp",
-            "ryu/d2fixed.cpp",
-            "ryu/d2s.cpp",
-            "ryu/f2s.cpp",
-            "stdexcept.cpp",
-            "string.cpp",
-            "system_error.cpp",
-            "typeinfo.cpp",
-            "valarray.cpp",
-            "variant.cpp",
-            "vector.cpp",
-            "verbose_abort.cpp",
-            "barrier.cpp",
-            "condition_variable_destructor.cpp",
-            "condition_variable.cpp",
-            "future.cpp",
-            "mutex_destructor.cpp",
-            "mutex.cpp",
-            "shared_mutex.cpp",
-            "thread.cpp",
-            "random.cpp",
-            "fstream.cpp",
-            "ios.cpp",
-            "ios.instantiations.cpp",
-            "iostream.cpp",
-            "locale.cpp",
-            "ostream.cpp",
-            "regex.cpp",
-            "strstream.cpp",
-            "filesystem/directory_entry.cpp",
-            "filesystem/directory_iterator.cpp",
-            "filesystem/operations.cpp",
-            "new.cpp",
+            "adler32.c",
+            "compress.c",
+            "crc32.c",
+            "deflate.c",
+            "gzclose.c",
+            "gzlib.c",
+            "gzread.c",
+            "gzwrite.c",
+            "inflate.c",
+            "infback.c",
+            "inftrees.c",
+            "inffast.c",
+            "trees.c",
+            "uncompr.c",
+            "zutil.c",
         ],
-    )
-    libcxx = library(
-        name="vulkan_libcxx",
-        srcs=libcxx_sources,
+    ),
+    deps=musl_generated,
+    cflags=[*c_runtime_flags, "-w"],
+    cppflags=[
+        "-DHAVE_UNISTD_H=1",
+        f"-I{vulkan_root}/zlib",
+        *musl_include_flags,
+    ],
+    output="$(B)/bin/vulkan/lib/libz.a",
+)
+
+png = library(
+    name="vulkan_png",
+    srcs=vendorPaths(
+        f"{vulkan_root}/png",
+        [
+            "png.c",
+            "pngerror.c",
+            "pngget.c",
+            "pngmem.c",
+            "pngpread.c",
+            "pngread.c",
+            "pngrio.c",
+            "pngrtran.c",
+            "pngrutil.c",
+            "pngset.c",
+            "pngtrans.c",
+            "pngwio.c",
+            "pngwrite.c",
+            "pngwtran.c",
+            "pngwutil.c",
+        ],
+    ),
+    deps=musl_generated,
+    cflags=[*c_runtime_flags, "-w"],
+    cppflags=[
+        f"-I{vulkan_root}/png",
+        f"-I{vulkan_root}/zlib",
+        *musl_include_flags,
+    ],
+    output="$(B)/bin/vulkan/lib/libpng.a",
+)
+
+vulkan_loader = library(
+    name="vulkan_loader",
+    srcs=vendorPaths(
+        vulkan_loader_root,
+        [
+            "allocation.c",
+            "cJSON.c",
+            "debug_utils.c",
+            "extension_manual.c",
+            "loader_environment.c",
+            "gpa_helper.c",
+            "loader.c",
+            "log.c",
+            "loader_json.c",
+            "settings.c",
+            "terminator.c",
+            "trampoline.c",
+            "unknown_function_handling.c",
+            "wsi.c",
+            "loader_linux.c",
+        ],
+    ),
+    deps=musl_generated,
+    cflags=[*c_runtime_flags, "-w"],
+    cppflags=[
+        "-D_GNU_SOURCE",
+        "-DHAVE_ALLOCA_H",
+        "-DHAVE_REALPATH",
+        "-DHAVE_SECURE_GETENV",
+        "-DLOADER_ENABLE_LINUX_SORT",
+        "-DVK_ENABLE_BETA_EXTENSIONS",
+        '-DSYSCONFDIR="/etc"',
+        '-DFALLBACK_CONFIG_DIRS="/etc/xdg"',
+        '-DFALLBACK_DATA_DIRS="/usr/local/share:/usr/share"',
+        "-I$(S)/lib",
+        f"-I{vulkan_loader_root}",
+        f"-I{vulkan_loader_root}/generated",
+        f"-I{vulkan_headers_root}",
+        *musl_include_flags,
+    ],
+    output="$(B)/bin/vulkan/lib/libvulkan.a",
+)
+
+vulkan_app = library(
+    name="vulkan_app",
+    srcs=[
+        f"{vulkan_root}/host_symbols.cpp",
+        f"{vulkan_root}/main.cpp",
+    ],
+    deps=musl_generated,
+    cflags=c_runtime_flags,
+    cxxflags=cxx_runtime_flags,
+    cppflags=[
+        *libcxx_include_flags,
+        "-I$(S)/lib",
+        f"-I{vulkan_root}",
+        f"-I{vulkan_root}/png",
+        f"-I{vulkan_root}/zlib",
+        f"-I{vulkan_headers_root}",
+        *musl_include_flags,
+    ],
+    output="$(B)/bin/vulkan/lib/libvulkan_app.a",
+)
+
+
+def muslCrt(name, source):
+    output = f"$(B)/bin/vulkan/crt/{name}.o"
+    return command(
+        name=f"vulkan_{name}",
+        inputs=[source],
+        outputs=[output],
         deps=musl_generated,
-        cflags=[*c_runtime_flags, "-w"],
-        cxxflags=cxx_runtime_flags,
-        cppflags=[
-            "-D_LIBCPP_BUILDING_LIBRARY",
-            "-DLIBCXX_BUILDING_LIBCXXABI",
-            f"-I{libcxx_root}/src",
-            f"-I{libcxx_root}/src/include",
-            f"-I{libcxx_root}/include",
-            f"-I{libcxxabi_root}/include",
-            f"-I{libunwind_root}/include",
-            *musl_include_flags,
-        ],
-        output="$(B)/bin/vulkan/lib/libc++.a",
-    )
-
-    dlfcn_static = library(
-        name="vulkan_dlfcn",
-        srcs=[
-            "$(S)/lib/dlfcn.cpp",
-            "$(S)/lib/elf_loader.cpp",
-            "$(S)/lib/glibc_shim.cpp",
-            "$(S)/lib/glibc_stubs.cpp",
-            "$(S)/lib/hash.cpp",
-            "$(S)/lib/tlsdesc.S",
-        ],
-        deps=musl_generated,
-        cflags=c_runtime_flags,
-        cxxflags=[
-            *cxx_runtime_flags,
-            "-Wno-bitwise-op-parentheses",
-            "-Wno-shift-op-parentheses",
-        ],
-        cppflags=[
-            "-DCOMPILE_DLOPEN",
-            *libcxx_include_flags,
-            "-I$(S)/lib",
-            *musl_include_flags,
-        ],
-        output="$(B)/bin/vulkan/lib/libdlfcn.a",
-    )
-
-    zlib = library(
-        name="vulkan_zlib",
-        srcs=vendorPaths(
-            f"{vulkan_root}/zlib",
-            [
-                "adler32.c",
-                "compress.c",
-                "crc32.c",
-                "deflate.c",
-                "gzclose.c",
-                "gzlib.c",
-                "gzread.c",
-                "gzwrite.c",
-                "inflate.c",
-                "infback.c",
-                "inftrees.c",
-                "inffast.c",
-                "trees.c",
-                "uncompr.c",
-                "zutil.c",
-            ],
-        ),
-        deps=musl_generated,
-        cflags=[*c_runtime_flags, "-w"],
-        cppflags=[
-            "-DHAVE_UNISTD_H=1",
-            f"-I{vulkan_root}/zlib",
-            *musl_include_flags,
-        ],
-        output="$(B)/bin/vulkan/lib/libz.a",
-    )
-
-    png = library(
-        name="vulkan_png",
-        srcs=vendorPaths(
-            f"{vulkan_root}/png",
-            [
-                "png.c",
-                "pngerror.c",
-                "pngget.c",
-                "pngmem.c",
-                "pngpread.c",
-                "pngread.c",
-                "pngrio.c",
-                "pngrtran.c",
-                "pngrutil.c",
-                "pngset.c",
-                "pngtrans.c",
-                "pngwio.c",
-                "pngwrite.c",
-                "pngwtran.c",
-                "pngwutil.c",
-            ],
-        ),
-        deps=musl_generated,
-        cflags=[*c_runtime_flags, "-w"],
-        cppflags=[
-            f"-I{vulkan_root}/png",
-            f"-I{vulkan_root}/zlib",
-            *musl_include_flags,
-        ],
-        output="$(B)/bin/vulkan/lib/libpng.a",
-    )
-
-    vulkan_loader = library(
-        name="vulkan_loader",
-        srcs=vendorPaths(
-            vulkan_loader_root,
-            [
-                "allocation.c",
-                "cJSON.c",
-                "debug_utils.c",
-                "extension_manual.c",
-                "loader_environment.c",
-                "gpa_helper.c",
-                "loader.c",
-                "log.c",
-                "loader_json.c",
-                "settings.c",
-                "terminator.c",
-                "trampoline.c",
-                "unknown_function_handling.c",
-                "wsi.c",
-                "loader_linux.c",
-            ],
-        ),
-        deps=musl_generated,
-        cflags=[*c_runtime_flags, "-w"],
-        cppflags=[
-            "-D_GNU_SOURCE",
-            "-DHAVE_ALLOCA_H",
-            "-DHAVE_REALPATH",
-            "-DHAVE_SECURE_GETENV",
-            "-DLOADER_ENABLE_LINUX_SORT",
-            "-DVK_ENABLE_BETA_EXTENSIONS",
-            '-DSYSCONFDIR="/etc"',
-            '-DFALLBACK_CONFIG_DIRS="/etc/xdg"',
-            '-DFALLBACK_DATA_DIRS="/usr/local/share:/usr/share"',
-            "-I$(S)/lib",
-            f"-I{vulkan_loader_root}",
-            f"-I{vulkan_loader_root}/generated",
-            f"-I{vulkan_headers_root}",
-            *musl_include_flags,
-        ],
-        output="$(B)/bin/vulkan/lib/libvulkan.a",
-    )
-
-    vulkan_app = library(
-        name="vulkan_app",
-        srcs=[
-            f"{vulkan_root}/host_symbols.cpp",
-            f"{vulkan_root}/main.cpp",
-        ],
-        deps=musl_generated,
-        cflags=c_runtime_flags,
-        cxxflags=cxx_runtime_flags,
-        cppflags=[
-            *libcxx_include_flags,
-            "-I$(S)/lib",
-            f"-I{vulkan_root}",
-            f"-I{vulkan_root}/png",
-            f"-I{vulkan_root}/zlib",
-            f"-I{vulkan_headers_root}",
-            *musl_include_flags,
-        ],
-        output="$(B)/bin/vulkan/lib/libvulkan_app.a",
-    )
-
-    def muslCrt(name, source):
-        output = f"$(B)/bin/vulkan/crt/{name}.o"
-        return command(
-            name=f"vulkan_{name}",
-            inputs=[source],
-            outputs=[output],
-            deps=musl_generated,
-            cmd=[
-                "clang",
-                *target_flags,
-                "-w",
-                "-nostdinc",
-                "-DCRT",
-                *musl_internal_include_flags,
-                "-c",
-                source,
-                "-o",
-                output,
-            ],
-            descr="CC",
-            color="green",
-        )
-
-    vulkan_crt1 = muslCrt("crt1", f"{musl_root}/crt/crt1.c")
-    vulkan_crti = muslCrt("crti", f"{musl_root}/crt/x86_64/crti.s")
-    vulkan_crtn = muslCrt("crtn", f"{musl_root}/crt/x86_64/crtn.s")
-
-    vulkan_archives = [
-        vulkan_app,
-        vulkan_loader,
-        dlfcn_static,
-        png,
-        zlib,
-        libcxx,
-        libcxxabi,
-        libunwind,
-        musl,
-        compiler_rt,
-    ]
-    vulkan = command(
-        name="vulkan",
-        inputs=[
-            "$(B)/bin/vulkan/crt/crt1.o",
-            "$(B)/bin/vulkan/crt/crti.o",
-            "$(B)/bin/vulkan/crt/crtn.o",
-            *[archive.output for archive in vulkan_archives],
-        ],
-        outputs=["$(B)/bin/vulkan/vulkan"],
-        deps=[vulkan_crt1, vulkan_crti, vulkan_crtn, *vulkan_archives],
         cmd=[
-            "clang",
-            "--target=x86_64-linux-musl",
-            "-fuse-ld=lld",
-            "-nostdlib",
-            "-static",
-            "-Wl,--no-pie",
-            "-Wl,--build-id=none",
-            "-Wl,--gc-sections",
-            "-Wl,-z,noexecstack",
-            "-Wl,-e,_start",
+            cc,
+            *target_flags,
+            "-w",
+            "-nostdinc",
+            "-DCRT",
+            *musl_internal_include_flags,
+            "-c",
+            source,
             "-o",
-            "$(B)/bin/vulkan/vulkan",
-            "$(B)/bin/vulkan/crt/crt1.o",
-            "$(B)/bin/vulkan/crt/crti.o",
-            "-Wl,--start-group",
-            "-Wl,--whole-archive",
-            vulkan_app.output,
-            "-Wl,--no-whole-archive",
-            *[archive.output for archive in vulkan_archives[1:]],
-            "-Wl,--end-group",
-            "$(B)/bin/vulkan/crt/crtn.o",
+            output,
         ],
-        descr="LD",
-        color="light-blue",
+        descr="CC",
+        color="green",
     )
+
+
+vulkan_crt1 = muslCrt("crt1", f"{musl_root}/crt/crt1.c")
+vulkan_crti = muslCrt("crti", f"{musl_root}/crt/x86_64/crti.s")
+vulkan_crtn = muslCrt("crtn", f"{musl_root}/crt/x86_64/crtn.s")
+
+vulkan_archives = [
+    vulkan_app,
+    vulkan_loader,
+    dlfcn_static,
+    png,
+    zlib,
+    libcxx,
+    libcxxabi,
+    libunwind,
+    musl,
+    compiler_rt,
+]
+vulkan = command(
+    name="vulkan",
+    inputs=[
+        "$(B)/bin/vulkan/crt/crt1.o",
+        "$(B)/bin/vulkan/crt/crti.o",
+        "$(B)/bin/vulkan/crt/crtn.o",
+        *[archive.output for archive in vulkan_archives],
+    ],
+    outputs=["$(B)/bin/vulkan/vulkan"],
+    deps=[vulkan_crt1, vulkan_crti, vulkan_crtn, *vulkan_archives],
+    cmd=[
+        cc,
+        "-nostdlib",
+        "-static",
+        "-Wl,--no-pie",
+        "-Wl,--build-id=none",
+        "-Wl,--gc-sections",
+        "-Wl,-z,noexecstack",
+        "-Wl,-e,_start",
+        "-o",
+        "$(B)/bin/vulkan/vulkan",
+        "$(B)/bin/vulkan/crt/crt1.o",
+        "$(B)/bin/vulkan/crt/crti.o",
+        "-Wl,--start-group",
+        "-Wl,--whole-archive",
+        vulkan_app.output,
+        "-Wl,--no-whole-archive",
+        *[archive.output for archive in vulkan_archives[1:]],
+        "-Wl,--end-group",
+        "$(B)/bin/vulkan/crt/crtn.o",
+    ],
+    descr="LD",
+    color="light-blue",
+)
+
+vulkan_test = command(
+    name="vulkan_test",
+    inputs=["$(S)/tst/run_vulkan.py"],
+    outputs=["$(B)/tst/lavapipe.png"],
+    deps=[vulkan],
+    cmd=[
+        "python3",
+        "$(S)/tst/run_vulkan.py",
+        "$(B)/bin/vulkan/vulkan",
+        "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json",
+        "$(B)/tst/lavapipe.png",
+    ],
+    descr="TS",
+    color="green",
+)
 
 arch_packages = [
     (
@@ -629,4 +647,4 @@ arch_smoke = command(
 )
 
 install(dlfcn)
-group("test", arch_smoke)
+group("test", arch_smoke, vulkan_test)

@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Install dependencies
-        run: apk add --no-cache build-base gcompat git libarchive-tools python3
+        run: apk add --no-cache build-base gcompat git libarchive-tools mesa-vulkan-swrast python3
 
       - uses: actions/checkout@v7
         with:
@@ -42,7 +42,7 @@ jobs:
 
     steps:
       - name: Install dependencies
-        run: dnf install -y bsdtar gcc gcc-c++ git glibc-static libstdc++-static python3
+        run: dnf install -y bsdtar gcc gcc-c++ git glibc-static libstdc++-static mesa-vulkan-drivers python3
 
       - uses: actions/checkout@v7
         with:
@@ -73,7 +73,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes clang g++ libarchive-tools python3
+          sudo apt-get install --yes clang g++ libarchive-tools mesa-vulkan-drivers python3
 
       - name: Build
         env:

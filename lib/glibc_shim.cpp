@@ -4,6 +4,8 @@
 
 #include "glibc_shim.h"
 
+#include <link.h>
+
 #include "dlfcn.h"
 #include "elf_loader.h"
 #include "glibc_stubs.h"
@@ -16,7 +18,6 @@
 #include <fcntl.h>
 #include <langinfo.h>
 #include <libgen.h>
-#include <link.h>
 #include <limits.h>
 #include <locale.h>
 #include <malloc.h>
@@ -496,6 +497,26 @@ static void* sh_rawmemchr(const void* memory, int character) {
         ++cursor;
     }
     return const_cast<unsigned char*>(cursor);
+}
+
+static const void* sh_memrchr(const void* memory, int character, size_t size) {
+    return memrchr(memory, character, size);
+}
+
+static const char* sh_strchrnul(const char* string, int character) {
+    return strchrnul(string, character);
+}
+
+static const char* sh_strchr(const char* string, int character) {
+    return strchr(string, character);
+}
+
+static const char* sh_strrchr(const char* string, int character) {
+    return strrchr(string, character);
+}
+
+static const char* sh_strstr(const char* haystack, const char* needle) {
+    return strstr(haystack, needle);
 }
 
 static int sh_register_atfork(void (*prepare)(), void (*parent)(), void (*child)(), void* dso) {
@@ -1357,10 +1378,10 @@ static const ShGlibcSymbol sh_glibc_symbols[] = {
     SH_FUNCTION("__xpg_basename", "GLIBC_2.2.5", sh_xpg_basename),
     SH_FUNCTION("rawmemchr", "GLIBC_2.2.5", sh_rawmemchr),
     SH_FUNCTION("mremap", "GLIBC_2.2.5", mremap),
-    SH_FUNCTION("memrchr", "GLIBC_2.2.5", memrchr),
+    SH_FUNCTION("memrchr", "GLIBC_2.2.5", sh_memrchr),
     SH_FUNCTION("__isoc99_fscanf", "GLIBC_2.7", fscanf),
     SH_FUNCTION("reallocarray", "GLIBC_2.26", reallocarray),
-    SH_FUNCTION("strchrnul", "GLIBC_2.2.5", strchrnul),
+    SH_FUNCTION("strchrnul", "GLIBC_2.2.5", sh_strchrnul),
     SH_FUNCTION("stpcpy", "GLIBC_2.2.5", stpcpy),
     SH_FUNCTION("__register_atfork", "GLIBC_2.3.2", sh_register_atfork),
     SH_FUNCTION("malloc_usable_size", "GLIBC_2.2.5", malloc_usable_size),
@@ -1427,11 +1448,11 @@ static const ShGlibcSymbol sh_glibc_symbols[] = {
     SH_FUNCTION("strlen", "GLIBC_2.2.5", strlen),
     SH_FUNCTION("__stack_chk_fail", "GLIBC_2.4", sh_stack_chk_fail),
     SH_FUNCTION("dladdr", "GLIBC_2.34", sh_glibc_dladdr),
-    SH_FUNCTION("strchr", "GLIBC_2.2.5", static_cast<char* (*)(const char*, int)>(strchr)),
+    SH_FUNCTION("strchr", "GLIBC_2.2.5", sh_strchr),
     SH_FUNCTION("pthread_mutex_destroy", "GLIBC_2.2.5", sh_pthread_mutex_destroy),
     SH_FUNCTION("snprintf", "GLIBC_2.2.5", snprintf),
     SH_FUNCTION("pthread_mutexattr_settype", "GLIBC_2.34", sh_pthread_mutexattr_settype),
-    SH_FUNCTION("strrchr", "GLIBC_2.2.5", static_cast<char* (*)(const char*, int)>(strrchr)),
+    SH_FUNCTION("strrchr", "GLIBC_2.2.5", sh_strrchr),
     SH_FUNCTION("fputs", "GLIBC_2.2.5", fputs),
     SH_FUNCTION("memset", "GLIBC_2.2.5", memset),
     SH_FUNCTION("strncat", "GLIBC_2.2.5", strncat),
@@ -1467,7 +1488,7 @@ static const ShGlibcSymbol sh_glibc_symbols[] = {
     SH_FUNCTION("fstat", "GLIBC_2.33", fstat),
     SH_FUNCTION("__cxa_finalize", "GLIBC_2.2.5", sh_cxa_finalize),
     SH_FUNCTION("__cxa_atexit", "GLIBC_2.2.5", sh_cxa_atexit),
-    SH_FUNCTION("strstr", "GLIBC_2.2.5", static_cast<char* (*)(const char*, const char*)>(strstr)),
+    SH_FUNCTION("strstr", "GLIBC_2.2.5", sh_strstr),
     SH_FUNCTION("pthread_mutex_lock", "GLIBC_2.2.5", sh_pthread_mutex_lock),
     SH_FUNCTION("__ctype_tolower_loc", "GLIBC_2.3", sh_ctype_tolower_loc),
     SH_FUNCTION("__tls_get_addr", "GLIBC_2.3", elfTlsAddress),
