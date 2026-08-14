@@ -11,7 +11,7 @@
 #define _LIBCPP___CHARCONV_TO_CHARS_RESULT_H
 
 #include <__config>
-#include <__system_error/errc.h>
+#include <__errc>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -19,20 +19,18 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-#if _LIBCPP_STD_VER >= 17
+#ifndef _LIBCPP_CXX03_LANG
 
-struct _LIBCPP_EXPORTED_FROM_ABI to_chars_result {
-  char* ptr;
-  errc ec;
-#  if _LIBCPP_STD_VER >= 20
-  _LIBCPP_HIDE_FROM_ABI friend bool operator==(const to_chars_result&, const to_chars_result&) = default;
-#  endif
-#  if _LIBCPP_STD_VER >= 26
-  _LIBCPP_HIDE_FROM_ABI constexpr explicit operator bool() const noexcept { return ec == errc{}; }
+struct _LIBCPP_TYPE_VIS to_chars_result
+{
+    char* ptr;
+    errc ec;
+#  if _LIBCPP_STD_VER > 17
+    _LIBCPP_HIDE_FROM_ABI friend bool operator==(const to_chars_result&, const to_chars_result&) = default;
 #  endif
 };
 
-#endif // _LIBCPP_STD_VER >= 17
+#endif // _LIBCPP_CXX03_LANG
 
 _LIBCPP_END_NAMESPACE_STD
 

@@ -24,10 +24,10 @@
 // eeee | 1mmm mmmm mmmm mmmm mmmm mmmm mmmm mmmm | mmmm mmmm mmmm mmmm mmmm
 // mmmm mmmm mmmm
 
-COMPILER_RT_ABI ti_int __fixxfti(xf_float a) {
+COMPILER_RT_ABI ti_int __fixxfti(long double a) {
   const ti_int ti_max = (ti_int)((~(tu_int)0) / 2);
   const ti_int ti_min = -ti_max - 1;
-  xf_bits fb;
+  long_double_bits fb;
   fb.f = a;
   int e = (fb.u.high.s.low & 0x00007FFF) - 16383;
   if (e < 0)

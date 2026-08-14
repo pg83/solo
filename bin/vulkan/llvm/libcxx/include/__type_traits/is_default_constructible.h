@@ -11,6 +11,7 @@
 
 #include <__config>
 #include <__type_traits/integral_constant.h>
+#include <__type_traits/is_constructible.h>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -19,11 +20,13 @@
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 template <class _Tp>
-struct _LIBCPP_TEMPLATE_VIS is_default_constructible : public integral_constant<bool, __is_constructible(_Tp)> {};
+struct _LIBCPP_TEMPLATE_VIS is_default_constructible
+    : public is_constructible<_Tp>
+    {};
 
-#if _LIBCPP_STD_VER >= 17
+#if _LIBCPP_STD_VER > 14
 template <class _Tp>
-inline constexpr bool is_default_constructible_v = __is_constructible(_Tp);
+inline constexpr bool is_default_constructible_v = is_default_constructible<_Tp>::value;
 #endif
 
 _LIBCPP_END_NAMESPACE_STD

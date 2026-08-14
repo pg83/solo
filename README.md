@@ -138,8 +138,8 @@ CMake, Meson, configure, and Make build systems are not invoked.
 <summary>Vendored versions</summary>
 
 - musl 1.2.5 (`0784374d561435f7c787a555aeab8ede699ed298`)
-- LLVM runtimes 18.1.8: libc++, libc++abi, libunwind, and compiler-rt builtins
-  (`3b5b5c1ec4a3095ab096dd780e84d7ab81f3d7ff`)
+- LLVM runtimes 15.0.7: libc++, libc++abi, libunwind, and compiler-rt builtins
+  (`8dfdcc7b7bf66834a761bd8de445840ef68e4d1a`)
 - Vulkan Headers 1.4.357 (`e3b1eec08173d6b825cd3ac88c885a63b621504a`)
 - Vulkan Loader 1.4.357 (`5f157b62e333c63260d05d81bf66faa216ab0fb8`)
 - zlib 1.3.2 (`da607da739fa6047df13e66a2af6b8bec7c2a498`)

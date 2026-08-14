@@ -37,8 +37,7 @@ DEFINE_COMPILERRT_FUNCTION(__divsi3)
    sdiv    r0, r0, r1
    bx      lr
 LOCAL_LABEL(divzero):
-   // Use movs for compatibility with v8-m.base.
-   movs    r0,#0
+   mov     r0,#0
    bx      lr
 #else
 ESTABLISH_FRAME

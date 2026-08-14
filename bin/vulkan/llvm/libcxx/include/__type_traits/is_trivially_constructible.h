@@ -20,11 +20,13 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
 template <class _Tp, class... _Args>
 struct _LIBCPP_TEMPLATE_VIS is_trivially_constructible
-    : integral_constant<bool, __is_trivially_constructible(_Tp, _Args...)> {};
+    : integral_constant<bool, __is_trivially_constructible(_Tp, _Args...)>
+{
+};
 
-#if _LIBCPP_STD_VER >= 17
+#if _LIBCPP_STD_VER > 14
 template <class _Tp, class... _Args>
-inline constexpr bool is_trivially_constructible_v = __is_trivially_constructible(_Tp, _Args...);
+inline constexpr bool is_trivially_constructible_v = is_trivially_constructible<_Tp, _Args...>::value;
 #endif
 
 _LIBCPP_END_NAMESPACE_STD

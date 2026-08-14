@@ -64,19 +64,24 @@ def writeLibcxxConfig(output, source):
         "_LIBCPP_HAS_NO_TIME_ZONE_DATABASE": None,
         "_LIBCPP_PSTL_CPU_BACKEND_THREAD": None,
         "_LIBCPP_HARDENING_MODE_DEFAULT": "2",
+        "_LIBCPP_ENABLE_ASSERTIONS_DEFAULT": "0",
     }
     lines = []
     for line in source.read_text().splitlines():
-        match = re.match(r"^#cmakedefine ([A-Z0-9_]+)(?: (.*))?$", line)
+        match = re.match(r"^#cmakedefine(01)? ([A-Z0-9_]+)(?: (.*))?$", line)
         if match:
-            name, value = match.groups()
+            define01, name, value = match.groups()
             if name in definitions:
                 replacement = definitions[name]
-                if value:
+                if define01:
+                    lines.append(f"#define {name} {replacement}")
+                elif value:
                     value = value.replace(f"@{name}@", replacement)
                     lines.append(f"#define {name} {value}")
                 else:
                     lines.append(f"#define {name}")
+            elif define01:
+                lines.append(f"#define {name} 0")
             else:
                 lines.append(f"/* #undef {name} */")
         elif line in ("@_LIBCPP_ABI_DEFINES@", "@_LIBCPP_EXTRA_SITE_DEFINES@"):

@@ -9,8 +9,8 @@
 #ifndef _LIBCPP___UTILITY_UNREACHABLE_H
 #define _LIBCPP___UTILITY_UNREACHABLE_H
 
-#include <__assert>
 #include <__config>
+#include <cstdlib>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -18,17 +18,21 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-_LIBCPP_NORETURN _LIBCPP_HIDE_FROM_ABI inline void __libcpp_unreachable() {
-  _LIBCPP_ASSERT_INTERNAL(false, "std::unreachable() was reached");
+_LIBCPP_NORETURN _LIBCPP_HIDE_FROM_ABI inline void __libcpp_unreachable()
+{
+#if __has_builtin(__builtin_unreachable)
   __builtin_unreachable();
+#else
+  std::abort();
+#endif
 }
 
-#if _LIBCPP_STD_VER >= 23
+#if _LIBCPP_STD_VER > 20
 
 [[noreturn]] _LIBCPP_HIDE_FROM_ABI inline void unreachable() { __libcpp_unreachable(); }
 
-#endif
+#endif // _LIBCPP_STD_VER > 20
 
 _LIBCPP_END_NAMESPACE_STD
 
-#endif // _LIBCPP___UTILITY_UNREACHABLE_H
+#endif

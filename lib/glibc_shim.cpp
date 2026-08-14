@@ -74,6 +74,10 @@ static char* sh_strcat_chk(char* destination, const char* source, size_t size) {
     return strcat(destination, source);
 }
 
+static int sh_bcmp(const void* left, const void* right, size_t size) {
+    return memcmp(left, right, size);
+}
+
 static int sh_snprintf_chk(char* destination, size_t count, int flag, size_t destination_size, const char* format, ...) {
     (void)flag;
     if (count > destination_size) {
@@ -1343,6 +1347,7 @@ static int sh_glibc_dladdr(const void* address, ShGlibcDlInfo* glibc_info) {
 }
 
 static const ShGlibcSymbol sh_glibc_symbols[] = {
+    SH_FUNCTION("bcmp", "GLIBC_2.2.5", sh_bcmp),
     SH_FUNCTION("__getdelim", "GLIBC_2.2.5", getdelim),
     SH_FUNCTION("statfs", "GLIBC_2.2.5", statfs),
     SH_FUNCTION("fstatfs", "GLIBC_2.2.5", fstatfs),

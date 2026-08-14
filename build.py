@@ -190,28 +190,11 @@ libcxx_config = command(
     ],
 )
 
-libcxx_assertion_handler_path = "$(B)/bin/vulkan/libcxx/include/__assertion_handler"
-libcxx_assertion_handler = command(
-    inputs=[
-        f"{libcxx_root}/vendor/llvm/default_assertion_handler.in",
-        f"{libcxx_root}/include/__config",
-        f"{libcxx_root}/include/__availability",
-        f"{libcxx_root}/include/__verbose_abort",
-    ],
-    outputs=[libcxx_assertion_handler_path],
-    cmd=[
-        "cp",
-        f"{libcxx_root}/vendor/llvm/default_assertion_handler.in",
-        "$(B)/bin/vulkan/libcxx/include/__assertion_handler",
-    ],
-)
-
 runtime_generated = [
     musl_alltypes,
     musl_syscall,
     musl_version,
     libcxx_config,
-    libcxx_assertion_handler,
 ]
 target_flags = [
     "-ffunction-sections",
@@ -266,7 +249,6 @@ libunwind = library(
             "UnwindLevel1.c",
             "UnwindLevel1-gcc-ext.c",
             "Unwind-sjlj.c",
-            "Unwind-wasm.c",
             "UnwindRegistersRestore.S",
             "UnwindRegistersSave.S",
         ],
@@ -322,16 +304,12 @@ libcxx_sources = vendorPaths(
         "algorithm.cpp",
         "any.cpp",
         "bind.cpp",
-        "call_once.cpp",
         "chrono.cpp",
-        "error_category.cpp",
         "exception.cpp",
         "functional.cpp",
         "hash.cpp",
+        "legacy_pointer_safety.cpp",
         "memory.cpp",
-        "memory_resource.cpp",
-        "new_handler.cpp",
-        "new_helpers.cpp",
         "optional.cpp",
         "random_shuffle.cpp",
         "ryu/d2fixed.cpp",
@@ -341,6 +319,7 @@ libcxx_sources = vendorPaths(
         "string.cpp",
         "system_error.cpp",
         "typeinfo.cpp",
+        "utility.cpp",
         "valarray.cpp",
         "variant.cpp",
         "vector.cpp",
@@ -355,9 +334,9 @@ libcxx_sources = vendorPaths(
         "thread.cpp",
         "random.cpp",
         "ios.cpp",
+        "ios.instantiations.cpp",
         "iostream.cpp",
         "locale.cpp",
-        "ostream.cpp",
         "regex.cpp",
         "strstream.cpp",
         "new.cpp",
@@ -540,7 +519,6 @@ vulkan_app = library(
             "src": f"{vulkan_root}/main.cpp",
             "inputs": [
                 libcxx_config_path,
-                libcxx_assertion_handler_path,
                 pnglibconf_path,
             ],
         },

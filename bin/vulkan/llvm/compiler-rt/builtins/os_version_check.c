@@ -86,10 +86,6 @@ typedef Boolean (*CFStringGetCStringFuncTy)(CFStringRef, char *, CFIndex,
                                             CFStringEncoding);
 typedef void (*CFReleaseFuncTy)(CFTypeRef);
 
-extern __attribute__((weak_import))
-bool _availability_version_check(uint32_t count,
-                                 dyld_build_version_t versions[]);
-
 static void _initializeAvailabilityCheck(bool LoadPlist) {
   if (AvailabilityVersionCheck && !LoadPlist) {
     // New API is supported and we're not being asked to load the plist,
@@ -98,8 +94,8 @@ static void _initializeAvailabilityCheck(bool LoadPlist) {
   }
 
   // Use the new API if it's is available.
-  if (_availability_version_check)
-    AvailabilityVersionCheck = &_availability_version_check;
+  AvailabilityVersionCheck = (AvailabilityVersionCheckFuncTy)dlsym(
+      RTLD_DEFAULT, "_availability_version_check");
 
   if (AvailabilityVersionCheck && !LoadPlist) {
     // New API is supported and we're not being asked to load the plist,

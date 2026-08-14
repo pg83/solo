@@ -9,11 +9,13 @@
 #define QUAD_PRECISION
 #include "fp_lib.h"
 
-#if defined(CRT_HAS_TF_MODE)
+#if defined(CRT_HAS_128BIT) && defined(CRT_LDBL_128BIT)
 #define SRC_DOUBLE
 #define DST_QUAD
 #include "fp_extend_impl.inc"
 
-COMPILER_RT_ABI dst_t __extenddftf2(src_t a) { return __extendXfYf2__(a); }
+COMPILER_RT_ABI fp_t __extenddftf2(double a) {
+  return __extendXfYf2__(a);
+}
 
 #endif

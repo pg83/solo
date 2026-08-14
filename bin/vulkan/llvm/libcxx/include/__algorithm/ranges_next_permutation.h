@@ -22,16 +22,12 @@
 #include <__ranges/concepts.h>
 #include <__ranges/dangling.h>
 #include <__utility/move.h>
-#include <__utility/pair.h>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
 #endif
 
-_LIBCPP_PUSH_MACROS
-#include <__undef_macros>
-
-#if _LIBCPP_STD_VER >= 20
+#if _LIBCPP_STD_VER > 17 && !defined(_LIBCPP_HAS_NO_INCOMPLETE_RANGES)
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
@@ -71,8 +67,6 @@ constexpr inline auto next_permutation = __next_permutation::__fn{};
 
 _LIBCPP_END_NAMESPACE_STD
 
-#endif // _LIBCPP_STD_VER >= 20
-
-_LIBCPP_POP_MACROS
+#endif // _LIBCPP_STD_VER > 17 && !defined(_LIBCPP_HAS_NO_INCOMPLETE_RANGES)
 
 #endif // _LIBCPP___ALGORITHM_RANGES_NEXT_PERMUTATION_H

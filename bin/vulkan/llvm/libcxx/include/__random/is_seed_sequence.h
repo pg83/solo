@@ -10,9 +10,7 @@
 #define _LIBCPP___RANDOM_IS_SEED_SEQUENCE_H
 
 #include <__config>
-#include <__type_traits/is_convertible.h>
-#include <__type_traits/is_same.h>
-#include <__type_traits/remove_cv.h>
+#include <type_traits>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -21,9 +19,11 @@
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 template <class _Sseq, class _Engine>
-struct __is_seed_sequence {
-  static _LIBCPP_CONSTEXPR const bool value =
-      !is_convertible<_Sseq, typename _Engine::result_type>::value && !is_same<__remove_cv_t<_Sseq>, _Engine>::value;
+struct __is_seed_sequence
+{
+    static _LIBCPP_CONSTEXPR const bool value =
+              !is_convertible<_Sseq, typename _Engine::result_type>::value &&
+              !is_same<typename remove_cv<_Sseq>::type, _Engine>::value;
 };
 
 _LIBCPP_END_NAMESPACE_STD

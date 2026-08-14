@@ -23,11 +23,13 @@
 #  pragma GCC system_header
 #endif
 
-#if _LIBCPP_STD_VER >= 17
+#ifndef _LIBCPP_CXX03_LANG
 
 _LIBCPP_BEGIN_NAMESPACE_FILESYSTEM
 
-class _LIBCPP_EXPORTED_FROM_ABI path::iterator {
+_LIBCPP_AVAILABILITY_FILESYSTEM_PUSH
+
+class _LIBCPP_TYPE_VIS path::iterator {
 public:
   enum _ParserState : unsigned char {
     _Singular,
@@ -49,37 +51,49 @@ public:
   typedef path reference;
 
 public:
-  _LIBCPP_HIDE_FROM_ABI iterator() : __stashed_elem_(), __path_ptr_(nullptr), __entry_(), __state_(_Singular) {}
+  _LIBCPP_INLINE_VISIBILITY
+  iterator()
+      : __stashed_elem_(), __path_ptr_(nullptr), __entry_(),
+        __state_(_Singular) {}
 
-  _LIBCPP_HIDE_FROM_ABI iterator(const iterator&) = default;
-  _LIBCPP_HIDE_FROM_ABI ~iterator()               = default;
+  iterator(const iterator&) = default;
+  ~iterator() = default;
 
-  _LIBCPP_HIDE_FROM_ABI iterator& operator=(const iterator&) = default;
+  iterator& operator=(const iterator&) = default;
 
-  _LIBCPP_HIDE_FROM_ABI reference operator*() const { return __stashed_elem_; }
+  _LIBCPP_INLINE_VISIBILITY
+  reference operator*() const { return __stashed_elem_; }
 
-  _LIBCPP_HIDE_FROM_ABI pointer operator->() const { return &__stashed_elem_; }
+  _LIBCPP_INLINE_VISIBILITY
+  pointer operator->() const { return &__stashed_elem_; }
 
-  _LIBCPP_HIDE_FROM_ABI iterator& operator++() {
-    _LIBCPP_ASSERT_NON_NULL(__state_ != _Singular, "attempting to increment a singular iterator");
-    _LIBCPP_ASSERT_UNCATEGORIZED(__state_ != _AtEnd, "attempting to increment the end iterator");
+  _LIBCPP_INLINE_VISIBILITY
+  iterator& operator++() {
+    _LIBCPP_ASSERT(__state_ != _Singular,
+                   "attempting to increment a singular iterator");
+    _LIBCPP_ASSERT(__state_ != _AtEnd,
+                   "attempting to increment the end iterator");
     return __increment();
   }
 
-  _LIBCPP_HIDE_FROM_ABI iterator operator++(int) {
+  _LIBCPP_INLINE_VISIBILITY
+  iterator operator++(int) {
     iterator __it(*this);
     this->operator++();
     return __it;
   }
 
-  _LIBCPP_HIDE_FROM_ABI iterator& operator--() {
-    _LIBCPP_ASSERT_NON_NULL(__state_ != _Singular, "attempting to decrement a singular iterator");
-    _LIBCPP_ASSERT_UNCATEGORIZED(
-        __entry_.data() != __path_ptr_->native().data(), "attempting to decrement the begin iterator");
+  _LIBCPP_INLINE_VISIBILITY
+  iterator& operator--() {
+    _LIBCPP_ASSERT(__state_ != _Singular,
+                   "attempting to decrement a singular iterator");
+    _LIBCPP_ASSERT(__entry_.data() != __path_ptr_->native().data(),
+                   "attempting to decrement the begin iterator");
     return __decrement();
   }
 
-  _LIBCPP_HIDE_FROM_ABI iterator operator--(int) {
+  _LIBCPP_INLINE_VISIBILITY
+  iterator operator--(int) {
     iterator __it(*this);
     this->operator--();
     return __it;
@@ -88,7 +102,8 @@ public:
 private:
   friend class path;
 
-  inline _LIBCPP_HIDE_FROM_ABI friend bool operator==(const iterator&, const iterator&);
+  inline _LIBCPP_INLINE_VISIBILITY friend bool operator==(const iterator&,
+                                                          const iterator&);
 
   iterator& __increment();
   iterator& __decrement();
@@ -99,18 +114,21 @@ private:
   _ParserState __state_;
 };
 
-_LIBCPP_AVAILABILITY_FILESYSTEM_LIBRARY
-inline _LIBCPP_HIDE_FROM_ABI bool operator==(const path::iterator& __lhs, const path::iterator& __rhs) {
-  return __lhs.__path_ptr_ == __rhs.__path_ptr_ && __lhs.__entry_.data() == __rhs.__entry_.data();
+inline _LIBCPP_INLINE_VISIBILITY bool operator==(const path::iterator& __lhs,
+                                                 const path::iterator& __rhs) {
+  return __lhs.__path_ptr_ == __rhs.__path_ptr_ &&
+         __lhs.__entry_.data() == __rhs.__entry_.data();
 }
 
-_LIBCPP_AVAILABILITY_FILESYSTEM_LIBRARY
-inline _LIBCPP_HIDE_FROM_ABI bool operator!=(const path::iterator& __lhs, const path::iterator& __rhs) {
+inline _LIBCPP_INLINE_VISIBILITY bool operator!=(const path::iterator& __lhs,
+                                                 const path::iterator& __rhs) {
   return !(__lhs == __rhs);
 }
 
+_LIBCPP_AVAILABILITY_FILESYSTEM_POP
+
 _LIBCPP_END_NAMESPACE_FILESYSTEM
 
-#endif // _LIBCPP_STD_VER >= 17
+#endif // _LIBCPP_CXX03_LANG
 
 #endif // _LIBCPP___FILESYSTEM_PATH_ITERATOR_H

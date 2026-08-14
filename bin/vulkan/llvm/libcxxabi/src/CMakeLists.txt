@@ -67,7 +67,9 @@ if (LIBCXXABI_ENABLE_FORGIVING_DYNAMIC_CAST)
   add_definitions(-D_LIBCXXABI_FORGIVING_DYNAMIC_CAST)
 endif()
 
-if (NOT APPLE) # On Apple platforms, we always use -nostdlib++ so we don't need to re-add other libraries
+if (APPLE)
+  add_library_flags_if(LIBCXXABI_HAS_SYSTEM_LIB System)
+else()
   if (LIBCXXABI_ENABLE_THREADS)
     add_library_flags_if(LIBCXXABI_HAS_PTHREAD_LIB pthread)
   endif()
@@ -152,30 +154,27 @@ if (LLVM_ENABLE_MODULES)
   string(REPLACE "-Wl,-z,defs" "" CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS}")
 endif()
 
-include(WarningFlags)
+if (NOT TARGET pstl::ParallelSTL)
+  message(STATUS "Could not find ParallelSTL, libc++abi will not attempt to use it but the build may fail if the libc++ in use needs it to be available.")
+endif()
 
 # Build the shared library.
 add_library(cxxabi_shared_objects OBJECT EXCLUDE_FROM_ALL ${LIBCXXABI_SOURCES} ${LIBCXXABI_HEADERS})
-cxx_add_warning_flags(cxxabi_shared_objects ${LIBCXXABI_ENABLE_WERROR} ${LIBCXXABI_ENABLE_PEDANTIC})
 if (LIBCXXABI_USE_LLVM_UNWINDER)
-  if (LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY OR
-      (DEFINED LIBUNWIND_ENABLE_SHARED AND NOT LIBUNWIND_ENABLE_SHARED))
+  if (LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY)
     target_link_libraries(cxxabi_shared_objects PUBLIC unwind_shared_objects) # propagate usage requirements
     target_sources(cxxabi_shared_objects PUBLIC $<TARGET_OBJECTS:unwind_shared_objects>)
   else()
     target_link_libraries(cxxabi_shared_objects PUBLIC unwind_shared)
   endif()
 endif()
-target_link_libraries(cxxabi_shared_objects PRIVATE cxx-headers ${LIBCXXABI_LIBRARIES})
-if (NOT CXX_SUPPORTS_NOSTDLIBXX_FLAG)
-  target_link_libraries(cxxabi_shared_objects PRIVATE ${LIBCXXABI_BUILTINS_LIBRARY})
-endif()
+target_link_libraries(cxxabi_shared_objects PRIVATE cxx-headers ${LIBCXXABI_BUILTINS_LIBRARY} ${LIBCXXABI_SHARED_LIBRARIES} ${LIBCXXABI_LIBRARIES})
 target_link_libraries(cxxabi_shared_objects PUBLIC cxxabi-headers)
 set_target_properties(cxxabi_shared_objects
   PROPERTIES
     CXX_EXTENSIONS OFF
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED OFF # TODO: Make this REQUIRED once we don't need to accommodate the LLVM documentation builders using an ancient CMake
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED OFF
     COMPILE_FLAGS "${LIBCXXABI_COMPILE_FLAGS}"
     DEFINE_SYMBOL ""
 )
@@ -188,24 +187,16 @@ if (LIBCXXABI_ENABLE_SHARED)
   set_target_properties(cxxabi_shared
     PROPERTIES
       LINK_FLAGS "${LIBCXXABI_LINK_FLAGS}"
-      OUTPUT_NAME "${LIBCXXABI_SHARED_OUTPUT_NAME}"
+      OUTPUT_NAME "c++abi"
       SOVERSION "1"
       VERSION "${LIBCXXABI_LIBRARY_VERSION}"
   )
-
-  if (ZOS)
-    add_custom_command(TARGET cxxabi_shared POST_BUILD
-      COMMAND
-        ${LIBCXXABI_LIBCXX_PATH}/utils/zos_rename_dll_side_deck.sh
-        $<TARGET_LINKER_FILE_NAME:cxxabi_shared> $<TARGET_FILE_NAME:cxxabi_shared> "${LIBCXXABI_DLL_NAME}"
-      COMMENT "Rename dll name inside the side deck file"
-      WORKING_DIRECTORY $<TARGET_FILE_DIR:cxxabi_shared>
-    )
-  endif ()
-
   target_link_libraries(cxxabi_shared
     PUBLIC cxxabi_shared_objects
-    PRIVATE ${LIBCXXABI_LIBRARIES})
+    PRIVATE ${LIBCXXABI_SHARED_LIBRARIES} ${LIBCXXABI_LIBRARIES})
+  if (TARGET pstl::ParallelSTL)
+    target_link_libraries(cxxabi_shared PUBLIC pstl::ParallelSTL)
+  endif()
 
   list(APPEND LIBCXXABI_BUILD_TARGETS "cxxabi_shared")
   if (LIBCXXABI_INSTALL_SHARED_LIBRARY)
@@ -244,7 +235,6 @@ endif()
 
 # Build the static library.
 add_library(cxxabi_static_objects OBJECT EXCLUDE_FROM_ALL ${LIBCXXABI_SOURCES} ${LIBCXXABI_HEADERS})
-cxx_add_warning_flags(cxxabi_static_objects ${LIBCXXABI_ENABLE_WERROR} ${LIBCXXABI_ENABLE_PEDANTIC})
 if (LIBCXXABI_USE_LLVM_UNWINDER AND LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY)
   target_link_libraries(cxxabi_static_objects PUBLIC unwind_static_objects) # propagate usage requirements
   target_sources(cxxabi_static_objects PUBLIC $<TARGET_OBJECTS:unwind_static_objects>)
@@ -254,8 +244,8 @@ target_link_libraries(cxxabi_static_objects PUBLIC cxxabi-headers)
 set_target_properties(cxxabi_static_objects
   PROPERTIES
     CXX_EXTENSIONS OFF
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED OFF # TODO: Make this REQUIRED once we don't need to accommodate the LLVM documentation builders using an ancient CMake
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED OFF
     COMPILE_FLAGS "${LIBCXXABI_COMPILE_FLAGS}"
 )
 
@@ -265,10 +255,7 @@ if(LIBCXXABI_HERMETIC_STATIC_LIBRARY)
   # then its code shouldn't declare them with hidden visibility.  They might
   # actually be provided by a shared library at link time.
   if (LIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS)
-    target_add_compile_flags_if_supported(cxxabi_static_objects PRIVATE -fvisibility-global-new-delete=force-hidden)
-    if (NOT CXX_SUPPORTS_FVISIBILITY_GLOBAL_NEW_DELETE_EQ_FORCE_HIDDEN_FLAG)
-      target_add_compile_flags_if_supported(cxxabi_static_objects PRIVATE -fvisibility-global-new-delete-hidden)
-    endif()
+    target_add_compile_flags_if_supported(cxxabi_static_objects PRIVATE -fvisibility-global-new-delete-hidden)
   endif()
   # _LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS can be defined in libcxx's
   # __config_site too. Define it in the same way here, to avoid redefinition
@@ -287,11 +274,14 @@ if (LIBCXXABI_ENABLE_STATIC)
   set_target_properties(cxxabi_static
     PROPERTIES
       LINK_FLAGS "${LIBCXXABI_LINK_FLAGS}"
-      OUTPUT_NAME "${LIBCXXABI_STATIC_OUTPUT_NAME}"
+      OUTPUT_NAME "c++abi"
     )
   target_link_libraries(cxxabi_static
     PUBLIC cxxabi_static_objects
     PRIVATE ${LIBCXXABI_STATIC_LIBRARIES} ${LIBCXXABI_LIBRARIES})
+  if (TARGET pstl::ParallelSTL)
+    target_link_libraries(cxxabi_static PUBLIC pstl::ParallelSTL)
+  endif()
 
   list(APPEND LIBCXXABI_BUILD_TARGETS "cxxabi_static")
   if (LIBCXXABI_INSTALL_STATIC_LIBRARY)

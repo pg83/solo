@@ -10,13 +10,13 @@
 #define _LIBCPP___COROUTINE_COROUTINE_TRAITS_H
 
 #include <__config>
-#include <__type_traits/void_t.h>
+#include <type_traits>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
 #endif
 
-#if _LIBCPP_STD_VER >= 20
+#if _LIBCPP_STD_VER > 17 && !defined(_LIBCPP_HAS_NO_CXX20_COROUTINES)
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
@@ -34,15 +34,20 @@ template <class _Tp, class = void>
 struct __coroutine_traits_sfinae {};
 
 template <class _Tp>
-struct __coroutine_traits_sfinae< _Tp, __void_t<typename _Tp::promise_type> > {
+struct __coroutine_traits_sfinae<
+    _Tp, typename __void_t<typename _Tp::promise_type>::type>
+{
   using promise_type = typename _Tp::promise_type;
 };
 
 template <class _Ret, class... _Args>
-struct coroutine_traits : public __coroutine_traits_sfinae<_Ret> {};
+struct coroutine_traits
+    : public __coroutine_traits_sfinae<_Ret>
+{
+};
 
 _LIBCPP_END_NAMESPACE_STD
 
-#endif // __LIBCPP_STD_VER >= 20
+#endif // __LIBCPP_STD_VER > 17 && !defined(_LIBCPP_HAS_NO_CXX20_COROUTINES)
 
 #endif // _LIBCPP___COROUTINE_COROUTINE_TRAITS_H

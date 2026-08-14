@@ -9,7 +9,7 @@
 #define QUAD_PRECISION
 #include "fp_lib.h"
 
-#if defined(CRT_HAS_TF_MODE)
+#if defined(CRT_HAS_128BIT) && defined(CRT_LDBL_128BIT)
 typedef ti_int fixint_t;
 typedef tu_int fixuint_t;
 #include "fp_fixint_impl.inc"

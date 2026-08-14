@@ -11,6 +11,7 @@
 #define _LIBCPP___FORMAT_FORMATTER_H
 
 #include <__availability>
+#include <__concepts/same_as.h>
 #include <__config>
 #include <__format/format_fwd.h>
 
@@ -20,7 +21,7 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-#if _LIBCPP_STD_VER >= 20
+#if _LIBCPP_STD_VER > 17
 
 /// The default formatter template.
 ///
@@ -32,22 +33,21 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 /// - is_copy_assignable<F>, and
 /// - is_move_assignable<F>.
 template <class _Tp, class _CharT>
-struct _LIBCPP_TEMPLATE_VIS formatter {
-  formatter()                            = delete;
-  formatter(const formatter&)            = delete;
+struct _LIBCPP_TEMPLATE_VIS _LIBCPP_AVAILABILITY_FORMAT formatter {
+  formatter() = delete;
+  formatter(const formatter&) = delete;
   formatter& operator=(const formatter&) = delete;
 };
 
-#  if _LIBCPP_STD_VER >= 23
+namespace __formatter {
 
-template <class _Tp>
-_LIBCPP_HIDE_FROM_ABI constexpr void __set_debug_format(_Tp& __formatter) {
-  if constexpr (requires { __formatter.set_debug_format(); })
-    __formatter.set_debug_format();
-}
+/** The character types that formatters are specialized for. */
+template <class _CharT>
+concept __char_type = same_as<_CharT, char> || same_as<_CharT, wchar_t>;
 
-#  endif // _LIBCPP_STD_VER >= 23
-#endif   // _LIBCPP_STD_VER >= 20
+} // namespace __formatter
+
+#endif //_LIBCPP_STD_VER > 17
 
 _LIBCPP_END_NAMESPACE_STD
 
