@@ -32,6 +32,8 @@ dlfcn = library(
         "$(S)/lib/glibc_shim.cpp",
         "$(S)/lib/glibc_stubs.cpp",
         "$(S)/lib/hash.cpp",
+        "$(S)/lib/musl_shim.cpp",
+        "$(S)/lib/musl_symbols.cpp",
         "$(S)/lib/tlsdesc.S",
     ],
     cppflags=["-DCOMPILE_DLOPEN"],
@@ -367,6 +369,8 @@ dlfcn_static = library(
         "$(S)/lib/glibc_shim.cpp",
         "$(S)/lib/glibc_stubs.cpp",
         "$(S)/lib/hash.cpp",
+        "$(S)/lib/musl_shim.cpp",
+        "$(S)/lib/musl_symbols.cpp",
         "$(S)/lib/tlsdesc.S",
     ],
     deps=runtime_generated,
@@ -518,7 +522,6 @@ vulkan_loader = library(
 vulkan_app = library(
     name="vulkan_app",
     srcs=[
-        f"{vulkan_root}/host_symbols.cpp",
         {
             "src": f"{vulkan_root}/main.cpp",
             "inputs": [
