@@ -23,10 +23,22 @@ def main():
                 check=True,
             )
 
+        library_path = root / "ld-library-path"
+        library_path.mkdir()
+        (library_path / "libdlfcn-test-pci.so").symlink_to(
+            root / "usr" / "lib" / "libpciaccess.so.0"
+        )
+        (library_path / "libdlfcn-test-vulkan.so").symlink_to(
+            root / "usr" / "lib" / "libvulkan.so.1"
+        )
+
         environment = os.environ.copy()
-        environment["DL_ELF_LIBRARY_PATH"] = str(root / "usr" / "lib")
+        environment.pop("DL_ELF_LIBRARY_PATH", None)
+        environment["LD_LIBRARY_PATH"] = os.pathsep.join(
+            (str(root / "missing"), str(library_path))
+        )
         result = subprocess.run(
-            [executable, str(root)],
+            [executable],
             check=False,
             text=True,
             stdout=subprocess.PIPE,

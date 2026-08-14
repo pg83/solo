@@ -519,27 +519,36 @@ namespace {
             return realPath(candidate);
         }
 
+        static std::optional<std::string> inSearchPath(std::string_view directories, const std::string_view& name, bool emptyIsCurrentDirectory) {
+            while (true) {
+                auto separator = directories.find(':');
+                auto directory = directories.substr(0, separator);
+
+                if (!directory.empty() || emptyIsCurrentDirectory) {
+                    if (auto resolved = inDirectory(directory.empty() ? "." : directory, name); resolved) {
+                        return resolved;
+                    }
+                }
+                if (separator == std::string_view::npos) {
+                    return std::nullopt;
+                }
+                directories.remove_prefix(separator + 1);
+            }
+        }
+
         std::optional<std::string> resolvePath(const std::string_view& path) const {
             if (path.find('/') != std::string_view::npos) {
                 return realPath(std::string(path));
             }
 
             if (const auto* configured = getenv("DL_ELF_LIBRARY_PATH"); configured) {
-                std::string_view directories(configured);
-
-                while (!directories.empty()) {
-                    auto separator = directories.find(':');
-                    auto directory = directories.substr(0, separator);
-
-                    if (!directory.empty()) {
-                        if (auto resolved = inDirectory(directory, path); resolved) {
-                            return resolved;
-                        }
-                    }
-                    if (separator == std::string_view::npos) {
-                        break;
-                    }
-                    directories.remove_prefix(separator + 1);
+                if (auto resolved = inSearchPath(configured, path, false); resolved) {
+                    return resolved;
+                }
+            }
+            if (const auto* configured = getenv("LD_LIBRARY_PATH"); configured) {
+                if (auto resolved = inSearchPath(configured, path, true); resolved) {
+                    return resolved;
                 }
             }
 
