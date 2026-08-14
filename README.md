@@ -36,10 +36,9 @@ cd solo
 ```
 
 The last command discovers the distro-installed Vulkan ICD in the usual way
-and produces a 512×512 RGBA image. This is also how we are going to build the
-[release binaries for Shitty](https://github.com/pg83/shitty/releases)—a
-blazingly fast terminal emulator, BTW. Its Linux release will stay static while
-loading the user's Vulkan driver through SoLo. To force a particular driver:
+and produces a 512×512 RGBA image. This is how we build the
+[Shitty release binaries](https://github.com/pg83/shitty/releases)—a blazingly
+fast terminal emulator, BTW! To force a particular driver:
 
 ```sh
 ./vulkan --driver /usr/share/vulkan/icd.d/radeon_icd.x86_64.json radeon.png
