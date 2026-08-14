@@ -1,0 +1,2678 @@
+#!/usr/bin/env python3
+
+"""Small, stateless build graph runner with a content-addressed cache."""
+
+from __future__ import annotations
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import argparse
+import ast
+import base64
+import concurrent.futures
+import dataclasses
+import errno
+import fcntl
+import glob as globlib
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import shlex
+import shutil
+import signal
+import sqlite3
+import stat
+import subprocess
+import sysconfig
+import tempfile
+import threading
+import time
+import types
+import uuid
+from collections import defaultdict, deque
+from pathlib import Path
+from typing import Any, Iterable
+
+
+S = "$(S)"
+B = "$(B)"
+
+ANSI_COLORS = {
+    "red": "31", "green": "32", "yellow": "33", "blue": "34",
+    "magenta": "35", "cyan": "36", "white": "37",
+    "light-red": "91", "light-green": "92", "light-yellow": "93",
+    "light-blue": "94", "light-magenta": "95", "light-cyan": "96",
+    "light-white": "97",
+}
+
+
+def native_target() -> str:
+    target = sysconfig.get_config_var("HOST_GNU_TYPE")
+    if isinstance(target, str) and target:
+        return target
+    machine = os.uname().machine
+    machine = {"amd64": "x86_64", "arm64": "aarch64"}.get(machine, machine)
+    return f"{machine}-unknown-linux-gnu"
+
+
+class BuildError(RuntimeError):
+    pass
+
+
+class AllowSpec(Exception):
+    """Raised by Flags.allow() in --help mode to hand the declared flag
+    spec back to main() for rendering; never seen during a real build."""
+
+    def __init__(self, spec: dict[str, dict]):
+        super().__init__("flag spec")
+        self.spec = spec
+
+
+class Flags(types.ModuleType):
+    """`-D` build flags, exposed to build.py as `build.flags`.
+
+    An unset flag reads as the empty string, so `if f.A:` is a plain
+    truthiness test with no string comparison. `-DA=B` sets A to "B",
+    a bare `-DA` sets it to "yes".
+
+    `allow({name: {'descr': ..., 'default': ...}})` declares the accepted
+    flags: a `-D` outside the set is an error (an empty set forbids all -D),
+    and an unset declared flag reads as its default. Under `--help` allow()
+    instead raises AllowSpec so the flags can be listed in the help text.
+    """
+
+    def __init__(self, values: dict[str, str], help_mode: bool = False):
+        super().__init__("build.flags")
+        object.__setattr__(self, "_values", dict(values))
+        object.__setattr__(self, "_spec", None)
+        object.__setattr__(self, "_help", help_mode)
+
+    def allow(self, spec: dict[str, dict]) -> None:
+        norm = {
+            str(name): {
+                "descr": str((meta or {}).get("descr", "")),
+                "default": (meta or {}).get("default", ""),
+            }
+            for name, meta in (spec or {}).items()
+        }
+        if object.__getattribute__(self, "_help"):
+            raise AllowSpec(norm)
+        unknown = [k for k in object.__getattribute__(self, "_values") if k not in norm]
+        if unknown:
+            allowed = ", ".join(sorted(norm)) or "(none)"
+            raise BuildError(
+                f"unknown -D flag(s): {', '.join(sorted(unknown))}; allowed: {allowed}"
+            )
+        object.__setattr__(self, "_spec", norm)
+
+    def _get(self, name: str) -> str:
+        values = object.__getattribute__(self, "_values")
+        if name in values:
+            return values[name]
+        spec = object.__getattribute__(self, "_spec")
+        if spec is not None and name in spec:
+            return spec[name]["default"]
+        return ""
+
+    def __getattr__(self, name: str) -> str:
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return self._get(name)
+
+    def __getitem__(self, name: str) -> str:
+        return self._get(name)
+
+    def __contains__(self, name: str) -> bool:
+        return name in object.__getattribute__(self, "_values")
+
+
+def parse_defines(items: Iterable[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for item in items:
+        key, sep, value = item.partition("=")
+        if not key:
+            raise BuildError(f"malformed -D flag: {item!r}")
+        values[key] = value if sep else "yes"
+    return values
+
+
+def _items(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)):
+        return [value]
+    return list(value)
+
+
+def _uniq(values: Iterable[Any]) -> list[Any]:
+    out: list[Any] = []
+    seen: set[Any] = set()
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def _source_path(path: str) -> str:
+    path = str(path)
+    if path.startswith((S + "/", B + "/")) or os.path.isabs(path):
+        return path
+    raise BuildError(f"input path must start with $(S)/ or $(B)/: {path}")
+
+
+def _output_path(path: str) -> str:
+    path = str(path)
+    if path.startswith(B + "/"):
+        return path
+    raise BuildError(f"output path must start with $(B)/: {path}")
+
+
+def _include_path(path: str) -> str:
+    path = str(path).rstrip("/")
+    if path in (S, B) or path.startswith((S + "/", B + "/")) or os.path.isabs(path):
+        return path
+    raise BuildError(f"include path must start with $(S)/ or $(B)/: {path}")
+
+
+def _cwd_path(path: str) -> str:
+    path = str(path).rstrip("/")
+    if path in (S, B) or path.startswith((S + "/", B + "/")) or os.path.isabs(path):
+        return path
+    raise BuildError(f"cwd path must start with $(S)/ or $(B)/: {path}")
+
+
+def _validate_descr(descr: str) -> None:
+    if len(descr) != 2 or not descr.isascii() or not descr.isalpha():
+        raise BuildError(f"descr must be exactly two ASCII letters: {descr!r}")
+
+
+@dataclasses.dataclass(eq=False)
+class Node:
+    inputs: list[str]
+    outputs: list[str]
+    commands: list[list[str]]
+    deps: list["Node"] = dataclasses.field(default_factory=list)
+    cwd: str = B
+    env: dict[str, str] = dataclasses.field(default_factory=dict)
+    descr: str = "GN"
+    color: str = ""
+    include_roots: list[str] = dataclasses.field(default_factory=list)
+    scan_sources: bool = False
+    source_inputs: set[str] = dataclasses.field(default_factory=set)
+    uid: str | None = None
+
+    def __post_init__(self) -> None:
+        _validate_descr(self.descr)
+
+    def canonical(self) -> dict[str, Any]:
+        return {
+            "inputs": self.inputs,
+            "outputs": self.outputs,
+            "cmd": self.commands,
+            "cwd": self.cwd,
+            "env": self.env,
+        }
+
+
+@dataclasses.dataclass(eq=False)
+class Target:
+    kind: str
+    name: str | None = None
+    srcs: list[Any] = dataclasses.field(default_factory=list)
+    deps: list["Target"] = dataclasses.field(default_factory=list)
+    cflags: list[str] = dataclasses.field(default_factory=list)
+    cxxflags: list[str] = dataclasses.field(default_factory=list)
+    cppflags: list[str] = dataclasses.field(default_factory=list)
+    public_cflags: list[str] = dataclasses.field(default_factory=list)
+    public_cxxflags: list[str] = dataclasses.field(default_factory=list)
+    public_cppflags: list[str] = dataclasses.field(default_factory=list)
+    ldflags: list[str] = dataclasses.field(default_factory=list)
+    output: str | None = None
+    commands: list[list[str]] = dataclasses.field(default_factory=list)
+    inputs: list[str] = dataclasses.field(default_factory=list)
+    outputs: list[str] = dataclasses.field(default_factory=list)
+    cwd: str = B
+    env: dict[str, str] = dataclasses.field(default_factory=dict)
+    descr: str = "GN"
+    color: str = "yellow"
+    linker: str | None = None
+    enabled: bool = True
+    host_deps: list["Target"] = dataclasses.field(default_factory=list)
+    root: Node | None = None
+    nodes: list[Node] = dataclasses.field(default_factory=list)
+    uses_cxx: bool = False
+
+    def __bool__(self) -> bool:
+        return self.enabled
+
+
+@dataclasses.dataclass
+class ImportedGraph:
+    nodes: list[Node]
+    primary: set[Node]
+    exports: list[dict[str, Any]]
+    index_primary: bool
+    registered: set[Node] = dataclasses.field(default_factory=set)
+    selections: dict[tuple[str, bool, str | None], tuple[Node, str, str | None]] = dataclasses.field(default_factory=dict)
+
+
+class BuildContext:
+    def __init__(self, source_root: Path, build_root: Path, flags: Flags | None = None,
+                 *, target: str | None = None, host: str | None = None):
+        self.source_root = source_root.resolve()
+        self.build_root = build_root.resolve()
+        self.flags = flags if flags is not None else Flags({})
+        self.host = host or native_target()
+        self.target = target or self.host
+        self.build_file: Path | None = None
+        self.targets: list[Target] = []
+        self.groups: dict[str, list[Target]] = {}
+        self.nodes: list[Node] = []
+        self.output_nodes: dict[str, Node] = {}
+        self.target_names: dict[str, Target] = {}
+        self.program_outputs: dict[str, Target] = {}
+        self.command_host_deps: dict[Target, list[Target]] = {}
+        self.file_hashes: dict[str, str] = {}
+        self.includes: list[str] = []
+        self.external_cflags = shlex.split(os.environ.get("CFLAGS", ""))
+        self.external_cxxflags = shlex.split(os.environ.get("CXXFLAGS", ""))
+        self.external_cppflags = shlex.split(os.environ.get("CPPFLAGS", ""))
+        self.external_ldflags = shlex.split(os.environ.get("LDFLAGS", ""))
+        self.external_ldflags += shlex.split(os.environ.get("CTRFLAGS", ""))
+        # Expose the external flags while build.py is evaluated. load() splits
+        # them back out afterwards so command-line flags can be emitted last
+        # and override project defaults (for example, -std=c++17 for Clang).
+        self.cflags = self.external_cflags.copy()
+        self.cxxflags = self.external_cxxflags.copy()
+        self.cppflags = self.external_cppflags.copy()
+        self.ldflags = self.external_ldflags.copy()
+        self.host_cflags = shlex.split(os.environ.get("HOST_CFLAGS", ""))
+        self.host_cxxflags = shlex.split(os.environ.get("HOST_CXXFLAGS", ""))
+        self.host_cppflags = shlex.split(os.environ.get("HOST_CPPFLAGS", ""))
+        self.cc = os.environ.get("CC", "cc")
+        self.cxx = os.environ.get("CXX", "c++")
+        self.ar = os.environ.get("AR") or shutil.which("ar") or shutil.which("llvm-ar") or "ar"
+        self.tool_paths: dict[str, str] = {}
+        self.tool_kinds: dict[str, str] = {}
+        self.imported_graphs: dict[tuple[Any, ...], ImportedGraph] = {}
+
+    def resolve_tool(self, name: str) -> str:
+        cached = self.tool_paths.get(name)
+        if cached is None:
+            found = shutil.which(name)
+            if found is None:
+                raise BuildError(f"command not found in PATH: {name}")
+            # Preserve the name selected through PATH. Multi-call binaries use
+            # argv[0] to select an applet (for example Alpine's /bin/sh ->
+            # busybox), so replacing the symlink with its real path changes
+            # the command's meaning. Nix PATH entries already contain their
+            # store hash, making the absolute invocation path a stable UID
+            # input without dereferencing the final symlink.
+            cached = os.path.abspath(found)
+            self.tool_paths[name] = cached
+        return cached
+
+    def _compiler_kind(self, name: str, *, allow_unknown: bool = False) -> str:
+        path = self.resolve_tool(name)
+        cached = self.tool_kinds.get(path)
+        if cached is not None:
+            return cached
+        basename = Path(path).name.lower()
+        if "clang" in basename:
+            kind = "clang"
+        elif re.search(r"(?:^|-)(?:gcc|g\+\+)(?:-\d+(?:\.\d+)*)?$", basename):
+            kind = "gcc"
+        else:
+            try:
+                version = subprocess.check_output(
+                    [path, "--version"], text=True, stderr=subprocess.STDOUT,
+                )
+            except (OSError, subprocess.CalledProcessError) as exc:
+                if allow_unknown:
+                    self.tool_kinds[path] = "other"
+                    return "other"
+                raise BuildError(f"cannot identify C/C++ compiler {name}: {exc}") from exc
+            lowered = version.lower()
+            if "clang" in lowered:
+                kind = "clang"
+            elif "gcc" in lowered or "free software foundation" in lowered:
+                kind = "gcc"
+            else:
+                kind = "other"
+        self.tool_kinds[path] = kind
+        return kind
+
+    def _compiler_command(self, name: str, *, allow_other: bool = False) -> list[str]:
+        kind = self._compiler_kind(name, allow_unknown=allow_other)
+        if kind == "clang":
+            return [name, f"--target={self.target}"]
+        if kind == "gcc" and self.target != self.host:
+            raise BuildError(
+                f"GCC cross-compilation is not supported: host {self.host}, target {self.target}"
+            )
+        if kind == "other" and not allow_other:
+            raise BuildError(f"unsupported C/C++ compiler: {self.resolve_tool(name)}")
+        return [name]
+
+    @staticmethod
+    def _configuration_uid(target: str, defines: dict[str, str]) -> str:
+        data = json.dumps(
+            {
+                "target": target,
+                "defines": defines,
+            },
+            sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode()
+        return hashlib.md5(data).hexdigest()
+
+    def _target_configuration_uid(self) -> str:
+        defines = dict(object.__getattribute__(self.flags, "_values"))
+        return self._configuration_uid(self.target, defines)
+
+    def _host_configuration_uid(self) -> str:
+        return self._configuration_uid(self.host, {})
+
+    def interface(self, *, cflags=(), cxxflags=(), cppflags=(), ldflags=(), enabled=True, name=None) -> Target:
+        target = Target(
+            "interface", name=name,
+            public_cflags=_items(cflags), public_cxxflags=_items(cxxflags),
+            public_cppflags=_items(cppflags), ldflags=_items(ldflags),
+            enabled=enabled,
+        )
+        self.targets.append(target)
+        return target
+
+    def pkg_config(self, *packages: str, required: bool = True) -> Target:
+        tool = os.environ.get("PKG_CONFIG", "pkg-config")
+        base = [tool, *packages]
+        stderr = None if required else subprocess.DEVNULL
+        try:
+            cflags = shlex.split(subprocess.check_output(base + ["--cflags"], text=True, stderr=stderr).strip())
+            ldflags = shlex.split(subprocess.check_output(base + ["--libs"], text=True, stderr=stderr).strip())
+        except (OSError, subprocess.CalledProcessError) as exc:
+            if required:
+                raise BuildError(f"pkg-config failed for {' '.join(packages)}: {exc}") from exc
+            return self.interface(enabled=False, name="pkg:" + ",".join(packages))
+        return self.interface(cflags=cflags, ldflags=ldflags, name="pkg:" + ",".join(packages))
+
+    def pkg_config_variable(self, package: str, variable: str) -> str:
+        tool = os.environ.get("PKG_CONFIG", "pkg-config")
+        try:
+            return subprocess.check_output(
+                [tool, f"--variable={variable}", package], text=True,
+            ).strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise BuildError(f"pkg-config variable {package}:{variable} failed: {exc}") from exc
+
+    def have_header(self, header: str) -> bool:
+        if not re.fullmatch(r"[A-Za-z0-9_./+-]+", header):
+            raise BuildError(f"invalid header name: {header!r}")
+        flags = [
+            *self.cppflags,
+            *self.cflags,
+            *self.cxxflags,
+        ]
+        source = f"#include <{header}>\n"
+        command = [
+            *self._compiler_command(self.cxx),
+            *flags,
+            "-E", "-x", "c++", "-",
+        ]
+        command = [
+            argument.replace(S, str(self.source_root)).replace(B, str(self.build_root))
+            for argument in command
+        ]
+        try:
+            subprocess.run(
+                command,
+                input=source,
+                text=True,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return False
+        return True
+
+    def glob(self, pattern: str) -> list[str]:
+        pattern = str(pattern)
+        if pattern.startswith(S + "/"):
+            relative_pattern = pattern[len(S) + 1:]
+            matches = globlib.glob(str(self.source_root / relative_pattern), recursive=True)
+            result: list[str] = []
+            for match in matches:
+                try:
+                    relative = Path(match).relative_to(self.source_root)
+                except ValueError as exc:
+                    raise BuildError(f"glob escaped $(S): {pattern}") from exc
+                result.append(S + "/" + relative.as_posix())
+            return sorted(result)
+        if os.path.isabs(pattern):
+            return sorted(globlib.glob(pattern, recursive=True))
+        raise BuildError(f"glob pattern must start with $(S)/ or be absolute: {pattern}")
+
+    def library(self, *, srcs, name=None, cflags=(), cxxflags=(), cppflags=(),
+                public_cflags=(), public_cxxflags=(), public_cppflags=(),
+                deps=(), ldflags=(), output=None) -> Target:
+        return self._compiled_target(
+            "library", srcs, name, cflags, cxxflags, cppflags,
+            public_cflags, public_cxxflags, public_cppflags,
+            deps, ldflags, output, None,
+        )
+
+    def program(self, *, srcs, name=None, cflags=(), cxxflags=(), cppflags=(),
+                public_cflags=(), public_cxxflags=(), public_cppflags=(),
+                deps=(), ldflags=(), output=None, linker=None) -> Target:
+        return self._compiled_target(
+            "program", srcs, name, cflags, cxxflags, cppflags,
+            public_cflags, public_cxxflags, public_cppflags,
+            deps, ldflags, output, linker,
+        )
+
+    def _compiled_target(self, kind, srcs, name, cflags, cxxflags, cppflags,
+                         public_cflags, public_cxxflags, public_cppflags,
+                         deps, ldflags, output, linker) -> Target:
+        sources = []
+        for source in _items(srcs):
+            if isinstance(source, dict):
+                source = dict(source)
+                if "src" not in source:
+                    raise BuildError("source mapping has no 'src' field")
+                source["src"] = _source_path(source["src"])
+                source["inputs"] = [_source_path(path) for path in _items(source.get("inputs", ()))]
+                unknown = set(source) - {"src", "inputs"}
+                if unknown:
+                    raise BuildError(f"unknown source field(s): {', '.join(sorted(unknown))}")
+                sources.append(source)
+            else:
+                sources.append(_source_path(source))
+        target = Target(
+            kind, name=name, srcs=sources,
+            deps=_items(deps),
+            cflags=_items(cflags), cxxflags=_items(cxxflags), cppflags=_items(cppflags),
+            public_cflags=_items(public_cflags),
+            public_cxxflags=_items(public_cxxflags),
+            public_cppflags=_items(public_cppflags),
+            ldflags=_items(ldflags), output=_output_path(output) if output else None,
+            linker=linker,
+        )
+        self._validate_deps(target)
+        self.targets.append(target)
+        return target
+
+    def command(self, *, inputs=(), outputs, cmd, deps=(), name=None, cwd=B, env=None,
+                cflags=(), cxxflags=(), cppflags=(), ldflags=(), descr="GN", color="yellow") -> Target:
+        commands = cmd
+        if not commands or isinstance(commands[0], (str, bytes)):
+            commands = [commands]
+        target = Target(
+            "command", name=name, deps=_items(deps), inputs=[_source_path(x) for x in _items(inputs)],
+            outputs=[_output_path(x) for x in _items(outputs)],
+            commands=[[str(x) for x in command] for command in commands], cwd=_cwd_path(cwd),
+            env=dict(env or {}),
+            public_cflags=_items(cflags), public_cxxflags=_items(cxxflags),
+            public_cppflags=_items(cppflags), ldflags=_items(ldflags),
+            descr=str(descr), color=str(color),
+        )
+        self._validate_deps(target)
+        self.targets.append(target)
+        return target
+
+    def group(self, name: str, *targets: Target) -> None:
+        if not isinstance(name, str) or not name:
+            raise BuildError(f"group name must be a non-empty string, got {name!r}")
+        for target in targets:
+            if not isinstance(target, Target):
+                raise BuildError(f"group {name!r} expects targets, got {target!r}")
+        self.groups.setdefault(name, []).extend(targets)
+
+    def install(self, *targets: Target) -> None:
+        self.group("install", *targets)
+
+    @staticmethod
+    def _validate_deps(target: Target) -> None:
+        for dep in target.deps:
+            if not isinstance(dep, Target):
+                raise BuildError(f"{target.kind} dependency is not a target: {dep!r}")
+
+    def load(self, path: Path) -> Any:
+        self.build_file = path.resolve()
+        if not self.build_file.is_file():
+            raise BuildError(f"build file does not exist: {self.build_file}")
+        spec = importlib.util.spec_from_file_location("_project_build", path)
+        if spec is None or spec.loader is None:
+            raise BuildError(f"cannot load {path}")
+        module = importlib.util.module_from_spec(spec)
+        build_module = types.ModuleType("build")
+        build_module.includes = []
+        build_module.glob = self.glob
+        build_module.flags = self.flags
+        build_module.host = self.host
+        build_module.target = self.target
+        for name in ("cflags", "cxxflags", "cppflags", "ldflags"):
+            setattr(build_module, name, getattr(self, name).copy())
+        build_module.have_header = self.have_header
+        module.__dict__.update({
+            "pkg_config": self.pkg_config,
+            "pkg_config_variable": self.pkg_config_variable,
+            "have_header": self.have_header,
+            "dependency": self.interface,
+            "import_build": self.import_build,
+            "library": self.library,
+            "program": self.program,
+            "command": self.command,
+            "group": self.group,
+            "install": self.install,
+        })
+        sys.modules[spec.name] = module
+        missing = object()
+        previous_build = sys.modules.get("build", missing)
+        previous_flags = sys.modules.get("build.flags", missing)
+        sys.modules["build"] = build_module
+        # so `import build.flags as f` resolves straight from sys.modules
+        sys.modules["build.flags"] = self.flags
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            if previous_build is missing:
+                del sys.modules["build"]
+            else:
+                sys.modules["build"] = previous_build
+            if previous_flags is missing:
+                del sys.modules["build.flags"]
+            else:
+                sys.modules["build.flags"] = previous_flags
+        self.includes = [_include_path(path) for path in _items(build_module.includes)]
+        for name in ("cflags", "cxxflags", "cppflags", "ldflags"):
+            values = [str(flag) for flag in _items(getattr(build_module, name))]
+            external_name = "external_" + name
+            external = getattr(self, external_name)
+            # The ordinary `build.foo += [...]` form preserves the initial
+            # external prefix. Keep supporting build files that deliberately
+            # replace or reorder the whole list by treating their result as-is.
+            if values[:len(external)] == external:
+                values = values[len(external):]
+            else:
+                setattr(self, external_name, [])
+            setattr(self, name, values)
+        self._infer_names(module)
+        return module
+
+    def _invoke_graph(self, build_file: Path, target: str,
+                      env: dict[str, str]) -> str:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "-G",
+                "--target",
+                target,
+                "--build-file",
+                str(build_file),
+            ],
+            cwd=build_file.parent,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.rstrip()
+            message = f"cannot import build graph from {build_file}"
+            if detail:
+                message += "\n" + detail
+            raise BuildError(message)
+        return result.stdout
+
+    @staticmethod
+    def _decode_graph(graph: Any, origin: Path) -> tuple[
+            list[Node], set[Node], list[dict[str, Any]]]:
+        if not isinstance(graph, dict) or graph.get("version") not in (1, 2):
+            raise BuildError(f"unsupported build graph from {origin}")
+        version = graph["version"]
+        records = graph.get("nodes")
+        if not isinstance(records, list):
+            raise BuildError(f"build graph has no node list: {origin}")
+
+        nodes: list[Node] = []
+        record_inputs: list[list[str]] = []
+        record_deps: list[list[str]] = []
+        ids: dict[str, Node] = {}
+        primary: set[Node] = set()
+        producers: dict[str, Node] = {}
+        for record in records:
+            if not isinstance(record, dict):
+                raise BuildError(f"invalid node in build graph from {origin}")
+            inputs = record.get("inputs")
+            outputs = record.get("outputs")
+            commands = record.get("cmd")
+            cwd = record.get("cwd", B)
+            env = record.get("env", {})
+            node_id = record.get("id")
+            deps = record.get("deps", [])
+            if (not isinstance(inputs, list) or not all(isinstance(x, str) for x in inputs)
+                    or not isinstance(outputs, list)
+                    or not all(isinstance(x, str) for x in outputs)
+                    or not isinstance(commands, list)
+                    or not all(isinstance(command, list)
+                               and all(isinstance(x, str) for x in command)
+                               for command in commands)
+                    or not isinstance(cwd, str) or not isinstance(env, dict)
+                    or not all(isinstance(key, str) and isinstance(value, str)
+                               for key, value in env.items())
+                    or version == 2 and (
+                        not isinstance(node_id, str) or not node_id
+                        or not isinstance(deps, list)
+                        or not all(isinstance(dep, str) for dep in deps)
+                        or not isinstance(record.get("primary", False), bool)
+                    )):
+                raise BuildError(f"invalid node fields in build graph from {origin}")
+            node = Node(
+                inputs=[] if version == 1 else _uniq(inputs),
+                outputs=outputs,
+                commands=commands,
+                cwd=cwd,
+                env=env,
+                descr=str(record.get("descr", "GN")),
+                color=str(record.get("color", "" if version == 2 else "yellow")),
+            )
+            for path in inputs:
+                if path.startswith(S + "/") or os.path.isabs(path):
+                    node.source_inputs.add(path)
+            nodes.append(node)
+            record_inputs.append(inputs)
+            record_deps.append(deps)
+            if version == 2:
+                if node_id in ids:
+                    raise BuildError(f"duplicate node id in build graph from {origin}: {node_id}")
+                ids[node_id] = node
+                if record.get("primary", False):
+                    primary.add(node)
+            else:
+                primary.add(node)
+                for output in outputs:
+                    if output in producers:
+                        raise BuildError(f"multiple imported producers for {output}")
+                    producers[output] = node
+
+        if version == 2:
+            for node, deps in zip(nodes, record_deps):
+                try:
+                    node.deps = _uniq(ids[dep] for dep in deps)
+                except KeyError as exc:
+                    raise BuildError(
+                        f"imported dependency has no node: {exc.args[0]}"
+                    ) from exc
+        else:
+            for node, inputs in zip(nodes, record_inputs):
+                for path in inputs:
+                    producer = producers.get(path)
+                    if producer is not None:
+                        node.deps.append(producer)
+                    else:
+                        if path.startswith(B + "/"):
+                            raise BuildError(f"imported input has no producer: {path}")
+                        node.inputs.append(path)
+                node.deps = _uniq(node.deps)
+                node.inputs = _uniq(node.inputs)
+
+        exports: list[dict[str, Any]] = []
+        if version == 2:
+            encoded_exports = graph.get("exports", [])
+            if (not isinstance(encoded_exports, list)
+                    or not all(isinstance(export, dict) for export in encoded_exports)):
+                raise BuildError(f"invalid exports in build graph from {origin}")
+            for export in encoded_exports:
+                node_id = export.get("node")
+                name = export.get("name")
+                kind = export.get("kind")
+                output = export.get("output")
+                if (not isinstance(node_id, str) or node_id not in ids
+                        or not isinstance(name, str) or not isinstance(kind, str)
+                        or not isinstance(output, str)):
+                    raise BuildError(f"invalid export in build graph from {origin}")
+                exports.append({
+                    "node": ids[node_id],
+                    "name": name,
+                    "kind": kind,
+                    "output": output,
+                })
+        return nodes, primary, exports
+
+    @staticmethod
+    def _select_imported_root(nodes: Iterable[Node],
+                              exports: Iterable[dict[str, Any]],
+                              output_name: str, *,
+                              exact: bool = False,
+                              target_name: str | None = None) -> tuple[Node, str, str | None]:
+        matches: list[tuple[Node, str, str | None]] = []
+        for export in exports:
+            output = export["output"]
+            if target_name is not None and export["name"] != target_name:
+                continue
+            matched = output == output_name if exact else Path(output).name == output_name
+            if matched:
+                matches.append((export["node"], export["kind"], export["name"]))
+        if not matches:
+            for node in nodes:
+                for output in node.outputs:
+                    matched = output == output_name if exact else Path(output).name == output_name
+                    if matched:
+                        matches.append((node, "library", None))
+        matches = _uniq(matches)
+        if len(matches) != 1:
+            label = "output" if exact else "output named"
+            raise BuildError(f"expected one imported {label} {output_name!r}, got {len(matches)}")
+        return matches[0]
+
+    @staticmethod
+    def _node_closure(roots: Iterable[Node]) -> set[Node]:
+        closure: set[Node] = set()
+        stack = list(roots)
+        while stack:
+            node = stack.pop()
+            if node in closure:
+                continue
+            closure.add(node)
+            stack.extend(node.deps)
+        return closure
+
+    def _load_imported_graph(self, build_file: Path, target: str, *,
+                             extra_cflags: Iterable[str] = (),
+                             extra_cxxflags: Iterable[str] = (),
+                             extra_cppflags: Iterable[str] = (),
+                             source_prefix: str | None = None,
+                             build_prefix: str | None = None,
+                             index_primary: bool) -> ImportedGraph:
+        extras = (
+            tuple(str(flag) for flag in extra_cflags),
+            tuple(str(flag) for flag in extra_cxxflags),
+            tuple(str(flag) for flag in extra_cppflags),
+        )
+        key = (
+            str(build_file),
+            target,
+            extras,
+            source_prefix,
+            build_prefix,
+            index_primary,
+        )
+        cached = self.imported_graphs.get(key)
+        if cached is not None:
+            return cached
+
+        env = os.environ.copy()
+        # Each import appends its flags to the ordinary inherited environment.
+        # Nested imports therefore accumulate flags in parent-to-child order,
+        # and the imported build.py can inspect them through build.*flags.
+        for variable, values in zip(("CFLAGS", "CXXFLAGS", "CPPFLAGS"), extras):
+            if not values:
+                continue
+            existing = env.get(variable, "")
+            env[variable] = f"{existing} {shlex.join(values)}".strip() if existing else shlex.join(values)
+        encoded = self._invoke_graph(build_file, target, env)
+        if source_prefix is not None:
+            assert build_prefix is not None
+            encoded = encoded.replace(S, source_prefix).replace(B, build_prefix)
+        try:
+            graph = json.loads(encoded)
+        except json.JSONDecodeError as exc:
+            raise BuildError(f"invalid build graph from {build_file}: {exc}") from exc
+        nodes, primary, exports = self._decode_graph(graph, build_file)
+        imported = ImportedGraph(nodes, primary, exports, index_primary)
+        self.imported_graphs[key] = imported
+        return imported
+
+    def _select_graph_root(self, graph: ImportedGraph, output_name: str, *,
+                           exact: bool = False,
+                           target_name: str | None = None) -> tuple[Node, str, str | None]:
+        key = (output_name, exact, target_name)
+        cached = graph.selections.get(key)
+        if cached is None:
+            cached = self._select_imported_root(
+                graph.nodes,
+                graph.exports,
+                output_name,
+                exact=exact,
+                target_name=target_name,
+            )
+            graph.selections[key] = cached
+        return cached
+
+    def _register_imported_nodes(self, graph: ImportedGraph,
+                                 roots: Iterable[Node]) -> list[Node]:
+        closure = self._node_closure(roots)
+        imported_nodes = [node for node in graph.nodes if node in closure]
+        for node in imported_nodes:
+            if node in graph.registered:
+                continue
+            if graph.index_primary and node in graph.primary:
+                self._add_node(node)
+            else:
+                self.nodes.append(node)
+            graph.registered.add(node)
+        return imported_nodes
+
+    def import_build(self, path: str, output_name: str,
+                     extra_cflags=(), extra_cxxflags=(),
+                     extra_cppflags=(), deps=()) -> Target:
+        path = str(path)
+        if path.startswith(S + "/"):
+            build_file = self.physical(path)
+        elif os.path.isabs(path):
+            build_file = Path(path)
+        else:
+            build_file = self.source_root / path
+        build_file = build_file.resolve()
+        if not build_file.is_file():
+            raise BuildError(f"imported build file does not exist: {build_file}")
+        try:
+            namespace = build_file.parent.relative_to(self.source_root).as_posix()
+        except ValueError as exc:
+            raise BuildError(
+                f"imported build file is outside the source tree: {build_file}"
+            ) from exc
+        if namespace in ("", "."):
+            raise BuildError("cannot import the root build file into itself")
+
+        source_prefix = f"{S}/{namespace}"
+        build_prefix = f"{B}/{namespace}"
+        graph = self._load_imported_graph(
+            build_file,
+            self.target,
+            extra_cflags=[str(x) for x in _items(extra_cflags)],
+            extra_cxxflags=[str(x) for x in _items(extra_cxxflags)],
+            extra_cppflags=[str(x) for x in _items(extra_cppflags)],
+            source_prefix=source_prefix,
+            build_prefix=build_prefix,
+            index_primary=True,
+        )
+        root, kind, exported_name = self._select_graph_root(graph, output_name)
+
+        # Link importer-built targets into the imported root. The imported
+        # graph cannot reference this graph's outputs itself: its markers are
+        # namespaced during the import, so a path smuggled in through flags
+        # would be rewritten. Injecting after the rewrite keeps paths intact.
+        dep_targets = _items(deps)
+        if dep_targets and kind != "program":
+            raise BuildError(
+                f"import_build deps apply to a program root, got {kind!r} for {output_name!r}")
+        for dep in dep_targets:
+            if not isinstance(dep, Target) or dep.root is None or not dep.output:
+                raise BuildError(
+                    f"import_build dep for {output_name!r} must be a built target with an output")
+            if dep.output in root.inputs:
+                continue
+            root.inputs.append(dep.output)
+            # Appended past the imported link line, after the archives it
+            # references; static resolution order stays correct.
+            root.commands[-1].append(dep.output)
+            # The libraries the dep resolves against follow it for the same
+            # reason. The imported graph never saw this dependency, so it
+            # cannot have asked for them, and only CFLAGS, CXXFLAGS and
+            # CPPFLAGS reach an import through the environment.
+            root.commands[-1].extend(self._link_flags([dep]))
+            root.deps.append(dep.root)
+
+        imported_nodes = self._register_imported_nodes(graph, [root])
+
+        target = Target(
+            kind,
+            # The exported name, so an imported target held in a local can
+            # skip the global-alias naming pass.
+            name=exported_name,
+            public_cppflags=["-I" + source_prefix],
+            output=root.outputs[0],
+            root=root,
+            nodes=imported_nodes,
+            uses_cxx=True,
+        )
+        self.targets.append(target)
+        return target
+
+    def serialize_graph(self) -> str:
+        bases: dict[Node, dict[str, Any]] = {}
+        for node in self.nodes:
+            record: dict[str, Any] = {
+                "inputs": sorted(set(node.inputs) | node.source_inputs),
+                "outputs": node.outputs,
+                "cmd": node.commands,
+            }
+            if node.cwd != B:
+                record["cwd"] = node.cwd
+            if node.env:
+                record["env"] = node.env
+            if node.descr != "GN":
+                record["descr"] = node.descr
+            if node.color:
+                record["color"] = node.color
+            if any(self.output_nodes.get(output) is node for output in node.outputs):
+                record["primary"] = True
+            bases[node] = record
+
+        identities: dict[Node, str] = {}
+        active: set[Node] = set()
+        def identify(node: Node) -> str:
+            cached = identities.get(node)
+            if cached is not None:
+                return cached
+            if node in active:
+                raise BuildError(f"cannot serialize cyclic node: {node.outputs}")
+            active.add(node)
+            deps = [identify(dep) for dep in node.deps]
+            canonical = json.dumps(
+                [bases[node], deps],
+                sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            ).encode()
+            identity = hashlib.md5(canonical).hexdigest()
+            identities[node] = identity
+            active.remove(node)
+            return identity
+        for node in self.nodes:
+            identify(node)
+
+        records_by_id: dict[str, dict[str, Any]] = {}
+        for node in self.nodes:
+            identity = identities[node]
+            record = {
+                **bases[node],
+                "id": identity,
+                "deps": [identities[dep] for dep in node.deps],
+            }
+            previous = records_by_id.get(identity)
+            if previous is not None and previous != record:
+                raise BuildError(f"node identity collision at {node.outputs}")
+            records_by_id[identity] = record
+        records = sorted(
+            records_by_id.values(),
+            key=lambda record: (record["outputs"], record["id"]),
+        )
+
+        exports: list[dict[str, str]] = []
+        for target in self.targets:
+            if target.name is None or target.root is None or not target.root.outputs:
+                continue
+            identity = identities.get(target.root)
+            if identity is None:
+                continue
+            exports.append({
+                "name": target.name,
+                "kind": target.kind,
+                "output": target.root.outputs[0],
+                "node": identity,
+            })
+        exports.sort(key=lambda export: (export["output"], export["name"]))
+        return json.dumps(
+            {"version": 2, "nodes": records, "exports": exports},
+            sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        )
+
+    def _infer_names(self, module: Any) -> None:
+        aliases: dict[Target, list[str]] = defaultdict(list)
+        for name, value in vars(module).items():
+            if not name.startswith("_") and isinstance(value, Target):
+                aliases[value].append(name)
+        for target in self.targets:
+            if target.kind == "interface":
+                continue
+            if target.name is None:
+                names = aliases.get(target, [])
+                if len(names) != 1:
+                    raise BuildError(
+                        f"anonymous {target.kind} target needs exactly one global name, got {names}",
+                    )
+                target.name = names[0]
+            previous = self.target_names.get(target.name)
+            if previous is not None and previous is not target:
+                raise BuildError(f"duplicate target name: {target.name}")
+            self.target_names[target.name] = target
+            if target.kind == "program":
+                output = target.output or f"{B}/{target.name}"
+                producer = self.program_outputs.get(output)
+                if producer is not None and producer is not target:
+                    raise BuildError(f"multiple program targets produce {output}")
+                self.program_outputs[output] = target
+        for name in self.groups:
+            if name in self.target_names:
+                raise BuildError(f"group name conflicts with target name: {name}")
+
+    def _prepare_host_dependencies(self) -> None:
+        referenced: list[Target] = []
+        for target in self.targets:
+            if target.kind != "command":
+                continue
+            host_deps = self.command_host_deps.get(target)
+            if host_deps is None:
+                values = [*target.inputs]
+                for command in target.commands:
+                    values.extend(command)
+                host_deps = _uniq(
+                    self.program_outputs[value]
+                    for value in values
+                    if value in self.program_outputs
+                )
+                self.command_host_deps[target] = host_deps
+            target.host_deps = host_deps
+            referenced.extend(host_deps)
+        referenced = _uniq(referenced)
+        if not referenced:
+            return
+        if self._target_configuration_uid() == self._host_configuration_uid():
+            return
+        if self.build_file is None:
+            raise BuildError("cannot import host graph before loading build.py")
+
+        graph = self._load_imported_graph(
+            self.build_file,
+            self.host,
+            extra_cflags=self.host_cflags,
+            extra_cxxflags=self.host_cxxflags,
+            extra_cppflags=self.host_cppflags,
+            index_primary=False,
+        )
+
+        roots: dict[Target, Node] = {}
+        for program in referenced:
+            assert program.name is not None
+            output = program.output or f"{B}/{program.name}"
+            root, kind, _ = self._select_graph_root(
+                graph,
+                output,
+                exact=True,
+                target_name=program.name,
+            )
+            if kind != "program":
+                raise BuildError(
+                    f"host dependency {program.name!r} is exported as {kind}, not program"
+                )
+            roots[program] = root
+
+        imported_nodes = self._register_imported_nodes(graph, roots.values())
+        for program, root in roots.items():
+            program_closure = self._node_closure([root])
+            program.root = root
+            program.nodes = [node for node in imported_nodes if node in program_closure]
+            program.uses_cxx = True
+
+    def build_graph(self) -> None:
+        self._prepare_host_dependencies()
+        for target in self.targets:
+            if target.kind == "command":
+                self._emit_target(target, set())
+        for target in self.targets:
+            if target.kind not in ("interface", "command"):
+                self._emit_target(target, set())
+        scanner = IncludeScanner(self)
+        for node in self.nodes:
+            if node.scan_sources:
+                scanner.scan_node(node)
+        self._validate_graph()
+
+    def _emit_target(self, target: Target, active: set[Target]) -> Node | None:
+        if target.root is not None or target.kind == "interface":
+            return target.root
+        if target in active:
+            raise BuildError(f"target dependency cycle at {target.name}")
+        active.add(target)
+        for dep in [*target.deps, *target.host_deps]:
+            self._emit_target(dep, active)
+        if target.kind == "command":
+            dep_nodes = [
+                dep.root for dep in [*target.deps, *target.host_deps]
+                if dep.root is not None
+            ]
+            node = Node(
+                inputs=target.inputs.copy(), outputs=target.outputs.copy(),
+                commands=[x.copy() for x in target.commands], deps=dep_nodes,
+                cwd=target.cwd, env=target.env.copy(),
+                descr=target.descr, color=target.color,
+            )
+            for inp in node.inputs:
+                if inp.startswith(S + "/") or os.path.isabs(inp):
+                    node.source_inputs.add(inp)
+            self._add_node(node)
+            target.root = node
+            target.nodes = [node]
+        else:
+            self._emit_compiled(target)
+        active.remove(target)
+        return target.root
+
+    def _emit_compiled(self, target: Target) -> None:
+        assert target.name is not None
+        global_includes = _uniq([S, *[_include_path(path) for path in self.includes]])
+        include_flags = ["-I" + path for path in global_includes]
+        usage_cflags = self._usage_compile_flags(target.deps, False)
+        usage_cxxflags = self._usage_compile_flags(target.deps, True)
+        objects: list[Node] = []
+        uses_cxx = False
+        for source in target.srcs:
+            if isinstance(source, dict):
+                src = source["src"]
+                source_inputs = source["inputs"]
+            else:
+                src = source
+                source_inputs = []
+            ext = Path(src).suffix.lower()
+            cxx = ext in (".cc", ".cpp", ".cxx", ".c++", ".mm")
+            uses_cxx |= cxx
+            compiler = self.cxx if cxx else self.cc
+            common = [*include_flags, *self.cppflags, *self.cflags]
+            if cxx:
+                common.extend(self.cxxflags)
+            common.extend(usage_cxxflags if cxx else usage_cflags)
+            common.extend(target.cppflags)
+            common.extend(target.cflags)
+            if cxx:
+                common.extend(target.cxxflags)
+            # Environment flags are user overrides, so keep them after flags
+            # supplied by build.py and by the target itself. CFLAGS applies to
+            # both C and C++ compilation, matching conventional build tools.
+            common.extend(self.external_cppflags)
+            common.extend(self.external_cflags)
+            if cxx:
+                common.extend(self.external_cxxflags)
+            include_roots = _uniq([*global_includes, *self._include_roots_from_flags(common)])
+            rel = src.replace(S + "/", "").replace(B + "/", "generated/")
+            rel = re.sub(r"[^A-Za-z0-9_./+-]", "_", rel)
+            obj = f"{B}/obj/{target.name}/{rel}.o"
+            deps: list[Node] = []
+            inputs = [src]
+            for source_input in source_inputs:
+                producer = self.output_nodes.get(source_input)
+                if producer is None:
+                    if source_input.startswith(B + "/"):
+                        raise BuildError(f"no producer for generated input {source_input}")
+                    inputs.append(source_input)
+                else:
+                    deps.append(producer)
+            if src.startswith(B + "/"):
+                producer = self.output_nodes.get(src)
+                if producer is None:
+                    raise BuildError(f"no producer for generated source {src}")
+                deps.append(producer)
+            node = Node(
+                inputs=inputs, outputs=[obj],
+                commands=[[
+                    *self._compiler_command(compiler),
+                    *common,
+                    "-c",
+                    src,
+                    "-o",
+                    obj,
+                ]],
+                deps=deps,
+                descr="CC", color="green", include_roots=include_roots,
+                scan_sources=src.startswith(S + "/") or os.path.isabs(src),
+            )
+            for source_input in inputs:
+                if source_input.startswith(S + "/") or os.path.isabs(source_input):
+                    node.source_inputs.add(source_input)
+            self._add_node(node)
+            objects.append(node)
+        target.uses_cxx = uses_cxx or any(dep.uses_cxx for dep in target.deps)
+        if target.kind == "library":
+            output = target.output or f"{B}/lib{target.name}.a"
+            command = [self.ar, "rcs", output, *[node.outputs[0] for node in objects]]
+            root = Node([], [output], [command], deps=objects, descr="AR", color="light-red")
+        else:
+            output = target.output or f"{B}/{target.name}"
+            libraries = self._link_libraries(target.deps)
+            lib_nodes = [lib.root for lib in libraries if lib.root is not None]
+            other_nodes = [dep.root for dep in target.deps if dep.root is not None and dep.kind != "library"]
+            archives = [lib.root.outputs[0] for lib in libraries if lib.root is not None]
+            compile_link_flags = self._compile_link_flags(target.uses_cxx)
+            ldflags = (
+                self.ldflags
+                + self._link_flags(target.deps)
+                + target.ldflags
+                + self.external_ldflags
+                + compile_link_flags
+            )
+            linker = target.linker or (self.cxx if target.uses_cxx else self.cc)
+            command = [
+                *self._compiler_command(linker, allow_other=target.linker is not None),
+                "-o",
+                output,
+                *[node.outputs[0] for node in objects],
+                *archives,
+                *ldflags,
+            ]
+            root = Node(
+                [], [output], [command], deps=_uniq([*objects, *lib_nodes, *other_nodes]),
+                descr="LD", color="light-blue",
+            )
+        self._add_node(root)
+        target.root = root
+        target.nodes = [*objects, root]
+
+    def _compile_link_flags(self, uses_cxx: bool) -> list[str]:
+        """Forward compiler-driver flags that select link-time runtimes."""
+        flags = [*self.external_cflags]
+        if uses_cxx:
+            flags.extend(self.external_cxxflags)
+        return _uniq(
+            flag for flag in flags
+            if flag.startswith((
+                "-fsanitize=",
+                "-fno-sanitize=",
+                "-fsanitize-recover=",
+                "-fno-sanitize-recover=",
+            ))
+        )
+
+    def _usage_compile_flags(self, targets: Iterable[Target], cxx: bool) -> list[str]:
+        out: list[str] = []
+        seen: set[Target] = set()
+        def walk(target: Target) -> None:
+            if target in seen or not target.enabled:
+                return
+            seen.add(target)
+            for dep in target.deps:
+                walk(dep)
+            out.extend(target.public_cppflags)
+            out.extend(target.public_cflags)
+            if cxx:
+                out.extend(target.public_cxxflags)
+        for target in targets:
+            walk(target)
+        return _uniq(out)
+
+    @staticmethod
+    def _include_roots_from_flags(flags: Iterable[str]) -> list[str]:
+        out: list[str] = []
+        flags = list(flags)
+        i = 0
+        while i < len(flags):
+            flag = flags[i]
+            if flag == "-I" and i + 1 < len(flags):
+                out.append(_include_path(flags[i + 1]))
+                i += 2
+                continue
+            if flag.startswith("-I") and len(flag) > 2:
+                out.append(_include_path(flag[2:]))
+            i += 1
+        return out
+
+    def _link_libraries(self, targets: Iterable[Target]) -> list[Target]:
+        out: list[Target] = []
+        def walk(target: Target) -> None:
+            if not target.enabled:
+                return
+            if target.kind == "library":
+                if target in out:
+                    out.remove(target)
+                out.append(target)
+            for dep in target.deps:
+                walk(dep)
+        for target in targets:
+            walk(target)
+        return out
+
+    def _link_flags(self, targets: Iterable[Target]) -> list[str]:
+        out: list[str] = []
+        seen: set[Target] = set()
+        def walk(target: Target) -> None:
+            if target in seen or not target.enabled:
+                return
+            seen.add(target)
+            for dep in target.deps:
+                walk(dep)
+            out.extend(target.ldflags)
+        for target in targets:
+            walk(target)
+        return _uniq(out)
+
+    def _add_node(self, node: Node) -> None:
+        for output in node.outputs:
+            previous = self.output_nodes.get(output)
+            if previous is not None:
+                raise BuildError(f"multiple producers for {output}")
+            self.output_nodes[output] = node
+        self.nodes.append(node)
+
+    def _validate_graph(self) -> None:
+        state: dict[Node, int] = {}
+        def visit(node: Node) -> None:
+            mark = state.get(node, 0)
+            if mark == 1:
+                raise BuildError(f"build graph cycle at {node.outputs}")
+            if mark == 2:
+                return
+            state[node] = 1
+            for dep in node.deps:
+                visit(dep)
+            state[node] = 2
+        for node in self.nodes:
+            visit(node)
+
+    def physical(self, path: str, build_root: Path | None = None) -> Path:
+        if path == S:
+            return self.source_root
+        if path.startswith(S + "/"):
+            return self.source_root / path[len(S) + 1:]
+        root = build_root or self.build_root
+        if path == B:
+            return root
+        if path.startswith(B + "/"):
+            return root / path[len(B) + 1:]
+        return Path(path)
+
+    def publish(self, targets: Iterable[Target]) -> None:
+        publications: list[tuple[Path, str]] = []
+        for target in _uniq(targets):
+            if not target.name or Path(target.name).name != target.name:
+                raise BuildError(f"target name cannot be published in source root: {target.name!r}")
+            if target.root is None or not target.root.outputs:
+                raise BuildError(f"target has no output to publish: {target.name}")
+            link = self.source_root / target.name
+            try:
+                info = link.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if not stat.S_ISLNK(info.st_mode):
+                    # A real file/dir shares this target's name: skip the
+                    # convenience symlink rather than clobbering source data.
+                    print(f"build: not publishing {target.name}: {link} exists",
+                          file=sys.stderr)
+                    continue
+            output = self.physical(target.root.outputs[0])
+            publications.append((link, os.path.relpath(output, self.source_root)))
+        for link, relative in publications:
+            temporary = link.with_name("." + link.name + "." + uuid.uuid4().hex)
+            try:
+                os.symlink(relative, temporary)
+                os.replace(temporary, link)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    def source_hash(self, path: str) -> str:
+        cached = self.file_hashes.get(path)
+        if cached is not None:
+            return cached
+        physical = self.physical(path)
+        try:
+            digest = hashlib.md5(physical.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise BuildError(f"cannot hash input {path}: {exc}") from exc
+        self.file_hashes[path] = digest
+        return digest
+
+    def calculate_uids(self, roots: Iterable[Node]) -> None:
+        active: set[Node] = set()
+        def calc(node: Node) -> str:
+            if node.uid is not None:
+                return node.uid
+            if node in active:
+                raise BuildError(f"UID dependency cycle at {node.outputs}")
+            active.add(node)
+            for command in node.commands:
+                head = command[0] if command else ""
+                if head and not head.startswith((S + "/", B + "/")) and not os.path.isabs(head):
+                    command[0] = self.resolve_tool(head)
+            dep_uids = [calc(dep) for dep in node.deps]
+            inputs = [[path, self.source_hash(path)] for path in sorted(node.source_inputs)]
+            data = json.dumps(
+                [node.canonical(), dep_uids, inputs], sort_keys=True,
+                separators=(",", ":"), ensure_ascii=False,
+            ).encode()
+            node.uid = hashlib.md5(data).hexdigest()
+            active.remove(node)
+            return node.uid
+        for root in roots:
+            calc(root)
+
+
+class IncludeScanner:
+    directive = re.compile(
+        r'^[^\S\r\n]*#[^\S\r\n]*(?:include|import)[^\S\r\n]*'
+        r'([<"])([^>"]+)[>"]',
+        re.MULTILINE,
+    )
+    comment_or_literal = re.compile(
+        r'//[^\n]*|/\*.*?(?:\*/|\Z)|'
+        r'"(?:\\(?:.|\Z)|[^"\\])*(?:"|\Z)|'
+        r"'(?:\\(?:.|\Z)|[^'\\])*(?:'|\Z)",
+        re.DOTALL,
+    )
+
+    def __init__(self, context: BuildContext):
+        self.context = context
+        self.parsed: dict[str, list[tuple[bool, str]]] = {}
+        self.resolved: dict[tuple[str, bool, str, tuple[str, ...]], tuple[str | None, Node | None]] = {}
+        self.closures: dict[tuple[str, tuple[str, ...]], tuple[set[str], set[Node]]] = {}
+        self.includes: dict[str, dict[str, tuple[str | None, Node | None]]] = defaultdict(dict)
+        self.paths: dict[str, tuple[str | None, Node | None]] = {}
+        self.root_includes: dict[str, dict[str, tuple[str | None, Node | None]]] = {}
+        self.root_resolutions: dict[tuple[str, ...], dict[str, tuple[str | None, Node | None]]] = {}
+        roots: list[str] = []
+        for node in context.nodes:
+            if node.scan_sources:
+                roots.extend(node.include_roots or [S])
+        for root in _uniq(self._normal_symbolic(root) for root in roots):
+            self._index_root(root)
+
+    def scan_node(self, node: Node) -> None:
+        roots = tuple(_uniq(
+            self._normal_symbolic(root) for root in (node.include_roots or [S])
+        ))
+        for source in node.inputs:
+            if not (source.startswith(S + "/") or os.path.isabs(source)):
+                continue
+            files, producers = self._closure(source, roots, set())
+            node.source_inputs.update(files)
+            ordered = sorted(producers, key=lambda producer: producer.outputs)
+            node.deps = _uniq([*node.deps, *ordered])
+
+    def _closure(self, path: str, roots: tuple[str, ...], active: set[str]) -> tuple[set[str], set[Node]]:
+        key = (path, roots)
+        cached = self.closures.get(key)
+        if cached is not None:
+            return set(cached[0]), set(cached[1])
+        if path in active:
+            return {path}, set()
+        active.add(path)
+        files = {path}
+        producers: set[Node] = set()
+        for quoted, target in self._parse(path):
+            resolved, producer = self._resolve(path, quoted, target, roots)
+            if producer is not None:
+                producers.add(producer)
+            elif resolved is not None:
+                if resolved.startswith("/ix/store/"):
+                    continue
+                child_files, child_producers = self._closure(resolved, roots, active)
+                files.update(child_files)
+                producers.update(child_producers)
+        active.remove(path)
+        self.closures[key] = (set(files), set(producers))
+        return files, producers
+
+    def _parse(self, path: str) -> list[tuple[bool, str]]:
+        cached = self.parsed.get(path)
+        if cached is not None:
+            return cached
+        try:
+            text = self.context.physical(path).read_text(errors="replace")
+        except OSError as exc:
+            raise BuildError(f"cannot scan includes in {path}: {exc}") from exc
+        clean = self._strip_comments(text)
+        result = [
+            (match.group(1) == '"', match.group(2))
+            for match in self.directive.finditer(clean)
+        ]
+        self.parsed[path] = result
+        return result
+
+    @classmethod
+    def _strip_comments(cls, text: str) -> str:
+        def replace(match: re.Match[str]) -> str:
+            value = match.group()
+            if value.startswith("/"):
+                return " " + "\n" * value.count("\n")
+            return value
+
+        return cls.comment_or_literal.sub(replace, text)
+
+    def _resolve(self, includer: str, quoted: bool, target: str,
+                 roots: tuple[str, ...]) -> tuple[str | None, Node | None]:
+        key = (includer, quoted, target, roots)
+        cached = self.resolved.get(key)
+        if cached is not None:
+            return cached
+        if quoted:
+            directory = includer.rsplit("/", 1)[0]
+            if not directory and includer.startswith("/"):
+                directory = "/"
+            by_directory = self.includes.get(target)
+            if by_directory is not None:
+                result = by_directory.get(directory)
+                if result is not None:
+                    self.resolved[key] = result
+                    return result
+            candidate = self._normal_symbolic(directory + "/" + target)
+            result = self.paths.get(candidate)
+            if result is None and os.path.isabs(candidate) and Path(candidate).is_file():
+                result = (candidate, None)
+            if result is not None:
+                self.resolved[key] = result
+                return result
+        table = self.root_resolutions.get(roots)
+        if table is None:
+            table = {}
+            for root in reversed(roots):
+                table.update(self.root_includes[root])
+            self.root_resolutions[roots] = table
+        result = table.get(target, (None, None))
+        self.resolved[key] = result
+        return result
+
+    def _index_root(self, root: str) -> None:
+        root = self._normal_symbolic(root)
+        if root in self.root_includes:
+            return
+        direct: dict[str, tuple[str | None, Node | None]] = {}
+        self.root_includes[root] = direct
+        if root == B or root.startswith(B + "/"):
+            prefix = root + "/"
+            for output, producer in self.context.output_nodes.items():
+                if not output.startswith(prefix):
+                    continue
+                relative = output[len(prefix):]
+                value = (None, producer)
+                direct[relative] = value
+                self.paths[output] = value
+                self._index_suffixes(root, relative, value)
+            return
+
+        physical_root = self.context.physical(root)
+        if not physical_root.is_dir():
+            return
+        for directory, directories, filenames in os.walk(physical_root):
+            directories[:] = [
+                name for name in directories if not name.startswith(".")
+            ]
+            relative_directory = os.path.relpath(directory, physical_root)
+            if relative_directory == ".":
+                relative_directory = ""
+            else:
+                relative_directory = relative_directory.replace(os.sep, "/")
+            for filename in filenames:
+                if filename.startswith("."):
+                    continue
+                relative = "/".join(filter(None, (relative_directory, filename)))
+                symbolic = self._normal_symbolic(root + "/" + relative)
+                value = (symbolic, None)
+                direct[relative] = value
+                self.paths[symbolic] = value
+                self._index_suffixes(root, relative, value)
+
+    def _index_suffixes(self, root: str, relative: str,
+                        value: tuple[str | None, Node | None]) -> None:
+        parts = relative.split("/")
+        for offset in range(len(parts)):
+            target = "/".join(parts[offset:])
+            directory = "/".join([root, *parts[:offset]])
+            self.includes[target].setdefault(directory, value)
+
+    @staticmethod
+    def _normal_symbolic(path: str) -> str:
+        if path.startswith(S + "/"):
+            tail = os.path.normpath(path[len(S) + 1:])
+            return S + "/" + tail
+        if path.startswith(B + "/"):
+            tail = os.path.normpath(path[len(B) + 1:])
+            return B + "/" + tail
+        return os.path.normpath(path)
+
+
+_STRACE_LINE = re.compile(
+    r"^(?:\[pid\s+(\d+)\]\s+|(\d+)\s+)?([A-Za-z0-9_]+)\("
+)
+_STRACE_RESULT = re.compile(
+    r"\)\s+=\s+(-?\d+|0x[0-9a-fA-F]+)(?:<[^>]*>)?"
+)
+_STRACE_ANNOTATION = re.compile(r"<(/(?:\\.|[^>])*)>")
+_STRACE_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"')
+_STRACE_RESUMED = re.compile(
+    r"^(?:\[pid\s+(\d+)\]\s+|(\d+)\s+)?<\.\.\. ([A-Za-z0-9_]+) resumed>(.*)$"
+)
+_STRACE_PATH_CALLS = {
+    "access", "faccessat", "faccessat2",
+    "creat",
+    "execve", "execveat",
+    "fgetxattr", "flistxattr", "fstat", "fstat64", "fstatfs",
+    "getxattr", "lgetxattr", "listxattr", "llistxattr",
+    "lstat", "lstat64",
+    "name_to_handle_at", "newfstatat",
+    "open", "open64", "openat", "openat2",
+    "readlink", "readlinkat",
+    "stat", "stat64", "statfs", "statx",
+}
+_STRACE_AT_CALLS = {
+    "execveat", "faccessat", "faccessat2", "fstatat64",
+    "name_to_handle_at", "newfstatat", "openat", "openat2",
+    "readlinkat", "statx",
+}
+_STRACE_DIRECTORY_CREATE_CALLS = {"mkdir", "mkdirat"}
+_STRACE_PATH_CREATE_CALLS = {
+    "link", "linkat", "rename", "renameat", "renameat2",
+    "symlink", "symlinkat",
+}
+
+
+def _strace_text(value: str) -> str:
+    try:
+        decoded = ast.literal_eval('"' + value.replace('"', '\\"') + '"')
+    except (SyntaxError, ValueError):
+        return value
+    return decoded if isinstance(decoded, str) else value
+
+
+def _strace_literal(line: str) -> str | None:
+    match = _STRACE_LITERAL.search(line)
+    if match is None:
+        return None
+    try:
+        value = ast.literal_eval(match.group(0))
+    except (SyntaxError, ValueError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _strace_path(value: str, base: Path) -> Path | None:
+    value = value.removesuffix(" (deleted)")
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        path = base / path
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return Path(os.path.abspath(path))
+
+
+def _strace_complete_lines(trace: str) -> Iterable[str]:
+    pending: dict[tuple[str, str], str] = {}
+    for line in trace.splitlines():
+        if line.endswith("<unfinished ...>"):
+            match = _STRACE_LINE.match(line)
+            if match is not None:
+                pid = match.group(1) or match.group(2) or "main"
+                pending[(pid, match.group(3))] = line.removesuffix("<unfinished ...>")
+            continue
+        resumed = _STRACE_RESUMED.match(line)
+        if resumed is not None:
+            pid = resumed.group(1) or resumed.group(2) or "main"
+            initial = pending.pop((pid, resumed.group(3)), None)
+            if initial is not None:
+                yield initial + resumed.group(4)
+            continue
+        yield line
+
+
+def _strace_accesses(trace: str, initial_cwd: str) -> set[Path]:
+    initial = Path(initial_cwd).resolve()
+    current_cwds: dict[str, Path] = {}
+    last_cwd = initial
+    accesses: set[Path] = set()
+    created_files: set[Path] = set()
+    created_directories: set[Path] = set()
+
+    def created(path: Path) -> bool:
+        return path in created_files or any(
+            parent in created_directories for parent in (path, *path.parents)
+        )
+
+    def add_accesses(paths: Iterable[Path]) -> None:
+        accesses.update(path for path in paths if not created(path))
+
+    for line in _strace_complete_lines(trace):
+        call_match = _STRACE_LINE.match(line)
+        result_match = _STRACE_RESULT.search(line)
+        if call_match is None or result_match is None:
+            continue
+        result = result_match.group(1)
+        if result.startswith("-"):
+            continue
+
+        pid = call_match.group(1) or call_match.group(2) or "main"
+        call = call_match.group(3)
+        cwd = current_cwds.get(pid, last_cwd)
+        annotation_items = [
+            (match.start(), path)
+            for match in _STRACE_ANNOTATION.finditer(line)
+            if (path := _strace_path(_strace_text(match.group(1)), cwd)) is not None
+        ]
+        annotations = [path for _, path in annotation_items]
+        literal_items = []
+        for match in _STRACE_LITERAL.finditer(line):
+            try:
+                value = ast.literal_eval(match.group(0))
+            except (SyntaxError, ValueError):
+                continue
+            if isinstance(value, str):
+                literal_items.append((match.start(), value))
+        literals = [value for _, value in literal_items]
+        bases: list[Path] = []
+        base_annotations: set[int] = set()
+        previous_literal = -1
+        for literal_position, _ in literal_items:
+            candidates = [
+                (position, path)
+                for position, path in annotation_items
+                if previous_literal < position < literal_position
+            ]
+            if candidates:
+                position, base = candidates[-1]
+                bases.append(base)
+                base_annotations.add(position)
+            else:
+                bases.append(cwd)
+            previous_literal = literal_position
+        file_annotations = [
+            path for position, path in annotation_items
+            if call not in _STRACE_AT_CALLS or position not in base_annotations
+        ]
+
+        if call == "chdir":
+            value = _strace_literal(line)
+            path = _strace_path(value, cwd) if value is not None else None
+            if path is not None:
+                current_cwds[pid] = path
+                last_cwd = path
+            continue
+        if call == "fchdir":
+            if annotations:
+                current_cwds[pid] = annotations[0]
+                last_cwd = annotations[0]
+            continue
+
+        if call in _STRACE_DIRECTORY_CREATE_CALLS:
+            if literals:
+                base = bases[-1] if call.endswith("at") else cwd
+                path = _strace_path(literals[-1], base)
+                if path is not None:
+                    created_directories.add(path)
+            continue
+        if call in _STRACE_PATH_CREATE_CALLS:
+            if literals:
+                base = bases[-1] if "at" in call else cwd
+                path = _strace_path(literals[-1], base)
+                if path is not None:
+                    created_files.add(path)
+            continue
+
+        if call in ("mmap", "mmap2"):
+            if "PROT_READ" in line:
+                add_accesses(file_annotations)
+            continue
+        if call not in _STRACE_PATH_CALLS:
+            continue
+        if call in ("open", "open64", "openat", "openat2"):
+            value = literals[0] if literals else None
+            base = bases[0] if call in _STRACE_AT_CALLS and bases else cwd
+            path = _strace_path(value, base) \
+                if value is not None else None
+            if path is not None and any(flag in line for flag in (
+                "O_EXCL", "O_TRUNC", "O_TMPFILE",
+            )):
+                created_files.add(path)
+            if "O_WRONLY" in line and "O_RDWR" not in line:
+                continue
+        elif call == "creat":
+            value = literals[0] if literals else None
+            path = _strace_path(value, cwd) if value is not None else None
+            if path is not None:
+                created_files.add(path)
+            continue
+
+        add_accesses(file_annotations)
+        value = literals[0] if literals else None
+        if value is None:
+            continue
+        base = bases[0] if call in _STRACE_AT_CALLS and bases else cwd
+        path = _strace_path(value, base)
+        if path is not None and not created(path):
+            accesses.add(path)
+
+    return accesses
+
+
+def _path_below(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _python_cache_source(path: Path) -> Path | None:
+    if path.suffix not in (".pyc", ".pyo"):
+        return None
+    if path.parent.name == "__pycache__":
+        module = path.name.split(".", 1)[0]
+        source = path.parent.parent / (module + ".py")
+        if source.is_file():
+            return source.resolve()
+        match = re.fullmatch(r"(.+?)cpython-\d+", module)
+        if match is not None:
+            return (path.parent.parent / match.group(1)).resolve()
+        return source.resolve()
+    return path.with_suffix(".py").resolve()
+
+
+def _strace_missing_inputs(payload: dict[str, Any], trace: str) -> list[str]:
+    source_root = Path(payload["source_root"]).resolve()
+    build_root = Path(payload["build_root"]).resolve()
+    ignored_roots = [
+        build_root,
+        source_root / ".git",
+        *(Path(path) for path in payload.get("ignore_roots", [])),
+    ]
+    candidates: set[Path] = set()
+    for path in _strace_accesses(trace, payload["cwd"]):
+        if (not _path_below(path, source_root)
+                or any(_path_below(path, root) for root in ignored_roots)):
+            continue
+        relative = path.relative_to(source_root)
+        if not relative.parts or path.is_dir():
+            continue
+        cache_source = _python_cache_source(path)
+        if cache_source is not None and cache_source.is_file():
+            path = cache_source
+        candidates.add(path)
+
+    if "inputs" in payload:
+        declared = {Path(path).resolve() for path in payload["inputs"]}
+    else:
+        declared = set()
+        paths = sorted(map(str, candidates))
+        with sqlite3.connect(payload["index"]) as database:
+            for offset in range(0, len(paths), 400):
+                batch = paths[offset:offset + 400]
+                placeholders = ",".join("?" for _ in batch)
+                query = f"""
+                    WITH RECURSIVE closure(node) AS (
+                        VALUES (?)
+                        UNION
+                        SELECT edges.dependency
+                        FROM edges JOIN closure ON edges.node = closure.node
+                    )
+                    SELECT inputs.path
+                    FROM inputs JOIN closure ON inputs.node = closure.node
+                    WHERE inputs.path IN ({placeholders})
+                """
+                declared.update(
+                    Path(row[0])
+                    for row in database.execute(query, [payload["node_id"], *batch])
+                )
+
+    return sorted(
+        S + "/" + path.relative_to(source_root).as_posix()
+        for path in candidates - declared
+    )
+
+
+def strace_main(argv: list[str]) -> int:
+    if len(argv) < 3 or argv[1] != "--":
+        print("usage: build strace PAYLOAD -- COMMAND...", file=sys.stderr)
+        return 2
+    try:
+        payload = json.loads(base64.b64decode(argv[0], validate=True))
+        if not isinstance(payload, dict):
+            raise ValueError("invalid payload")
+        inline = (
+            isinstance(payload.get("inputs"), list)
+            and all(isinstance(path, str) for path in payload["inputs"])
+        )
+        indexed = (
+            isinstance(payload.get("index"), str)
+            and isinstance(payload.get("node_id"), int)
+            and not isinstance(payload.get("node_id"), bool)
+            and payload["node_id"] >= 0
+        )
+        valid = (
+            payload.get("version") == 1
+            and all(isinstance(payload.get(key), str) for key in (
+                "node", "source_root", "build_root", "cwd",
+            ))
+            and isinstance(payload.get("ignore_roots", []), list)
+            and all(
+                isinstance(path, str) for path in payload.get("ignore_roots", [])
+            )
+            and (inline or indexed)
+        )
+        if not valid:
+            raise ValueError("invalid payload")
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        print(f"build strace: malformed payload: {exc}", file=sys.stderr)
+        return 2
+
+    tracer = shutil.which("strace")
+    if tracer is None:
+        print("build strace: strace executable not found", file=sys.stderr)
+        return 1
+    descriptor, trace_path = tempfile.mkstemp(prefix="build-strace-", suffix=".log")
+    os.close(descriptor)
+    try:
+        result = subprocess.run([
+            tracer,
+            "-f", "-qq", "-yy", "-s", "4096",
+            "-e", "trace=%file,mmap,mmap2",
+            "-o", trace_path,
+            "--",
+            *argv[2:],
+        ])
+        try:
+            trace = Path(trace_path).read_text(errors="replace")
+        except OSError as exc:
+            print(f"build strace: cannot read trace: {exc}", file=sys.stderr)
+            return result.returncode or 1
+        try:
+            missing = _strace_missing_inputs(payload, trace)
+        except (OSError, sqlite3.Error) as exc:
+            print(f"build strace: cannot match trace: {exc}", file=sys.stderr)
+            return result.returncode or 1
+        if missing:
+            print(
+                f"build strace: undeclared source input(s) for {payload['node']}:",
+                file=sys.stderr,
+            )
+            for path in missing:
+                print(f"  {path}", file=sys.stderr)
+        return result.returncode or int(bool(missing))
+    except OSError as exc:
+        print(f"build strace: cannot run strace: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        try:
+            os.unlink(trace_path)
+        except FileNotFoundError:
+            pass
+
+
+class Executor:
+    def __init__(self, context: BuildContext, jobs: int, verbose: bool, keep_going: bool,
+                 ninja: bool = False, strace: bool = False,
+                 cache_root: Path | None = None):
+        self.context = context
+        self.jobs = max(1, jobs)
+        self.verbose = verbose
+        self.keep_going = keep_going
+        self.ninja = ninja
+        self.strace = strace
+        self.cache_root = cache_root or context.build_root
+        self.cas = self.cache_root / "cas"
+        self.uids = self.cache_root / "uid"
+        self.tmp = self.cache_root / "tmp"
+        self.grb = self.cache_root / "grb"
+        self.print_lock = threading.Lock()
+        self.progress_done = 0
+        self.progress_total = 0
+        self.progress_active = False
+        self.interactive = sys.stderr.isatty()
+        self.garbage_collector_started = False
+        self.garbage_lock = threading.Lock()
+        self.strace_index: Path | None = None
+        self.strace_node_ids: dict[Node, int] = {}
+        self.strace_ignore_roots: list[str] = []
+
+    def run(self, roots: list[Node]) -> None:
+        self._start_garbage_collector()
+        try:
+            self._run(roots)
+        finally:
+            self._finish_progress()
+            if self.strace_index is not None:
+                try:
+                    self.strace_index.unlink()
+                except FileNotFoundError:
+                    pass
+                self.strace_index = None
+                self.strace_node_ids.clear()
+                self.strace_ignore_roots.clear()
+
+    def _run(self, roots: list[Node]) -> None:
+        self.progress_done = 0
+        needed = self._closure(roots)
+        if self.strace:
+            self._prepare_strace_index(needed)
+        consumers: dict[Node, list[Node]] = defaultdict(list)
+        remaining: dict[Node, int] = {}
+        for node in needed:
+            deps = [dep for dep in node.deps if dep in needed]
+            remaining[node] = len(deps)
+            for dep in deps:
+                consumers[dep].append(node)
+        ready = deque(node for node in needed if remaining[node] == 0)
+        uncached = {node for node in needed if not self._cached(node.uid)}
+        executed = set(needed) if self.strace else uncached
+        self.progress_total = len(executed)
+        errors: dict[Node, BaseException] = {}
+        blocked: set[Node] = set()
+        running: dict[concurrent.futures.Future[None], Node] = {}
+        completed = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.jobs) as pool:
+            while ready or running:
+                while ready and len(running) < self.jobs:
+                    node = ready.popleft()
+                    future = pool.submit(
+                        self._execute,
+                        node,
+                        node in executed,
+                        not self.strace or node in uncached,
+                    )
+                    running[future] = node
+                if not running:
+                    break
+                done, _ = concurrent.futures.wait(running, return_when=concurrent.futures.FIRST_COMPLETED)
+                for future in done:
+                    node = running.pop(future)
+                    completed += 1
+                    try:
+                        future.result()
+                    except BaseException as exc:
+                        errors[node] = exc
+                        self._report(f"FAIL {self._node_name(node)}: {exc}")
+                        if not self.keep_going:
+                            for other in running:
+                                other.cancel()
+                            raise BuildError(str(exc)) from exc
+                    for consumer in consumers[node]:
+                        remaining[consumer] -= 1
+                        if node in errors or node in blocked:
+                            blocked.add(consumer)
+                        if remaining[consumer] == 0:
+                            if consumer in blocked:
+                                errors[consumer] = BuildError("broken by dependency")
+                                for downstream in consumers[consumer]:
+                                    blocked.add(downstream)
+                            else:
+                                ready.append(consumer)
+        if errors:
+            roots_failed = [root for root in roots if root in errors or root in blocked]
+            raise BuildError(f"{len(errors)} node(s) failed, {len(roots_failed)} requested target(s) broken")
+        for root in roots:
+            assert root.uid is not None
+            self._restore(root.uid, self.context.build_root, symlink=True)
+        if self.verbose:
+            self._report(f"done: {completed} nodes")
+
+    @staticmethod
+    def _closure(roots: Iterable[Node]) -> set[Node]:
+        out: set[Node] = set()
+        stack = list(roots)
+        while stack:
+            node = stack.pop()
+            if node in out:
+                continue
+            out.add(node)
+            stack.extend(node.deps)
+        return out
+
+    def _execute(self, node: Node, expected_miss: bool = True,
+                 store_result: bool = True) -> None:
+        assert node.uid is not None
+        if not self.strace and self._cached(node.uid):
+            if self.verbose:
+                self._report(f"HIT  {node.descr} {self._node_name(node)}")
+            return
+        if not expected_miss:
+            with self.print_lock:
+                self.progress_total += 1
+        work = self.tmp / node.uid
+        locks = self.tmp / ".locks"
+        locks.mkdir(parents=True, exist_ok=True)
+        fd = os.open(locks / node.uid, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            work.mkdir(parents=True, exist_ok=True)
+            try:
+                if not self.strace and self._cached(node.uid):
+                    return
+                self._remove_contents(work)
+                for dep in node.deps:
+                    assert dep.uid is not None
+                    self._restore(dep.uid, work, symlink=False)
+                for output in node.outputs:
+                    self.context.physical(output, work).parent.mkdir(parents=True, exist_ok=True)
+                if self.verbose:
+                    self._report(f"RUN  {node.descr} {self._node_name(node)}")
+                for command in node.commands:
+                    self._run_command(node, command, work)
+                if store_result:
+                    self._store(node, work)
+                self._progress(node)
+            finally:
+                self._discard_contents(work)
+        finally:
+            os.close(fd)
+
+    def _run_command(self, node: Node, command: list[str], work: Path) -> None:
+        args = [self._mount(arg, work) for arg in command]
+        env = os.environ.copy()
+        env.update({key: self._mount(value, work) for key, value in node.env.items()})
+        env["BUILD_JOBS"] = str(self.jobs)
+        env["TMPDIR"] = str(work)
+        cwd = self._mount(node.cwd, work)
+        if not args:
+            raise BuildError(f"empty command in {node.outputs}")
+        display_args = args
+        if self.strace:
+            env["BUILD_STRACE_ACTIVE"] = "1"
+            payload = base64.b64encode(json.dumps(
+                self._strace_payload(node, work, cwd),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()).decode("ascii")
+            # Through the interpreter, not the shebang: the nix sandbox has
+            # no /usr/bin/env.
+            args = [sys.executable, str(Path(__file__).resolve()), "strace", payload, "--", *args]
+        result = subprocess.run(
+            args,
+            cwd=cwd,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
+            stdout=None,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.rstrip()
+            message = f"command exited {result.returncode}: {shlex.join(display_args)}"
+            if detail:
+                message += "\n" + detail
+            raise BuildError(message)
+        if result.stderr:
+            with self.print_lock:
+                self._clear_progress()
+                sys.stderr.write(result.stderr)
+                if not result.stderr.endswith("\n"):
+                    sys.stderr.write("\n")
+                sys.stderr.flush()
+
+    def _strace_payload(self, node: Node, work: Path, cwd: str) -> dict[str, Any]:
+        assert self.strace_index is not None
+        return {
+            "version": 1,
+            "node": self._node_name(node),
+            "source_root": str(self.context.source_root.resolve()),
+            "build_root": str(self.context.build_root.resolve()),
+            "cwd": cwd,
+            "index": str(self.strace_index),
+            "node_id": self.strace_node_ids[node],
+            "ignore_roots": self.strace_ignore_roots,
+        }
+
+    def _prepare_strace_index(self, nodes: set[Node]) -> None:
+        descriptor, index_path = tempfile.mkstemp(
+            prefix="build-strace-index-", suffix=".sqlite",
+        )
+        os.close(descriptor)
+        self.strace_index = Path(index_path)
+        self.strace_ignore_roots = sorted(
+            str(path.resolve())
+            for path in self.context.source_root.iterdir()
+            if path.is_dir() and (path / "cas").is_dir() and (path / "uid").is_dir()
+        )
+        ordered = sorted(
+            nodes,
+            key=lambda node: (node.uid or "", node.outputs, node.commands),
+        )
+        self.strace_node_ids = {node: index for index, node in enumerate(ordered)}
+        source_root = self.context.source_root
+        build_root = self.context.build_root
+        resolved: dict[str, Path] = {}
+
+        with sqlite3.connect(index_path) as database:
+            database.executescript("""
+                PRAGMA journal_mode=OFF;
+                PRAGMA synchronous=OFF;
+                CREATE TABLE edges (
+                    node INTEGER NOT NULL,
+                    dependency INTEGER NOT NULL
+                );
+                CREATE INDEX edges_by_node ON edges(node);
+                CREATE TABLE inputs (
+                    node INTEGER NOT NULL,
+                    path TEXT NOT NULL
+                );
+                CREATE INDEX inputs_by_node_path ON inputs(node, path);
+            """)
+            database.executemany(
+                "INSERT INTO edges VALUES (?, ?)",
+                (
+                    (self.strace_node_ids[node], self.strace_node_ids[dependency])
+                    for node in ordered
+                    for dependency in node.deps
+                    if dependency in self.strace_node_ids
+                ),
+            )
+            input_rows: list[tuple[int, str]] = []
+            for node in ordered:
+                for path in sorted(set(node.inputs) | node.source_inputs):
+                    if path.startswith(B + "/") or path == B:
+                        continue
+                    if not (path.startswith(S + "/") or path == S or os.path.isabs(path)):
+                        continue
+                    physical = resolved.get(path)
+                    if physical is None:
+                        physical = self.context.physical(path).resolve()
+                        resolved[path] = physical
+                    if (_path_below(physical, source_root)
+                            and not _path_below(physical, build_root)):
+                        input_rows.append((self.strace_node_ids[node], str(physical)))
+            database.executemany("INSERT INTO inputs VALUES (?, ?)", input_rows)
+
+    def _mount(self, value: str, work: Path) -> str:
+        return str(value).replace(S, str(self.context.source_root)).replace(B, str(work))
+
+    def _manifest_path(self, uid: str) -> Path:
+        return self.uids / uid[0] / uid
+
+    def _cas_path(self, digest: str) -> Path:
+        return self.cas / digest[:2] / digest
+
+    def _cached(self, uid: str) -> bool:
+        path = self._manifest_path(uid)
+        try:
+            manifest = json.loads(path.read_text())
+            for entry in manifest.values():
+                if "cas" in entry and not self._cas_path(entry["cas"]).is_file():
+                    raise OSError("missing CAS blob")
+            return True
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            return False
+
+    def _store(self, node: Node, work: Path) -> None:
+        manifest: dict[str, dict[str, Any]] = {}
+        for output in node.outputs:
+            self._store_path(self.context.physical(output, work), output, manifest)
+        path = self._manifest_path(node.uid)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix="." + node.uid + ".", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump(manifest, stream, sort_keys=True, separators=(",", ":"))
+            os.replace(temporary, path)
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+    def _store_path(self, physical: Path, symbolic: str,
+                    manifest: dict[str, dict[str, Any]]) -> None:
+        try:
+            info = physical.lstat()
+        except OSError as exc:
+            raise BuildError(f"declared output was not produced: {symbolic}: {exc}") from exc
+        if stat.S_ISLNK(info.st_mode):
+            manifest[symbolic] = {"link": os.readlink(physical)}
+            return
+        if stat.S_ISDIR(info.st_mode):
+            for child in physical.iterdir():
+                self._store_path(child, symbolic + "/" + child.name, manifest)
+            return
+        mode = stat.S_IMODE(info.st_mode)
+        digest = self._cas_digest(physical, mode)
+        destination = self._cas_path(digest)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(physical, destination)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            temporary = destination.with_name("." + destination.name + "." + uuid.uuid4().hex)
+            shutil.copy2(physical, temporary)
+            try:
+                os.link(temporary, destination)
+            except FileExistsError:
+                pass
+            finally:
+                temporary.unlink(missing_ok=True)
+        manifest[symbolic] = {"cas": digest, "mode": mode}
+
+    @staticmethod
+    def _cas_digest(path: Path, mode: int) -> str:
+        digest = hashlib.sha256(f"{mode:o}\0".encode())
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _restore(self, uid: str, where: Path, symlink: bool) -> None:
+        path = self._manifest_path(uid)
+        try:
+            manifest = json.loads(path.read_text())
+            for symbolic, entry in manifest.items():
+                target = self.context.physical(symbolic, where)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if "link" in entry:
+                    self._replace_symlink(entry["link"], target)
+                else:
+                    source = self._cas_path(entry["cas"])
+                    if symlink:
+                        self._replace_symlink(str(source.resolve()), target)
+                    else:
+                        self._unlink(target)
+                        try:
+                            os.link(source, target)
+                        except OSError:
+                            os.symlink(source.resolve(), target)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+
+    def _replace_symlink(self, source: str, target: Path) -> None:
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        temporary = target.with_name("." + target.name + "." + uuid.uuid4().hex)
+        try:
+            os.symlink(source, temporary)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _unlink(path: Path) -> None:
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        except FileNotFoundError:
+            pass
+
+    @staticmethod
+    def _remove_contents(path: Path) -> None:
+        for child in path.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+
+    def _discard_contents(self, path: Path) -> None:
+        with self.garbage_lock:
+            while True:
+                self.grb.mkdir(parents=True, exist_ok=True)
+                destination = self.grb / uuid.uuid4().hex
+                try:
+                    path.rename(destination)
+                    return
+                except OSError:
+                    try:
+                        path.lstat()
+                    except OSError:
+                        return
+
+    def _start_garbage_collector(self) -> None:
+        if self.garbage_collector_started:
+            return
+        self.garbage_collector_started = True
+        threading.Thread(target=self._garbage_collector, daemon=True).start()
+
+    def _garbage_collector(self) -> None:
+        while True:
+            try:
+                with self.garbage_lock:
+                    subprocess.run(
+                        ["rm", "-rf", str(self.grb)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+            except OSError:
+                pass
+            time.sleep(1)
+
+    def _report(self, message: str) -> None:
+        with self.print_lock:
+            self._clear_progress()
+            print(message, file=sys.stderr)
+
+    def _progress(self, node: Node) -> None:
+        with self.print_lock:
+            self.progress_done += 1
+            descr = self._color(node.color, node.descr)
+            record = (
+                f"[{descr}] {{{self.progress_done}/{self.progress_total}}} "
+                f"{self._node_name(node)}"
+            )
+            if self.ninja and self.interactive:
+                sys.stderr.write("\x1b[2K\r" + record + "\r")
+                sys.stderr.flush()
+                self.progress_active = True
+            else:
+                print(record, file=sys.stderr)
+
+    def _finish_progress(self) -> None:
+        with self.print_lock:
+            if self.progress_active:
+                sys.stderr.write("\n")
+                sys.stderr.flush()
+                self.progress_active = False
+
+    def _clear_progress(self) -> None:
+        if self.progress_active:
+            sys.stderr.write("\x1b[2K\r")
+            self.progress_active = False
+
+    def _color(self, name: str, value: str) -> str:
+        code = ANSI_COLORS.get(name)
+        if not self.interactive or code is None:
+            return value
+        return f"\x1b[{code}m{value}\x1b[0m"
+
+    @staticmethod
+    def _node_name(node: Node) -> str:
+        return node.outputs[0] if node.outputs else "<no output>"
+
+
+def make_parser() -> argparse.ArgumentParser:
+    # add_help=False so we can load build.py and list its -D flags before
+    # printing help, instead of argparse exiting immediately
+    parser = argparse.ArgumentParser(prog="build", add_help=False)
+    parser.add_argument("-h", "--help", action="store_true",
+                        help="show this help (including the build's -D flags)")
+    parser.add_argument("targets", nargs="*")
+    parser.add_argument("-B", "--build-dir", default=os.environ.get("B", ".build"))
+    parser.add_argument(
+        "--cache-dir", default=os.environ.get("BUILD_CACHE_DIR"),
+        help="shared CAS/UID root; defaults to the build root",
+    )
+    parser.add_argument(
+        "--target",
+        help="target triple; defaults to the current host platform",
+    )
+    parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
+    parser.add_argument(
+        "-D", "--define", action="append", default=[], metavar="KEY[=VALUE]",
+        help="build flag readable in build.py as build.flags.KEY "
+             "(bare -DKEY sets it to 'yes')",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("-k", "--keep-going", action="store_true")
+    parser.add_argument(
+        "-T", "--ninja", action="store_true",
+        help="repaint progress in place instead of keeping one line per node",
+    )
+    parser.add_argument(
+        "--strace", action="store_true",
+        help="rerun nodes under strace and reject undeclared source reads",
+    )
+    parser.add_argument("--clear", action="store_true")
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("-G", "--graph", action="store_true")
+    parser.add_argument("--build-file", help=argparse.SUPPRESS)
+    return parser
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    return make_parser().parse_args(argv)
+
+
+def flag_help(build_file: Path, source_root: Path, build_dir: str,
+              target: str | None = None) -> str:
+    # load build.py in help mode: allow() raises AllowSpec with the declared
+    # flags. A build that never calls allow() has no declared -D flags.
+    flags = Flags({}, help_mode=True)
+    context = BuildContext(
+        source_root,
+        source_root / build_dir,
+        flags,
+        target=target,
+    )
+    try:
+        context.load(build_file)
+    except AllowSpec as spec:
+        rows = spec.spec
+    except Exception:
+        return ""  # build.py failed before declaring flags
+    else:
+        rows = {}
+    if not rows:
+        return "\nBuild flags (-D):\n  (this build declares none)\n"
+    width = max(len(name) for name in rows)
+    out = ["\nBuild flags (-D KEY[=VALUE]):"]
+    for name in sorted(rows):
+        meta = rows[name]
+        descr = meta["descr"] or ""
+        default = meta["default"]
+        suffix = f" (default: {default})" if default != "" else ""
+        out.append(f"  {name:<{width}}  {descr}{suffix}")
+    return "\n".join(out) + "\n"
+
+
+def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="surrogateescape")
+    parser = make_parser()
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    build_file = (Path(args.build_file).resolve() if args.build_file
+                  else Path(__file__).resolve().with_name("build.py"))
+    source_root = build_file.parent
+    if args.help:
+        sys.stdout.write(parser.format_help())
+        sys.stdout.write(flag_help(
+            build_file,
+            source_root,
+            args.build_dir,
+            args.target,
+        ))
+        return 0
+    flags = Flags(parse_defines(args.define))
+    context = BuildContext(
+        source_root,
+        source_root / args.build_dir,
+        flags,
+        target=args.target,
+    )
+    try:
+        context.load(build_file)
+        context.build_graph()
+        if args.graph:
+            print(context.serialize_graph())
+            return 0
+        if args.list:
+            for name in sorted(context.target_names.keys() | context.groups.keys()):
+                print(name)
+            return 0
+        publish: list[Target] = []
+        if args.targets:
+            selected: list[Target] = []
+            for name in args.targets:
+                target = context.target_names.get(name)
+                if target is not None:
+                    selected.append(target)
+                    publish.append(target)
+                    continue
+                targets = context.groups.get(name)
+                if targets is None:
+                    raise BuildError(f"unknown target or group: {name}")
+                selected.extend(targets)
+        else:
+            selected = context.groups.get("install", [])
+            if not selected:
+                raise BuildError("no targets requested and build.py defined no install group")
+            # A bare build publishes its deliverables: the install group
+            # holds real binaries, unlike test groups full of stamps.
+            publish.extend(selected)
+        selected = _uniq(selected)
+        roots = _uniq(target.root for target in selected if target.root is not None)
+        context.calculate_uids(roots)
+        cache_root = (
+            source_root / args.cache_dir
+            if args.cache_dir is not None
+            else context.build_root
+        )
+        if args.clear:
+            for directory in ("cas", "uid", "tmp", "grb"):
+                shutil.rmtree(cache_root / directory, ignore_errors=True)
+        context.build_root.mkdir(parents=True, exist_ok=True)
+        Executor(
+            context,
+            args.jobs,
+            args.verbose,
+            args.keep_going,
+            args.ninja,
+            args.strace,
+            cache_root,
+        ).run(roots)
+        if publish:
+            context.publish(publish)
+        return 0
+    except BuildError as exc:
+        print(f"build: {exc}", file=sys.stderr)
+        return 1
+
+
+def supervised_main(argv: list[str] | None = None) -> int:
+    """Keep signal handling outside the process group that does the work."""
+    watched = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+    old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, watched)
+    pid = os.fork()
+
+    if pid == 0:
+        os.setpgid(0, 0)
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+        return main(argv)
+
+    try:
+        os.setpgid(pid, pid)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+    interrupted = [0]
+
+    def terminate(signum, _frame):
+        interrupted[0] = interrupted[0] or signum
+
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    old_handlers = {signum: signal.signal(signum, terminate) for signum in watched}
+    signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+
+    try:
+        while True:
+            try:
+                _, status = os.waitpid(pid, 0)
+                break
+            except InterruptedError:
+                continue
+    finally:
+        for signum, handler in old_handlers.items():
+            signal.signal(signum, handler)
+
+    if interrupted[0]:
+        return 128 + interrupted[0]
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return 1
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "strace":
+        raise SystemExit(strace_main(sys.argv[2:]))
+    raise SystemExit(supervised_main())

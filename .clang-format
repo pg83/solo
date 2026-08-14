@@ -1,0 +1,73 @@
+---
+BasedOnStyle: LLVM
+Standard: c++17
+
+IndentWidth: 4
+ContinuationIndentWidth: 4
+ConstructorInitializerIndentWidth: 4
+TabWidth: 4
+UseTab: Never
+AccessModifierOffset: -4
+NamespaceIndentation: All
+IndentCaseLabels: true
+IndentPPDirectives: BeforeHash
+IndentExternBlock: Indent
+
+ColumnLimit: 10000
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+SeparateDefinitionBlocks: Always
+
+BreakBeforeBraces: Attach
+BreakConstructorInitializers: BeforeComma
+PackConstructorInitializers: Never
+BreakInheritanceList: AfterColon
+SpaceBeforeInheritanceColon: false
+
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseExpressionOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortCompoundRequirementOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortLambdasOnASingleLine: Empty
+AllowShortNamespacesOnASingleLine: false
+LambdaBodyIndentation: OuterScope
+
+SpaceBeforeParens: ControlStatements
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+DerivePointerAlignment: false
+SpaceBeforeAssignmentOperators: true
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpacesInAngles: false
+SpaceInEmptyParentheses: false
+SpacesInCStyleCastParentheses: false
+SpaceBeforeCpp11BracedList: false
+Cpp11BracedListStyle: true
+
+AlignAfterOpenBracket: BlockIndent
+AlignEscapedNewlines: Left
+AlignOperands: Align
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 0
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+BinPackArguments: false
+BinPackLongBracedList: false
+BinPackParameters: OnePerLine
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+AlwaysBreakTemplateDeclarations: Yes
+PenaltyBreakBeforeFirstCallParameter: 0
+
+SortIncludes: Never
+IncludeBlocks: Preserve
+FixNamespaceComments: false
+ReflowComments: Never
+InsertBraces: true
+...
