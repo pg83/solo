@@ -303,9 +303,10 @@ extern "C" int stub_dladdr(const void* addr, Dl_info* info) {
             info->dli_saddr = nullptr;
         }
         if (addr && info) {
-            if (auto found = ElfImage::findAddress(addr); found) {
-                info->dli_fname = found->path.data();
-                info->dli_fbase = found->base;
+            ElfAddress found;
+            if (ElfImage::findAddress(addr, &found)) {
+                info->dli_fname = found.path.data();
+                info->dli_fbase = found.base;
 
                 return 1;
             }

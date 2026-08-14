@@ -1,8 +1,6 @@
 #pragma once
 
 #include <elf.h>
-#include <string>
-#include <optional>
 #include <stddef.h>
 #include <stdint.h>
 #include <string_view>
@@ -21,16 +19,18 @@ struct ElfProgramHeaders {
     void* tlsData;
 };
 
-using ElfProgramHeaderCallback = int (*)(const ElfProgramHeaders& image, void* data);
+struct ElfProgramHeaderCallback {
+    virtual int call(const ElfProgramHeaders& image) = 0;
+};
 
 struct ElfImage {
     virtual ~ElfImage() noexcept;
 
-    virtual void* lookup(const std::string_view& symbol) const = 0;
+    virtual void* lookup(std::string_view symbol) const = 0;
 
-    static ElfImage* loadElf(const std::string_view& path, int flags);
-    static std::optional<ElfAddress> findAddress(const void* address);
-    static int iterateProgramHeaders(ElfProgramHeaderCallback callback, void* data);
+    static ElfImage* loadElf(std::string_view path, int flags);
+    static bool findAddress(const void* address, ElfAddress* res);
+    static int iterateProgramHeaders(ElfProgramHeaderCallback& callback);
 };
 
 extern "C" void* elfTlsAddress(const uintptr_t index[2]);

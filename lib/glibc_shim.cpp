@@ -511,13 +511,22 @@ static void sh_syslog_chk(int priority, int flag, const char* format, ...) {
     va_end(arguments);
 }
 
-struct ShDlIterateContext {
+struct ShDlIterateContext: public ElfProgramHeaderCallback {
+    ShDlIterateContext(int (*callback)(dl_phdr_info*, size_t, void*), void* data);
+
+    int call(const ElfProgramHeaders& image) override;
+
     int (*callback)(dl_phdr_info*, size_t, void*);
     void* data;
 };
 
-static int sh_visit_elf_headers(const ElfProgramHeaders& image, void* opaque) {
-    auto& context = *static_cast<ShDlIterateContext*>(opaque);
+ShDlIterateContext::ShDlIterateContext(int (*callback)(dl_phdr_info*, size_t, void*), void* data)
+    : callback(callback)
+    , data(data)
+{
+}
+
+int ShDlIterateContext::call(const ElfProgramHeaders& image) {
     dl_phdr_info info{};
     info.dlpi_addr = image.base;
     info.dlpi_name = image.path;
@@ -526,7 +535,7 @@ static int sh_visit_elf_headers(const ElfProgramHeaders& image, void* opaque) {
     info.dlpi_tls_modid = image.tlsModule;
     info.dlpi_tls_data = image.tlsData;
 
-    return context.callback(&info, sizeof(info), context.data);
+    return callback(&info, sizeof(info), data);
 }
 
 static int sh_dl_iterate_phdr(int (*callback)(dl_phdr_info*, size_t, void*), void* data) {
@@ -535,8 +544,8 @@ static int sh_dl_iterate_phdr(int (*callback)(dl_phdr_info*, size_t, void*), voi
         return hostResult;
     }
 
-    ShDlIterateContext context{callback, data};
-    return ElfImage::iterateProgramHeaders(sh_visit_elf_headers, &context);
+    ShDlIterateContext context(callback, data);
+    return ElfImage::iterateProgramHeaders(context);
 }
 
 enum {
@@ -1583,7 +1592,7 @@ static const auto& sh_glibc_providers() {
     return *providers;
 }
 
-void* resolveGlibcSymbol(const std::string_view& name, const std::string_view& version, bool weak) {
+void* resolveGlibcSymbol(std::string_view name, std::string_view version, bool weak) {
     if (name == "stderr" && version == "GLIBC_2.2.5") {
         return (void*)(uintptr_t)&stderr;
     }

@@ -367,14 +367,14 @@ namespace {
             return imagePointer;
         }
 
-        void* lookup(LinkMap& image, const std::string_view& name) {
+        void* lookup(LinkMap& image, std::string_view name) {
             std::lock_guard lock(mutex_);
             std::unordered_set<LinkMap*> visited;
 
             return lookup(image, name, visited);
         }
 
-        void* lookup(LinkMap& image, const std::string_view& name, std::unordered_set<LinkMap*>& visited) {
+        void* lookup(LinkMap& image, std::string_view name, std::unordered_set<LinkMap*>& visited) {
             if (!visited.insert(&image).second) {
                 return nullptr;
             }
@@ -429,26 +429,28 @@ namespace {
             return static_cast<unsigned char*>(THREAD_TLS[module]) + offset;
         }
 
-        std::optional<ElfAddress> findAddress(const void* address) {
+        bool findAddress(const void* address, ElfAddress* res) {
             std::lock_guard lock(mutex_);
             auto needle = reinterpret_cast<uintptr_t>(address);
             auto image = imagesByAddress_.upper_bound(needle);
 
             if (image == imagesByAddress_.begin()) {
-                return std::nullopt;
+                return false;
             }
             --image;
             if (needle >= image->second->mapStart + image->second->mapSize) {
-                return std::nullopt;
+                return false;
             }
 
-            return ElfAddress{
+            *res = ElfAddress{
                 image->second->path,
                 reinterpret_cast<void*>(image->second->base),
             };
+
+            return true;
         }
 
-        int iterateProgramHeaders(ElfProgramHeaderCallback callback, void* data) {
+        int iterateProgramHeaders(ElfProgramHeaderCallback& callback) {
             std::vector<LinkMap*> images;
             {
                 std::lock_guard lock(mutex_);
@@ -473,7 +475,7 @@ namespace {
                     image->tlsModule,
                     tlsData,
                 };
-                if (const int result = callback(headers, data); result) {
+                if (const int result = callback.call(headers); result) {
                     return result;
                 }
             }
@@ -1160,7 +1162,7 @@ namespace {
         {
         }
 
-        void* lookup(const std::string_view& symbol) const override {
+        void* lookup(std::string_view symbol) const override {
             return Loader::instance().lookup(image_, symbol);
         }
 
@@ -1171,18 +1173,18 @@ namespace {
 ElfImage::~ElfImage() noexcept {
 }
 
-ElfImage* ElfImage::loadElf(const std::string_view& path, int flags) {
+ElfImage* ElfImage::loadElf(std::string_view path, int flags) {
     auto* image = Loader::instance().load(path, flags);
 
     return image ? new LoadedElf(*image) : nullptr;
 }
 
-std::optional<ElfAddress> ElfImage::findAddress(const void* address) {
-    return Loader::instance().findAddress(address);
+bool ElfImage::findAddress(const void* address, ElfAddress* res) {
+    return Loader::instance().findAddress(address, res);
 }
 
-int ElfImage::iterateProgramHeaders(ElfProgramHeaderCallback callback, void* data) {
-    return Loader::instance().iterateProgramHeaders(callback, data);
+int ElfImage::iterateProgramHeaders(ElfProgramHeaderCallback& callback) {
+    return Loader::instance().iterateProgramHeaders(callback);
 }
 
 extern "C" void* elfTlsAddress(const uintptr_t index[2]) {
