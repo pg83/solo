@@ -157,10 +157,14 @@ the checked-in SPIR-V form of `shader.comp`, so no shader compiler is required.
   `ld-linux` and allows multiple C runtimes to coexist. SoLo takes the opposite
   route: it maps the required DSOs itself and translates their glibc imports
   onto musl, so a second libc and its TLS state never enter the process.
-- Flatpak, AppImage, and containers package a userspace around the application.
-  Those are mature solutions. SoLo explores the smaller deployment artifact:
-  one inspectable executable that reuses the host component which actually has
-  to be host-specific—the hardware driver.
+- Flatpak, AppImage, and containers solve the problem by hiding a small Linux
+  distribution inside or around your program. This works in roughly the same
+  way that moving house solves a missing power adapter. The result is a huge
+  blob full of duplicated libraries, mounts, namespaces, extraction tricks,
+  and runtime indirection—all of which make profiling, debugging, and basic
+  introspection worse. Shipping a distro because you need one system `.so` is
+  not portability. SoLo ships one normal, inspectable executable and borrows
+  the only component that genuinely belongs to the host: its hardware driver.
 
 ## Scope
 
