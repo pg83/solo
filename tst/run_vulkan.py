@@ -9,16 +9,31 @@ from pathlib import Path
 EXPECTED_SHA256 = "9abbdcc0f3290f075f404ece8b4fd2966c46e97e5f8e5733221632891b9d1648"
 
 
+def find_manifest(name):
+    manifest = Path(name)
+    if manifest.is_file():
+        return manifest
+
+    for directory in (
+        manifest.parent,
+        Path("/usr/share/vulkan/icd.d"),
+        Path("/usr/local/share/vulkan/icd.d"),
+        Path("/etc/vulkan/icd.d"),
+    ):
+        matches = sorted(directory.glob("lvp_icd*.json"))
+        if matches:
+            return matches[0]
+
+    raise SystemExit(f"lavapipe ICD manifest not found: {manifest}")
+
+
 def main():
     if len(sys.argv) != 4:
         raise SystemExit("usage: run_vulkan.py EXECUTABLE ICD OUTPUT")
 
     executable, manifest_name, output_name = sys.argv[1:]
-    manifest = Path(manifest_name)
+    manifest = find_manifest(manifest_name)
     output = Path(output_name)
-
-    if not manifest.is_file():
-        raise SystemExit(f"lavapipe ICD manifest not found: {manifest}")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.unlink(missing_ok=True)
