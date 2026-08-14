@@ -34,6 +34,12 @@ jobs:
           CXX: g++
         run: ./build test
 
+      - name: Vulkan
+        env:
+          CC: gcc
+          CXX: g++
+        run: ./build vulkan_test
+
   fedora-gcc:
     name: Fedora / GCC
     runs-on: ubuntu-latest
@@ -59,6 +65,12 @@ jobs:
           CC: gcc
           CXX: g++
         run: ./build test
+
+      - name: Vulkan
+        env:
+          CC: gcc
+          CXX: g++
+        run: ./build vulkan_test
 
   ubuntu-clang:
     name: Ubuntu / Clang
@@ -86,3 +98,9 @@ jobs:
           CC: clang
           CXX: clang++
         run: ./build test
+
+      - name: Vulkan
+        env:
+          CC: clang
+          CXX: clang++
+        run: ./build vulkan_test

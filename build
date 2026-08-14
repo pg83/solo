@@ -228,6 +228,7 @@ class Target:
     cflags: list[str] = dataclasses.field(default_factory=list)
     cxxflags: list[str] = dataclasses.field(default_factory=list)
     cppflags: list[str] = dataclasses.field(default_factory=list)
+    includes: list[str] = dataclasses.field(default_factory=list)
     public_cflags: list[str] = dataclasses.field(default_factory=list)
     public_cxxflags: list[str] = dataclasses.field(default_factory=list)
     public_cppflags: list[str] = dataclasses.field(default_factory=list)
@@ -457,27 +458,27 @@ class BuildContext:
             return sorted(globlib.glob(pattern, recursive=True))
         raise BuildError(f"glob pattern must start with $(S)/ or be absolute: {pattern}")
 
-    def library(self, *, srcs, name=None, cflags=(), cxxflags=(), cppflags=(),
+    def library(self, *, srcs, name=None, cflags=(), cxxflags=(), cppflags=(), includes=(),
                 public_cflags=(), public_cxxflags=(), public_cppflags=(),
                 deps=(), ldflags=(), output=None) -> Target:
         return self._compiled_target(
             "library", srcs, name, cflags, cxxflags, cppflags,
             public_cflags, public_cxxflags, public_cppflags,
-            deps, ldflags, output, None,
+            deps, ldflags, output, None, includes,
         )
 
-    def program(self, *, srcs, name=None, cflags=(), cxxflags=(), cppflags=(),
+    def program(self, *, srcs, name=None, cflags=(), cxxflags=(), cppflags=(), includes=(),
                 public_cflags=(), public_cxxflags=(), public_cppflags=(),
                 deps=(), ldflags=(), output=None, linker=None) -> Target:
         return self._compiled_target(
             "program", srcs, name, cflags, cxxflags, cppflags,
             public_cflags, public_cxxflags, public_cppflags,
-            deps, ldflags, output, linker,
+            deps, ldflags, output, linker, includes,
         )
 
     def _compiled_target(self, kind, srcs, name, cflags, cxxflags, cppflags,
                          public_cflags, public_cxxflags, public_cppflags,
-                         deps, ldflags, output, linker) -> Target:
+                         deps, ldflags, output, linker, includes) -> Target:
         sources = []
         for source in _items(srcs):
             if isinstance(source, dict):
@@ -496,6 +497,7 @@ class BuildContext:
             kind, name=name, srcs=sources,
             deps=_items(deps),
             cflags=_items(cflags), cxxflags=_items(cxxflags), cppflags=_items(cppflags),
+            includes=[_include_path(path) for path in _items(includes)],
             public_cflags=_items(public_cflags),
             public_cxxflags=_items(public_cxxflags),
             public_cppflags=_items(public_cppflags),
@@ -1146,8 +1148,12 @@ class BuildContext:
 
     def _emit_compiled(self, target: Target) -> None:
         assert target.name is not None
-        global_includes = _uniq([S, *[_include_path(path) for path in self.includes]])
-        include_flags = ["-I" + path for path in global_includes]
+        include_roots = _uniq([
+            S,
+            *target.includes,
+            *[_include_path(path) for path in self.includes],
+        ])
+        include_flags = ["-I" + path for path in include_roots]
         usage_cflags = self._usage_compile_flags(target.deps, False)
         usage_cxxflags = self._usage_compile_flags(target.deps, True)
         objects: list[Node] = []
@@ -1178,7 +1184,10 @@ class BuildContext:
             common.extend(self.external_cflags)
             if cxx:
                 common.extend(self.external_cxxflags)
-            include_roots = _uniq([*global_includes, *self._include_roots_from_flags(common)])
+            source_include_roots = _uniq([
+                *include_roots,
+                *self._include_roots_from_flags(common),
+            ])
             rel = src.replace(S + "/", "").replace(B + "/", "generated/")
             rel = re.sub(r"[^A-Za-z0-9_./+-]", "_", rel)
             obj = f"{B}/obj/{target.name}/{rel}.o"
@@ -1208,7 +1217,7 @@ class BuildContext:
                     obj,
                 ]],
                 deps=deps,
-                descr="CC", color="green", include_roots=include_roots,
+                descr="CC", color="green", include_roots=source_include_roots,
                 scan_sources=src.startswith(S + "/") or os.path.isabs(src),
             )
             for source_input in inputs:
@@ -1432,7 +1441,7 @@ class BuildContext:
 
 class IncludeScanner:
     directive = re.compile(
-        r'^[^\S\r\n]*#[^\S\r\n]*(?:include|import)[^\S\r\n]*'
+        r'^[^\S\r\n]*#[^\S\r\n]*(include|include_next|import)[^\S\r\n]*'
         r'([<"])([^>"]+)[>"]',
         re.MULTILINE,
     )
@@ -1445,8 +1454,8 @@ class IncludeScanner:
 
     def __init__(self, context: BuildContext):
         self.context = context
-        self.parsed: dict[str, list[tuple[bool, str]]] = {}
-        self.resolved: dict[tuple[str, bool, str, tuple[str, ...]], tuple[str | None, Node | None]] = {}
+        self.parsed: dict[str, list[tuple[bool, bool, str]]] = {}
+        self.resolved: dict[tuple[str, bool, bool, str, tuple[str, ...]], tuple[str | None, Node | None]] = {}
         self.closures: dict[tuple[str, tuple[str, ...]], tuple[set[str], set[Node]]] = {}
         self.includes: dict[str, dict[str, tuple[str | None, Node | None]]] = defaultdict(dict)
         self.paths: dict[str, tuple[str | None, Node | None]] = {}
@@ -1481,8 +1490,8 @@ class IncludeScanner:
         active.add(path)
         files = {path}
         producers: set[Node] = set()
-        for quoted, target in self._parse(path):
-            resolved, producer = self._resolve(path, quoted, target, roots)
+        for quoted, include_next, target in self._parse(path):
+            resolved, producer = self._resolve(path, quoted, include_next, target, roots)
             if producer is not None:
                 producers.add(producer)
             elif resolved is not None:
@@ -1495,7 +1504,7 @@ class IncludeScanner:
         self.closures[key] = (set(files), set(producers))
         return files, producers
 
-    def _parse(self, path: str) -> list[tuple[bool, str]]:
+    def _parse(self, path: str) -> list[tuple[bool, bool, str]]:
         cached = self.parsed.get(path)
         if cached is not None:
             return cached
@@ -1505,7 +1514,7 @@ class IncludeScanner:
             raise BuildError(f"cannot scan includes in {path}: {exc}") from exc
         clean = self._strip_comments(text)
         result = [
-            (match.group(1) == '"', match.group(2))
+            (match.group(2) == '"', match.group(1) == "include_next", match.group(3))
             for match in self.directive.finditer(clean)
         ]
         self.parsed[path] = result
@@ -1521,13 +1530,13 @@ class IncludeScanner:
 
         return cls.comment_or_literal.sub(replace, text)
 
-    def _resolve(self, includer: str, quoted: bool, target: str,
+    def _resolve(self, includer: str, quoted: bool, include_next: bool, target: str,
                  roots: tuple[str, ...]) -> tuple[str | None, Node | None]:
-        key = (includer, quoted, target, roots)
+        key = (includer, quoted, include_next, target, roots)
         cached = self.resolved.get(key)
         if cached is not None:
             return cached
-        if quoted:
+        if quoted and not include_next:
             directory = includer.rsplit("/", 1)[0]
             if not directory and includer.startswith("/"):
                 directory = "/"
@@ -1544,12 +1553,18 @@ class IncludeScanner:
             if result is not None:
                 self.resolved[key] = result
                 return result
-        table = self.root_resolutions.get(roots)
+        search_roots = roots
+        if include_next:
+            for index, root in enumerate(roots):
+                if self.root_includes[root].get(target) == (includer, None):
+                    search_roots = roots[index + 1:]
+                    break
+        table = self.root_resolutions.get(search_roots)
         if table is None:
             table = {}
-            for root in reversed(roots):
+            for root in reversed(search_roots):
                 table.update(self.root_includes[root])
-            self.root_resolutions[roots] = table
+            self.root_resolutions[search_roots] = table
         result = table.get(target, (None, None))
         self.resolved[key] = result
         return result
