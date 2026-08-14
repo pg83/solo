@@ -6,7 +6,9 @@
 glibc-linked GPU driver. No container, no AppImage, and no second libc in the
 process.**
 
-Static binaries are a wonderfully boring way to deploy software on Linux—right
+Static binaries are a wonderfully boring way to deploy software on Linux. We
+build ours with [IX](https://github.com/pg83/ix), a source-first build system for
+producing fully static Linux binaries. The story stays wonderfully boring—right
 up until the application needs the GPU. Vulkan and OpenGL drivers are supplied
 by the host as shared objects, usually built against glibc. A fully static musl
 binary cannot normally `dlopen()` them.
@@ -34,7 +36,10 @@ cd solo
 ```
 
 The last command discovers the distro-installed Vulkan ICD in the usual way
-and produces a 512×512 RGBA image. To force a particular driver:
+and produces a 512×512 RGBA image. This is also how we are going to build the
+[release binaries for Shitty](https://github.com/pg83/shitty/releases)—a
+blazingly fast terminal emulator, BTW. Its Linux release will stay static while
+loading the user's Vulkan driver through SoLo. To force a particular driver:
 
 ```sh
 ./vulkan --driver /usr/share/vulkan/icd.d/radeon_icd.x86_64.json radeon.png
