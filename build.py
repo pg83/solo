@@ -65,6 +65,7 @@ def muslSources():
         f"{root}/src/ldso/dlinfo.c",
         f"{root}/src/ldso/dlopen.c",
         f"{root}/src/ldso/dlsym.c",
+        f"{root}/src/ldso/x86_64/dlsym.s",
     }
     generic = [
         *build.glob(f"{root}/src/*/*.c"),
@@ -81,7 +82,10 @@ def muslSources():
     return [
         source for source in generic
         if source not in replacedDlfcn and source.rsplit(".", 1)[0] not in replacements
-    ] + architecture
+    ] + [
+        source for source in architecture
+        if source not in replacedDlfcn
+    ]
 
 
 vulkan_root = "$(S)/bin/vulkan"
