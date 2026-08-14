@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  alpine-musl:
+    name: Alpine / musl
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Install dependencies
+        run: apk add --no-cache build-base gcompat git libarchive-tools python3
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build
+        env:
+          CC: gcc
+          CXX: g++
+        run: ./build
+
+      - name: Test
+        env:
+          CC: gcc
+          CXX: g++
+        run: ./build test
+
+  fedora-gcc:
+    name: Fedora / GCC
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Install dependencies
+        run: dnf install -y bsdtar gcc gcc-c++ git glibc-static libstdc++-static python3
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build
+        env:
+          CC: gcc
+          CXX: g++
+        run: ./build
+
+      - name: Test
+        env:
+          CC: gcc
+          CXX: g++
+        run: ./build test
+
+  ubuntu-clang:
+    name: Ubuntu / Clang
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang g++ libarchive-tools python3
+
+      - name: Build
+        env:
+          CC: clang
+          CXX: clang++
+        run: ./build
+
+      - name: Test
+        env:
+          CC: clang
+          CXX: clang++
+        run: ./build test
