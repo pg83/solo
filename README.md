@@ -152,11 +152,10 @@ the checked-in SPIR-V form of `shader.comp`, so no shader compiler is required.
 
 ## How this differs from prior work
 
-- [Cosmopolitan Libc](https://github.com/jart/cosmopolitan) and
-  [Actually Portable Executables](https://justine.lol/ape.html) solve
-  build-once/run-anywhere for code shipped with the program. SoLo tackles a
-  different boundary: consuming Linux-only, machine-local vendor DSOs such as
-  GPU drivers from a static musl process.
+- [Cosmopolitan Libc's `cosmo_dlopen()`](https://github.com/jart/cosmopolitan/blob/master/libc/dlopen/dlopen.c)
+  follows the same split-runtime scheme as Detour, with all of its advantages
+  and drawbacks: it bootstraps the host's ELF interpreter and libc, then
+  delegates loading the target DSO to the host's `dlopen()`.
 - [gcompat](https://github.com/Stantheman/gcompat) is a distribution-level
   glibc API shim for running prebuilt glibc binaries on musl. Its loader stub
   re-executes the program through musl's dynamic linker with `libgcompat.so`
