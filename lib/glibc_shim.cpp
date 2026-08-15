@@ -10,7 +10,6 @@
 #include "elf_loader.h"
 #include "glibc_stubs.h"
 #include "hash.h"
-#include "musl_shim.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -1661,9 +1660,6 @@ void* resolveGlibcSymbol(std::string_view name, std::string_view version, bool w
         return host_address;
     }
     stub_dlerror();
-    if (auto* provider = resolveMuslSymbol(name); provider) {
-        return provider;
-    }
     if (auto* stub = resolveGlibcStub(name, version); stub) {
         return stub;
     }

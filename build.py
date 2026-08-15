@@ -32,7 +32,7 @@ dlfcn = library(
         "$(S)/lib/glibc_shim.cpp",
         "$(S)/lib/glibc_stubs.cpp",
         "$(S)/lib/hash.cpp",
-        "$(S)/lib/musl_shim.cpp",
+        "$(S)/lib/musl_provider.cpp",
         "$(S)/lib/musl_symbols.cpp",
         "$(S)/lib/tlsdesc.S",
     ],
@@ -44,7 +44,6 @@ dlfcn = library(
 smoke = program(
     name="smoke",
     srcs=[
-        "$(S)/tst/host_symbols.cpp",
         "$(S)/tst/smoke.cpp",
     ],
     deps=[dlfcn],
@@ -369,7 +368,7 @@ dlfcn_static = library(
         "$(S)/lib/glibc_shim.cpp",
         "$(S)/lib/glibc_stubs.cpp",
         "$(S)/lib/hash.cpp",
-        "$(S)/lib/musl_shim.cpp",
+        "$(S)/lib/musl_provider.cpp",
         "$(S)/lib/musl_symbols.cpp",
         "$(S)/lib/tlsdesc.S",
     ],

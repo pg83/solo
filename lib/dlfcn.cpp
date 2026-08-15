@@ -4,6 +4,8 @@
     #include "elf_loader.h"
 #endif
 
+#include "musl_provider.h"
+
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
@@ -87,6 +89,8 @@ namespace {
     };
 
     struct Handles: public IfaceHandle, public std::unordered_map<std::string, Handle> {
+        Handles();
+
         // default handle lookup
         void* lookup(const std::string_view& s) const override {
             for (const auto& it : *this) {
@@ -128,6 +132,30 @@ namespace {
             return h;
         }
     };
+
+    Handles::Handles() {
+        registar("dl", "dlopen", reinterpret_cast<void*>(stub_dlopen));
+        registar("dl", "dlsym", reinterpret_cast<void*>(stub_dlsym));
+        registar("dl", "dlclose", reinterpret_cast<void*>(stub_dlclose));
+        registar("dl", "dlerror", reinterpret_cast<void*>(stub_dlerror));
+        registar("dl", "dladdr", reinterpret_cast<void*>(stub_dladdr));
+
+        auto provider = muslProvider();
+
+        for (size_t index = 0; index < provider.symbolCount; ++index) {
+            const auto& symbol = provider.symbols[index];
+
+            registar("c", symbol.name, symbol.address);
+        }
+        for (size_t index = 0; index < provider.overrideCount; ++index) {
+            const auto& symbol = provider.overrides[index];
+
+            registar("c", symbol.name, symbol.address);
+        }
+        registar("c", "dlclose", reinterpret_cast<void*>(stub_dlclose));
+        registar("c", "dlerror", reinterpret_cast<void*>(stub_dlerror));
+        registar("c", "dladdr", reinterpret_cast<void*>(stub_dladdr));
+    }
 
 #if defined(__linux__)
     struct ElfHandle: public IfaceHandle {
@@ -323,53 +351,3 @@ extern "C" int stub_dladdr(const void* addr, Dl_info* info) {
 
     return 0;
 }
-
-// some helpers
-#define DL_CAT(X, Y) DL_CA_(X, Y)
-#define DL_CA_(X, Y) DL_C__(X, Y)
-#define DL_C__(X, Y) X##Y
-#define DL_STR(X) DL_ST_(X)
-#define DL_ST_(X) #X
-
-#if defined(__COUNTER__)
-    #define DL_UID(N) DL_CAT(N, __COUNTER__)
-#endif
-
-#if !defined(DL_UID)
-    #define DL_UID(N) DL_CAT(N, __LINE__)
-#endif
-
-#define DL_LIB(name)            \
-    namespace {                 \
-        namespace DL_UID(Reg) { \
-            static struct Reg { \
-                inline Reg() {  \
-                    const char* lib = name;
-
-#define DL_S_2(name, ptr) stub_dlregister(lib, name, (void*)ptr);
-
-#define DL_S_1(name) DL_S_2(DL_STR(name), name)
-
-#define DL_END() \
-    }            \
-    ;            \
-    }            \
-    LIB_REG;     \
-    }            \
-    }
-
-DL_LIB("dl")
-DL_S_2("dlopen", stub_dlopen)
-DL_S_2("dlsym", stub_dlsym)
-DL_S_2("dlclose", stub_dlclose)
-DL_S_2("dlerror", stub_dlerror)
-DL_S_2("dladdr", stub_dladdr)
-DL_END()
-
-DL_LIB("c")
-DL_S_2("dlopen", stub_dlopen)
-DL_S_2("dlsym", stub_dlsym)
-DL_S_2("dlclose", stub_dlclose)
-DL_S_2("dlerror", stub_dlerror)
-DL_S_2("dladdr", stub_dladdr)
-DL_END()

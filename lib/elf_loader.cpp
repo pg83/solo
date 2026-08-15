@@ -6,7 +6,6 @@
 
 #include "dlfcn.h"
 #include "glibc_shim.h"
-#include "musl_shim.h"
 
 #include <elf.h>
 #include <errno.h>
@@ -147,11 +146,6 @@ namespace {
         LinkMap* image = nullptr;
     };
 
-    enum class LibcAbi {
-        Musl,
-        Glibc,
-    };
-
     struct TlsDescArgument {
         uintptr_t module;
         uintptr_t offset;
@@ -179,7 +173,7 @@ namespace {
         Elf64_Half* symbolVersions = nullptr;
         std::array<std::string_view, MAX_VERSION_INDEX> versionNames = {};
         std::vector<Dependency> dependencies;
-        LibcAbi libcAbi = LibcAbi::Musl;
+        bool glibcAbi = false;
 
         Elf64_Rela* relocations = nullptr;
         size_t relocationCount = 0;
@@ -624,10 +618,6 @@ namespace {
             return std::find(dependencies.begin(), dependencies.end(), name) != dependencies.end();
         }
 
-        static bool isMuslDependency(const std::string_view& name) noexcept {
-            return name.starts_with("libc.musl-") && name.ends_with(".so.1");
-        }
-
         void loadDependencies(LinkMap& image) {
             for (auto* entry = image.dynamic; entry->d_tag != DT_NULL; ++entry) {
                 if (entry->d_tag != DT_NEEDED) {
@@ -637,11 +627,7 @@ namespace {
                 std::string needed(image.strings + entry->d_un.d_val);
 
                 if (isGlibcDependency(needed)) {
-                    image.libcAbi = LibcAbi::Glibc;
-                    continue;
-                }
-                if (isMuslDependency(needed)) {
-                    image.libcAbi = LibcAbi::Musl;
+                    image.glibcAbi = true;
                     continue;
                 }
 
@@ -926,7 +912,7 @@ namespace {
             }
 
             auto weak = ELF64_ST_BIND(symbol->st_info) == STB_WEAK;
-            auto* address = image.libcAbi == LibcAbi::Glibc ? resolveGlibcSymbol(name, version, weak) : resolveMuslSymbol(name);
+            auto* address = image.glibcAbi ? resolveGlibcSymbol(name, version, weak) : nullptr;
 
             if (!address && !weak) {
                 throwError("%s: unresolved symbol %.*s%.*s%.*s", image.path.c_str(), static_cast<int>(name.size()), name.data(), version.empty() ? 0 : 1, "@", static_cast<int>(version.size()), version.data());
