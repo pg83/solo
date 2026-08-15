@@ -70,12 +70,12 @@ itself is in [`main.cpp`](bin/vulkan/main.cpp).
 
 ```text
 ┌──────────────────── fully static executable ────────────────────┐
-│                                                                │
+│                                                                 │
 │  application → embedded Vulkan loader → SoLo dlopen/dlsym       │
-│                                           ├─ x86-64 ELF mapper   │
-│                                           └─ glibc ABI → musl    │
+│                                           ├─ x86-64 ELF mapper  │
+│                                           └─ glibc ABI → musl   │
 │                                           │                     │
-└───────────────────────────────────────────│─────────────────────┘
+└───────────────────────────────────────────┬─────────────────────┘
                                             │ maps at runtime
                                             ▼
                               system Mesa/Vulkan ICD.so + DSOs
