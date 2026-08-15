@@ -157,10 +157,27 @@ the checked-in SPIR-V form of `shader.comp`, so no shader compiler is required.
   build-once/run-anywhere for code shipped with the program. SoLo tackles a
   different boundary: consuming Linux-only, machine-local vendor DSOs such as
   GPU drivers from a static musl process.
+- [gcompat](https://github.com/Stantheman/gcompat) is a distribution-level
+  glibc API shim for running prebuilt glibc binaries on musl. Its loader stub
+  re-executes the program through musl's dynamic linker with `libgcompat.so`
+  preloaded; using it from a musl program requires linking that shared library
+  or adding it to the loaded DSO's `DT_NEEDED`. It does not give a fully static
+  musl process a dynamic loader. SoLo's self-contained model is stronger: the
+  executable embeds both the ELF loader and ABI bridge, loads unchanged host
+  DSOs without a system compatibility package, preserves the versions of their
+  glibc imports, and lets unused unsupported functions remain behind
+  symbol-specific, fail-loud stubs instead of blocking the entire DSO.
 - [Detour](https://github.com/graphitemaster/detour) bootstraps the system's
   `ld-linux` and allows multiple C runtimes to coexist. SoLo takes the opposite
   route: it maps the required DSOs itself and translates their glibc imports
   onto musl, so a second libc and its TLS state never enter the process.
+- [graphics.gd's `musl` + `dlopen` experiment](https://github.com/quaadgras/graphics.gd/discussions/242)
+  follows the same split-runtime model as Detour: an embedded helper brings in
+  the host's glibc loader, and assembly trampolines switch between musl and
+  glibc TLS around foreign calls. This leaves two independent TLS worlds: every
+  boundary crossing needs a trampoline, and a callback implemented in musl
+  cannot be passed safely to glibc code because glibc invokes it while its own
+  TLS is active. SoLo keeps a single musl TLS world instead.
 - Flatpak, AppImage, and containers solve the problem by hiding a small Linux
   distribution inside or around your program. This works in roughly the same
   way that moving house solves a missing power adapter. The result is a huge
