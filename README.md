@@ -152,6 +152,12 @@ the checked-in SPIR-V form of `shader.comp`, so no shader compiler is required.
 
 ## How this differs from prior work
 
+In the general case, only SoLo lets a static application tell the dynamic
+loader: "for this system DSO's `libwayland` dependency, use the symbols already
+linked into my executable." This lets the application embed the newest
+`libwayland` instead of targeting the oldest version available on every
+supported system.
+
 - [Cosmopolitan Libc's `cosmo_dlopen()`](https://github.com/jart/cosmopolitan/blob/master/libc/dlopen/dlopen.c)
   follows the same split-runtime scheme as Detour, with all of its advantages
   and drawbacks: it bootstraps the host's ELF interpreter and libc, then
