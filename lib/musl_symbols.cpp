@@ -11,14 +11,7 @@ extern "C" {
     extern void* _IO_putc;
     extern void* _IO_putc_unlocked;
     extern void* ___environ;
-    extern void* __acquire_ptc;
-    extern void* __aio_atfork;
     extern void* __assert_fail;
-    extern void* __crypt_blowfish;
-    extern void* __crypt_des;
-    extern void* __crypt_md5;
-    extern void* __crypt_sha256;
-    extern void* __crypt_sha512;
     extern void* __ctype_b_loc;
     extern void* __ctype_get_mb_cur_max;
     extern void* __ctype_tolower_loc;
@@ -33,7 +26,6 @@ extern "C" {
     extern void* __fgetwc_unlocked;
     extern void* __flbf;
     extern void* __flt_rounds;
-    extern void* __fmodeflags;
     extern void* __fpclassify;
     extern void* __fpclassifyf;
     extern void* __fpclassifyl;
@@ -53,10 +45,7 @@ extern "C" {
     extern void* __fxstat;
     extern void* __fxstatat;
     extern void* __getdelim;
-    extern void* __gettextdomain;
     extern void* __h_errno_location;
-    extern void* __inhibit_ptc;
-    extern void* __intscan;
     extern void* __isalnum_l;
     extern void* __isalpha_l;
     extern void* __isblank_l;
@@ -97,12 +86,7 @@ extern "C" {
     extern void* __lgammal_r;
     extern void* __libc_current_sigrtmax;
     extern void* __libc_current_sigrtmin;
-    extern void* __libc_start_main;
-    extern void* __lock;
     extern void* __lxstat;
-    extern void* __malloc_atfork;
-    extern void* __mo_lookup;
-    extern void* __month_to_secs;
     extern void* __newlocale;
     extern void* __nl_langinfo;
     extern void* __nl_langinfo_l;
@@ -112,8 +96,6 @@ extern "C" {
     extern void* __posix_getopt;
     extern void* __progname;
     extern void* __progname_full;
-    extern void* __release_ptc;
-    extern void* __res_msend;
     extern void* __res_state;
     extern void* __sched_cpucount;
     extern void* __setjmp;
@@ -124,7 +106,6 @@ extern "C" {
     extern void* __sigsetjmp;
     extern void* __stack_chk_fail;
     extern void* __stack_chk_guard;
-    extern void* __stdio_exit;
     extern void* __strcasecmp_l;
     extern void* __strcoll_l;
     extern void* __strerror_l;
@@ -141,7 +122,6 @@ extern "C" {
     extern void* __strxfrm_l;
     extern void* __sysv_signal;
     extern void* __timezone;
-    extern void* __tls_get_addr;
     extern void* __tolower_l;
     extern void* __toupper_l;
     extern void* __towctrans_l;
@@ -149,8 +129,6 @@ extern "C" {
     extern void* __towupper_l;
     extern void* __tzname;
     extern void* __uflow;
-    extern void* __unlock;
-    extern void* __unmapself;
     extern void* __uselocale;
     extern void* __wcscoll_l;
     extern void* __wcsftime_l;
@@ -162,12 +140,9 @@ extern "C" {
     extern void* __xpg_basename;
     extern void* __xpg_strerror_r;
     extern void* __xstat;
-    extern void* __year_to_secs;
     extern void* _environ;
     extern void* _exit;
-    extern void* _fini;
     extern void* _flushlbf;
-    extern void* _init;
     extern void* _longjmp;
     extern void* _ns_flagdata;
     extern void* _pthread_cleanup_pop;
@@ -1671,14 +1646,7 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"_IO_putc", &_IO_putc},
     {"_IO_putc_unlocked", &_IO_putc_unlocked},
     {"___environ", &___environ},
-    {"__acquire_ptc", &__acquire_ptc},
-    {"__aio_atfork", &__aio_atfork},
     {"__assert_fail", &__assert_fail},
-    {"__crypt_blowfish", &__crypt_blowfish},
-    {"__crypt_des", &__crypt_des},
-    {"__crypt_md5", &__crypt_md5},
-    {"__crypt_sha256", &__crypt_sha256},
-    {"__crypt_sha512", &__crypt_sha512},
     {"__ctype_b_loc", &__ctype_b_loc},
     {"__ctype_get_mb_cur_max", &__ctype_get_mb_cur_max},
     {"__ctype_tolower_loc", &__ctype_tolower_loc},
@@ -1693,7 +1661,6 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"__fgetwc_unlocked", &__fgetwc_unlocked},
     {"__flbf", &__flbf},
     {"__flt_rounds", &__flt_rounds},
-    {"__fmodeflags", &__fmodeflags},
     {"__fpclassify", &__fpclassify},
     {"__fpclassifyf", &__fpclassifyf},
     {"__fpclassifyl", &__fpclassifyl},
@@ -1713,10 +1680,7 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"__fxstat", &__fxstat},
     {"__fxstatat", &__fxstatat},
     {"__getdelim", &__getdelim},
-    {"__gettextdomain", &__gettextdomain},
     {"__h_errno_location", &__h_errno_location},
-    {"__inhibit_ptc", &__inhibit_ptc},
-    {"__intscan", &__intscan},
     {"__isalnum_l", &__isalnum_l},
     {"__isalpha_l", &__isalpha_l},
     {"__isblank_l", &__isblank_l},
@@ -1757,12 +1721,7 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"__lgammal_r", &__lgammal_r},
     {"__libc_current_sigrtmax", &__libc_current_sigrtmax},
     {"__libc_current_sigrtmin", &__libc_current_sigrtmin},
-    {"__libc_start_main", &__libc_start_main},
-    {"__lock", &__lock},
     {"__lxstat", &__lxstat},
-    {"__malloc_atfork", &__malloc_atfork},
-    {"__mo_lookup", &__mo_lookup},
-    {"__month_to_secs", &__month_to_secs},
     {"__newlocale", &__newlocale},
     {"__nl_langinfo", &__nl_langinfo},
     {"__nl_langinfo_l", &__nl_langinfo_l},
@@ -1772,8 +1731,6 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"__posix_getopt", &__posix_getopt},
     {"__progname", &__progname},
     {"__progname_full", &__progname_full},
-    {"__release_ptc", &__release_ptc},
-    {"__res_msend", &__res_msend},
     {"__res_state", &__res_state},
     {"__sched_cpucount", &__sched_cpucount},
     {"__setjmp", &__setjmp},
@@ -1784,7 +1741,6 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"__sigsetjmp", &__sigsetjmp},
     {"__stack_chk_fail", &__stack_chk_fail},
     {"__stack_chk_guard", &__stack_chk_guard},
-    {"__stdio_exit", &__stdio_exit},
     {"__strcasecmp_l", &__strcasecmp_l},
     {"__strcoll_l", &__strcoll_l},
     {"__strerror_l", &__strerror_l},
@@ -1801,7 +1757,6 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"__strxfrm_l", &__strxfrm_l},
     {"__sysv_signal", &__sysv_signal},
     {"__timezone", &__timezone},
-    {"__tls_get_addr", &__tls_get_addr},
     {"__tolower_l", &__tolower_l},
     {"__toupper_l", &__toupper_l},
     {"__towctrans_l", &__towctrans_l},
@@ -1809,8 +1764,6 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"__towupper_l", &__towupper_l},
     {"__tzname", &__tzname},
     {"__uflow", &__uflow},
-    {"__unlock", &__unlock},
-    {"__unmapself", &__unmapself},
     {"__uselocale", &__uselocale},
     {"__wcscoll_l", &__wcscoll_l},
     {"__wcsftime_l", &__wcsftime_l},
@@ -1822,12 +1775,9 @@ const MuslSymbol MUSL_SYMBOLS[] = {
     {"__xpg_basename", &__xpg_basename},
     {"__xpg_strerror_r", &__xpg_strerror_r},
     {"__xstat", &__xstat},
-    {"__year_to_secs", &__year_to_secs},
     {"_environ", &_environ},
     {"_exit", &_exit},
-    {"_fini", &_fini},
     {"_flushlbf", &_flushlbf},
-    {"_init", &_init},
     {"_longjmp", &_longjmp},
     {"_ns_flagdata", &_ns_flagdata},
     {"_pthread_cleanup_pop", &_pthread_cleanup_pop},

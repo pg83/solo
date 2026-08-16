@@ -8,9 +8,31 @@ import sys
 from pathlib import Path
 
 
-def archive_symbols(archive: Path) -> set[str]:
+NON_DIRECT_SYMBOLS = {
+    "__tls_get_addr",
+    "dladdr",
+    "dlclose",
+    "dlerror",
+    "dlinfo",
+    "dlopen",
+    "dlsym",
+}
+
+PROCESS_SYMBOLS = {
+    "__libc_start_main",
+    "_fini",
+    "_init",
+}
+
+
+def defined_symbols(path: Path, dynamic: bool = False) -> set[str]:
+    arguments = [
+        "llvm-readelf",
+        "--dyn-symbols" if dynamic else "--symbols",
+        str(path),
+    ]
     output = subprocess.check_output(
-        ["llvm-readelf", "--symbols", str(archive)],
+        arguments,
         text=True,
         stderr=subprocess.DEVNULL,
     )
@@ -18,16 +40,26 @@ def archive_symbols(archive: Path) -> set[str]:
     for line in output.splitlines():
         fields = line.split()
 
-        if len(fields) == 8 and fields[0].endswith(":") and fields[4] in ("GLOBAL", "WEAK") and fields[5] in ("DEFAULT", "PROTECTED") and fields[6] != "UND":
+        if (
+            len(fields) == 8
+            and fields[0].endswith(":")
+            and fields[4] in ("GLOBAL", "WEAK")
+            and fields[5] in ("DEFAULT", "PROTECTED")
+            and fields[6] != "UND"
+        ):
             result.add(fields[7])
     return result
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: generate_host_symbols.py MUSL_LIBC_A OUTPUT_CPP")
+    if len(sys.argv) != 4:
+        raise SystemExit(
+            "usage: generate_host_symbols.py MUSL_LIBC_A MUSL_LIBC_SO OUTPUT_CPP"
+        )
 
-    direct = sorted(archive_symbols(Path(sys.argv[1])))
+    available = defined_symbols(Path(sys.argv[1]))
+    public = defined_symbols(Path(sys.argv[2]), dynamic=True)
+    direct = sorted((available & public) - NON_DIRECT_SYMBOLS - PROCESS_SYMBOLS)
 
     lines = [
         "// Generated from musl 1.2.5 by generate_host_symbols.py.",
@@ -57,7 +89,7 @@ def main() -> None:
         "",
     ])
 
-    output = Path(sys.argv[2])
+    output = Path(sys.argv[3])
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines))
     print(f"generated {len(direct)} musl identity providers in {output}")

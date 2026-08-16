@@ -67,6 +67,7 @@ int main() {
         }
     }
     static constexpr const char* dynamicSymbols[] = {
+        "__tls_get_addr",
         "dlopen",
         "dlsym",
         "dlclose",
@@ -76,6 +77,17 @@ int main() {
     for (const auto* symbol : dynamicSymbols) {
         if (!stub_dlsym(libc, symbol)) {
             fprintf(stderr, "static libc dynamic symbol missing: %s: %s\n", symbol, stub_dlerror());
+            return 1;
+        }
+    }
+    static constexpr const char* processSymbols[] = {
+        "__libc_start_main",
+        "_fini",
+        "_init",
+    };
+    for (const auto* symbol : processSymbols) {
+        if (stub_dlsym(libc, symbol)) {
+            fprintf(stderr, "static libc process symbol leaked: %s\n", symbol);
             return 1;
         }
     }
