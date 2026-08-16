@@ -15,9 +15,31 @@ namespace {
     using GlibcVersionLookup = void* (*)(const char* library, const char* symbol, const char* version);
     using GlibcDlFunction = void* (*)(const char* symbol);
     using GlibcTest = int (*)();
+    using GlibcThrow = void (*)();
+    using GlibcCall = void (*)(void (*callback)());
+    using GlibcCatch = int (*)(void (*callback)());
+
+    static GlibcThrow foreignThrow;
+    static bool callbackCaught;
 
     static int testProviderValue(int value) {
         return value + 35;
+    }
+
+    static void throwFromStaticWorld() {
+        throw 43;
+    }
+
+    static void catchForeignInCallback() {
+        try {
+            foreignThrow();
+        } catch (...) {
+            callbackCaught = true;
+        }
+    }
+
+    static void throwForeignFromCallback() {
+        foreignThrow();
     }
 
     static void* requiredSymbol(void* handle, const char* name) {
@@ -152,6 +174,62 @@ int main() {
         return 1;
     }
 
+    auto* glibcException = stub_dlopen("libdlfcn-test-exception.so", RTLD_NOW | RTLD_LOCAL);
+
+    if (!glibcException) {
+        fprintf(stderr, "glibc C++ exception test load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto glibcThrowCatch = reinterpret_cast<GlibcTest>(requiredSymbol(glibcException, "glibc_test_exception"));
+    foreignThrow = reinterpret_cast<GlibcThrow>(requiredSymbol(glibcException, "glibc_test_throw"));
+    auto glibcCall = reinterpret_cast<GlibcCall>(requiredSymbol(glibcException, "glibc_test_call"));
+    auto glibcCatch = reinterpret_cast<GlibcCatch>(requiredSymbol(glibcException, "glibc_test_catch"));
+    auto glibcDestructions = reinterpret_cast<GlibcTest>(requiredSymbol(glibcException, "glibc_test_destructions"));
+    auto glibcFindObject = reinterpret_cast<GlibcTest>(requiredSymbol(glibcException, "glibc_test_find_object"));
+
+    if (!glibcThrowCatch || !foreignThrow || !glibcCall || !glibcCatch || !glibcDestructions || !glibcFindObject || glibcThrowCatch() != 42 || glibcFindObject() != 0) {
+        fprintf(stderr, "glibc C++ exception propagation failed\n");
+        return 1;
+    }
+
+    bool caught = false;
+    try {
+        foreignThrow();
+    } catch (...) {
+        caught = true;
+    }
+    if (!caught || glibcDestructions() != 1) {
+        fprintf(stderr, "glibc exception did not unwind into the static world\n");
+        return 1;
+    }
+
+    caught = false;
+    try {
+        glibcCall(throwFromStaticWorld);
+    } catch (...) {
+        caught = true;
+    }
+    if (!caught || glibcDestructions() != 2) {
+        fprintf(stderr, "static exception did not unwind through the glibc world\n");
+        return 1;
+    }
+
+    if (glibcCatch(throwFromStaticWorld) != 44 || glibcDestructions() != 3) {
+        fprintf(stderr, "glibc catch (...) did not catch a static exception\n");
+        return 1;
+    }
+
+    if (glibcCatch(throwForeignFromCallback) != 44 || glibcDestructions() != 5) {
+        fprintf(stderr, "glibc exception did not cross a static callback into glibc catch (...)\n");
+        return 1;
+    }
+
+    glibcCall(catchForeignInCallback);
+    if (!callbackCaught || glibcDestructions() != 7) {
+        fprintf(stderr, "static callback did not catch a glibc exception\n");
+        return 1;
+    }
+
     auto* pci = stub_dlopen("libdlfcn-test-pci.so", RTLD_NOW | RTLD_LOCAL);
 
     if (!pci) {
@@ -184,6 +262,8 @@ int main() {
     printf(
         "static libc provider: %zu symbols\n"
         "glibc dlopen/dlsym bridge: libc, libdl, pthread, factory, ELF, versions: ok\n"
+        "glibc C++ throw, unwind, destructor, catch: ok\n"
+        "C++ exceptions across static/glibc boundaries in both directions: ok\n"
         "recursive DT_NEEDED: libpciaccess -> libz: ok\n"
         "vkEnumerateInstanceVersion: result=%d version=%u.%u.%u\n",
         MUSL_SYMBOL_COUNT,

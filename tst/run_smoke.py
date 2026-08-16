@@ -43,6 +43,25 @@ def main():
             ],
             check=True,
         )
+        glibc_exception_test = library_path / "libdlfcn-test-exception.so"
+        subprocess.run(
+            [
+                *shlex.split(os.environ["DLFCN_CXX"]),
+                "-fPIC",
+                "-fno-stack-protector",
+                "-shared",
+                "-nostdlib",
+                "-Wl,--no-as-needed",
+                os.environ["DLFCN_GLIBC_EXCEPTION_TEST_SOURCE"],
+                str(root / "usr" / "lib" / "libstdc++.so.6"),
+                str(root / "usr" / "lib" / "libgcc_s.so.1"),
+                str(root / "usr" / "lib" / "libc.so.6"),
+                "-Wl,-soname,libdlfcn-test-exception.so",
+                "-o",
+                str(glibc_exception_test),
+            ],
+            check=True,
+        )
         (library_path / "libdlfcn-test-pci.so").symlink_to(
             root / "usr" / "lib" / "libpciaccess.so.0"
         )
@@ -51,6 +70,12 @@ def main():
         )
         (library_path / "libz.so.1").symlink_to(
             root / "usr" / "lib" / "libz.so.1"
+        )
+        (library_path / "libgcc_s.so.1").symlink_to(
+            root / "usr" / "lib" / "libgcc_s.so.1"
+        )
+        (library_path / "libstdc++.so.6").symlink_to(
+            root / "usr" / "lib" / "libstdc++.so.6"
         )
 
         environment = os.environ.copy()

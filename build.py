@@ -18,6 +18,7 @@ build.cxxflags += [
 
 cc = os.environ.get("CC", "cc")
 glibc_test_cc = os.environ.get("GLIBC_TEST_CC", cc)
+glibc_test_cxx = os.environ.get("GLIBC_TEST_CXX", os.environ.get("CXX", "c++"))
 
 linker_flags = []
 
@@ -654,6 +655,20 @@ arch_packages = [
         "zlib-1:1.3.2-3-x86_64.pkg.tar.zst",
         "41cf0bb5df14e18f7fb868a97da3feb7c4127fba99bb332ad54b14322faac1b1",
     ),
+    (
+        "libgcc",
+        "https://archive.archlinux.org/packages/l/libgcc/"
+        "libgcc-15.2.1%2Br604%2Bg0b99615a8aef-1-x86_64.pkg.tar.zst",
+        "libgcc-15.2.1+r604+g0b99615a8aef-1-x86_64.pkg.tar.zst",
+        "00ebc06ef4b8ff5c1fd7bd7b6faafdc7c3bfa7f1f3a170ff2f2025d1f0b62ace",
+    ),
+    (
+        "libstdcxx",
+        "https://archive.archlinux.org/packages/l/libstdc%2B%2B/"
+        "libstdc%2B%2B-15.2.1%2Br604%2Bg0b99615a8aef-1-x86_64.pkg.tar.zst",
+        "libstdc++-15.2.1+r604+g0b99615a8aef-1-x86_64.pkg.tar.zst",
+        "73dc1b0000e915339759d9492bb30e93ff343e041d5d5601b2befda12235ec78",
+    ),
 ]
 
 downloads = []
@@ -679,7 +694,7 @@ for name, url, filename, sha256 in arch_packages:
 
 arch_smoke = command(
     name="arch_smoke",
-    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/run_smoke.py", *archives],
+    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/glibc_exception_test.cpp", "$(S)/tst/run_smoke.py", *archives],
     outputs=["$(B)/tst/arch-smoke.log"],
     deps=[smoke, *downloads],
     cmd=[
@@ -690,6 +705,8 @@ arch_smoke = command(
     ],
     env={
         "DLFCN_CC": glibc_test_cc,
+        "DLFCN_CXX": glibc_test_cxx,
+        "DLFCN_GLIBC_EXCEPTION_TEST_SOURCE": "$(S)/tst/glibc_exception_test.cpp",
         "DLFCN_GLIBC_TEST_SOURCE": "$(S)/tst/glibc_test.c",
         "DLFCN_SMOKE": "$(B)/tst/smoke",
     },

@@ -44,6 +44,7 @@
 #include <wchar.h>
 #include <wctype.h>
 
+#include <algorithm>
 #include <string>
 #include <exception>
 #include <mutex>
@@ -52,6 +53,17 @@
 #include <unordered_set>
 
 extern "C" int __cxa_atexit(void (*function)(void*), void* argument, void* dso);
+extern "C" void _Unwind_DeleteException();
+extern "C" void _Unwind_GetDataRelBase();
+extern "C" void _Unwind_GetIPInfo();
+extern "C" void _Unwind_GetLanguageSpecificData();
+extern "C" void _Unwind_GetRegionStart();
+extern "C" void _Unwind_GetTextRelBase();
+extern "C" void _Unwind_RaiseException();
+extern "C" void _Unwind_Resume();
+extern "C" void _Unwind_Resume_or_Rethrow();
+extern "C" void _Unwind_SetGR();
+extern "C" void _Unwind_SetIP();
 
 #define SH_FUNCTION(name, version, function) {name, version, (void*)(uintptr_t)(function)}
 
@@ -637,6 +649,28 @@ namespace {
         int (*callback)(dl_phdr_info*, size_t, void*);
         void* data;
     };
+
+    struct GlibcDlFindObject {
+        uint64_t flags;
+        void* mapStart;
+        void* mapEnd;
+        void* linkMap;
+        void* ehFrame;
+        void* sframe;
+        uint64_t reserved[6];
+    };
+
+    static_assert(sizeof(GlibcDlFindObject) == 96);
+
+    struct ShDlFindObjectContext: public ElfProgramHeaderCallback {
+        ShDlFindObjectContext(const void* address, GlibcDlFindObject* result);
+
+        int call(const ElfProgramHeaders& image) override;
+
+        uintptr_t address;
+        GlibcDlFindObject* result;
+        bool found;
+    };
 }
 
 ShDlIterateContext::ShDlIterateContext(int (*callback)(dl_phdr_info*, size_t, void*), void* data)
@@ -657,15 +691,107 @@ int ShDlIterateContext::call(const ElfProgramHeaders& image) {
     return callback(&info, sizeof(info), data);
 }
 
+ShDlFindObjectContext::ShDlFindObjectContext(const void* address, GlibcDlFindObject* result)
+    : address(reinterpret_cast<uintptr_t>(address))
+    , result(result)
+    , found(false)
+{
+}
+
+int ShDlFindObjectContext::call(const ElfProgramHeaders& image) {
+    uintptr_t mapStart = UINTPTR_MAX;
+    uintptr_t mapEnd = 0;
+    void* ehFrame = nullptr;
+
+    for (Elf64_Half index = 0; index < image.count; ++index) {
+        const auto& header = image.headers[index];
+
+        if (header.p_type == PT_LOAD) {
+            mapStart = std::min(mapStart, image.base + header.p_vaddr);
+            mapEnd = std::max(mapEnd, image.base + header.p_vaddr + header.p_memsz);
+        } else if (header.p_type == PT_GNU_EH_FRAME) {
+            ehFrame = reinterpret_cast<void*>(image.base + header.p_vaddr);
+        }
+    }
+    if (address < mapStart || address >= mapEnd) {
+        return 0;
+    }
+
+    *result = {};
+    result->mapStart = reinterpret_cast<void*>(mapStart);
+    result->mapEnd = reinterpret_cast<void*>(mapEnd);
+    result->ehFrame = ehFrame;
+    found = true;
+    return 1;
+}
+
 namespace {
-    static int sh_dl_iterate_phdr(int (*callback)(dl_phdr_info*, size_t, void*), void* data) {
-        const int hostResult = dl_iterate_phdr(callback, data);
-        if (hostResult) {
-            return hostResult;
+    static int iterateMainProgramHeaders(int (*callback)(dl_phdr_info*, size_t, void*), void* data) {
+        auto* headers = reinterpret_cast<const Elf64_Phdr*>(getauxval(AT_PHDR));
+        auto count = static_cast<Elf64_Half>(getauxval(AT_PHNUM));
+
+        if (!headers || !count) {
+            return 0;
         }
 
-        ShDlIterateContext context(callback, data);
-        return ElfImage::iterateProgramHeaders(context);
+        uintptr_t base = 0;
+        const Elf64_Phdr* tls = nullptr;
+        for (Elf64_Half index = 0; index < count; ++index) {
+            if (headers[index].p_type == PT_PHDR) {
+                base = reinterpret_cast<uintptr_t>(headers) - headers[index].p_vaddr;
+            } else if (headers[index].p_type == PT_TLS) {
+                tls = &headers[index];
+            }
+        }
+
+        dl_phdr_info info{};
+        info.dlpi_addr = base;
+        info.dlpi_name = "/proc/self/exe";
+        info.dlpi_phdr = headers;
+        info.dlpi_phnum = count;
+        info.dlpi_tls_modid = tls ? 1 : 0;
+        return callback(&info, sizeof(info), data);
+    }
+
+    static int findObjectProgramHeaders(dl_phdr_info* info, size_t size, void* data) {
+        static_cast<void>(size);
+        auto* context = static_cast<ShDlFindObjectContext*>(data);
+        const ElfProgramHeaders image{
+            info->dlpi_name,
+            info->dlpi_addr,
+            info->dlpi_phdr,
+            info->dlpi_phnum,
+            info->dlpi_tls_modid,
+            info->dlpi_tls_data,
+        };
+
+        return context->call(image);
+    }
+}
+
+extern "C" int dl_iterate_phdr(int (*callback)(dl_phdr_info*, size_t, void*), void* data) {
+    const int hostResult = iterateMainProgramHeaders(callback, data);
+    if (hostResult) {
+        return hostResult;
+    }
+
+    ShDlIterateContext context(callback, data);
+    return ElfImage::iterateProgramHeaders(context);
+}
+
+extern "C" int _dl_find_object(void* address, GlibcDlFindObject* result) {
+    if (!result) {
+        return -1;
+    }
+
+    ShDlFindObjectContext context(address, result);
+    dl_iterate_phdr(findObjectProgramHeaders, &context);
+    return context.found ? 0 : -1;
+}
+
+namespace {
+    static int sh_dl_iterate_phdr(int (*callback)(dl_phdr_info*, size_t, void*), void* data) {
+        return dl_iterate_phdr(callback, data);
     }
 
     static int sh_pthread_mutexattr_init(void* foreign_attributes) {
@@ -1345,6 +1471,19 @@ namespace {
         SH_FUNCTION("__syslog_chk", "GLIBC_2.4", sh_syslog_chk),
         SH_FUNCTION("clock_nanosleep", "GLIBC_2.17", clock_nanosleep),
         SH_FUNCTION("dl_iterate_phdr", "GLIBC_2.2.5", sh_dl_iterate_phdr),
+        SH_FUNCTION("_dl_find_object", "GLIBC_2.35", _dl_find_object),
+        // _Unwind_Context is private to the unwinder that created it, so loaded C++ runtimes must use the host unwinder.
+        SH_FUNCTION("_Unwind_DeleteException", "GCC_3.0", _Unwind_DeleteException),
+        SH_FUNCTION("_Unwind_GetDataRelBase", "GCC_3.0", _Unwind_GetDataRelBase),
+        SH_FUNCTION("_Unwind_GetIPInfo", "GCC_4.2.0", _Unwind_GetIPInfo),
+        SH_FUNCTION("_Unwind_GetLanguageSpecificData", "GCC_3.0", _Unwind_GetLanguageSpecificData),
+        SH_FUNCTION("_Unwind_GetRegionStart", "GCC_3.0", _Unwind_GetRegionStart),
+        SH_FUNCTION("_Unwind_GetTextRelBase", "GCC_3.0", _Unwind_GetTextRelBase),
+        SH_FUNCTION("_Unwind_RaiseException", "GCC_3.0", _Unwind_RaiseException),
+        SH_FUNCTION("_Unwind_Resume", "GCC_3.0", _Unwind_Resume),
+        SH_FUNCTION("_Unwind_Resume_or_Rethrow", "GCC_3.3", _Unwind_Resume_or_Rethrow),
+        SH_FUNCTION("_Unwind_SetGR", "GCC_3.0", _Unwind_SetGR),
+        SH_FUNCTION("_Unwind_SetIP", "GCC_3.0", _Unwind_SetIP),
         SH_FUNCTION("_setjmp", "GLIBC_2.2.5", _setjmp),
         SH_FUNCTION("__longjmp_chk", "GLIBC_2.11", _longjmp),
         SH_OBJECT("__timezone", "GLIBC_2.2.5", timezone),
@@ -1601,6 +1740,18 @@ GlibcAdapter::GlibcAdapter()
         "__cxa_atexit",
         "__cxa_finalize",
         "__cxa_thread_atexit_impl",
+        "_dl_find_object",
+        "_Unwind_DeleteException",
+        "_Unwind_GetDataRelBase",
+        "_Unwind_GetIPInfo",
+        "_Unwind_GetLanguageSpecificData",
+        "_Unwind_GetRegionStart",
+        "_Unwind_GetTextRelBase",
+        "_Unwind_RaiseException",
+        "_Unwind_Resume",
+        "_Unwind_Resume_or_Rethrow",
+        "_Unwind_SetGR",
+        "_Unwind_SetIP",
         "alphasort64",
         "dl_iterate_phdr",
         "dladdr",
@@ -2161,4 +2312,8 @@ char* GlibcAdapter::takeDlError() {
 
 void* resolveGlibcSymbol(std::string_view name, std::string_view version, bool weak) {
     return GlibcAdapter::instance().resolveSymbol(name, version, weak);
+}
+
+void* resolveGlibcOverride(std::string_view name, std::string_view version) {
+    return GlibcAdapter::instance().findOverride(name, version);
 }

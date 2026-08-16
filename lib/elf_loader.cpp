@@ -978,6 +978,13 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
     auto version = symbolVersion(image, symbolIndex);
     std::string nameString(name);
     std::unordered_set<LinkMap*> visited;
+    auto weak = ELF64_ST_BIND(symbol->st_info) == STB_WEAK;
+
+    if (image.glibcAbi) {
+        if (auto* address = resolveGlibcOverride(name, version); address) {
+            return {reinterpret_cast<uintptr_t>(address), nullptr, nullptr};
+        }
+    }
 
     for (const auto& dependency : image.dependencies) {
         if (dependency.image) {
@@ -993,7 +1000,6 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
         stub_dlerror();
     }
 
-    auto weak = ELF64_ST_BIND(symbol->st_info) == STB_WEAK;
     auto* address = image.glibcAbi ? resolveGlibcSymbol(name, version, weak) : nullptr;
 
     if (!address && !weak) {
