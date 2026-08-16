@@ -92,6 +92,10 @@ namespace {
     }
 }
 
+bool hasGlibcStub(std::string_view name, std::string_view version) {
+    return providers().contains({name, version});
+}
+
 void* resolveGlibcStub(std::string_view name, std::string_view version) {
     const auto& items = providers();
 

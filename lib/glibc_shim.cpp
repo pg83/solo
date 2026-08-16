@@ -45,8 +45,10 @@
 #include <wctype.h>
 
 #include <string>
+#include <exception>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 typedef struct {
     const char* name;
@@ -1257,6 +1259,160 @@ typedef struct {
     void* symbol_address;
 } ShGlibcDlInfo;
 
+namespace {
+    static bool hasGlibcSymbolVersion(std::string_view name, std::string_view version);
+    static void* findGlibcOverride(std::string_view name, std::string_view version);
+    static void* findGlibcFallback(std::string_view name, std::string_view version);
+
+    struct GlibcHandle {
+        explicit GlibcHandle(void* stubHandle);
+        virtual ~GlibcHandle() noexcept;
+
+        virtual void* lookup(std::string_view name, std::string_view version) const = 0;
+
+        void* stubHandle_;
+    };
+
+    struct GlibcRuntimeHandle final: public GlibcHandle {
+        explicit GlibcRuntimeHandle(void* stubHandle);
+
+        void* lookup(std::string_view name, std::string_view version) const override;
+    };
+
+    struct GlibcStubLoaderHandle final: public GlibcHandle {
+        explicit GlibcStubLoaderHandle(void* stubHandle);
+
+        void* lookup(std::string_view name, std::string_view version) const override;
+    };
+
+    static thread_local char glibcDlError[1024] = {};
+    static thread_local bool hasGlibcDlError = false;
+
+    static void clearGlibcDlError() noexcept {
+        hasGlibcDlError = false;
+    }
+
+    static void setGlibcDlError(std::string_view error) noexcept {
+        auto size = error.size();
+
+        if (size >= sizeof(glibcDlError)) {
+            size = sizeof(glibcDlError) - 1;
+        }
+        memcpy(glibcDlError, error.data(), size);
+        glibcDlError[size] = 0;
+        hasGlibcDlError = true;
+    }
+
+    static char* takeGlibcDlError() noexcept {
+        if (!hasGlibcDlError) {
+            return nullptr;
+        }
+
+        hasGlibcDlError = false;
+
+        return glibcDlError;
+    }
+
+    static void consumeStubError() noexcept {
+        stub_dlerror();
+    }
+
+    static void copyStubError(std::string_view fallback) noexcept {
+        if (auto* error = stub_dlerror(); error) {
+            setGlibcDlError(error);
+        } else {
+            setGlibcDlError(fallback);
+        }
+    }
+
+    static void* lookupStub(void* handle, std::string_view name) {
+        std::string symbol(name);
+
+        return stub_dlsym(handle, symbol.c_str());
+    }
+
+    static void* lookupLibc(std::string_view name) {
+        auto* handle = stub_dlopen("c", RTLD_LOCAL);
+
+        return handle ? lookupStub(handle, name) : nullptr;
+    }
+
+    GlibcHandle::GlibcHandle(void* stubHandle)
+        : stubHandle_(stubHandle)
+    {
+    }
+
+    GlibcHandle::~GlibcHandle() noexcept {
+        stub_dlclose(stubHandle_);
+    }
+
+    GlibcRuntimeHandle::GlibcRuntimeHandle(void* stubHandle)
+        : GlibcHandle(stubHandle)
+    {
+    }
+
+    void* GlibcRuntimeHandle::lookup(std::string_view name, std::string_view version) const {
+        if (!version.empty() && !hasGlibcSymbolVersion(name, version)) {
+            return nullptr;
+        }
+        if (auto* address = findGlibcOverride(name, version); address) {
+            return address;
+        }
+        if (auto* address = lookupStub(stubHandle_, name); address) {
+            return address;
+        }
+        consumeStubError();
+        if (auto* address = lookupLibc(name); address) {
+            return address;
+        }
+        consumeStubError();
+
+        return findGlibcFallback(name, version);
+    }
+
+    GlibcStubLoaderHandle::GlibcStubLoaderHandle(void* stubHandle)
+        : GlibcHandle(stubHandle)
+    {
+    }
+
+    void* GlibcStubLoaderHandle::lookup(std::string_view name, std::string_view version) const {
+        if (auto* address = lookupStub(stubHandle_, name); address) {
+            return address;
+        }
+        consumeStubError();
+        if (auto* address = findGlibcOverride(name, version); address) {
+            return address;
+        }
+        if (auto* address = lookupLibc(name); address) {
+            return address;
+        }
+        consumeStubError();
+
+        return findGlibcFallback(name, version);
+    }
+
+    static const char* baseName(const char* path) noexcept {
+        if (auto* slash = strrchr(path, '/'); slash) {
+            return slash + 1;
+        }
+
+        return path;
+    }
+
+    static const char* runtimeProvider(const char* path) noexcept {
+        auto* name = baseName(path);
+
+        if (strcmp(name, "libdl.so.2") == 0) {
+            return "dl";
+        }
+        if (strcmp(name, "libc.so.6") == 0 || strcmp(name, "libpthread.so.0") == 0 || strcmp(name, "libm.so.6") == 0 || strcmp(name, "librt.so.1") == 0 || strcmp(name, "ld-linux-x86-64.so.2") == 0) {
+            return "c";
+        }
+
+        return nullptr;
+    }
+}
+
 static int sh_translate_dlopen_flags(int flags) {
     enum {
         SH_GLIBC_RTLD_LAZY = 0x00001,
@@ -1278,33 +1434,109 @@ static int sh_translate_dlopen_flags(int flags) {
 }
 
 static void* sh_glibc_dlopen(const char* path, int flags) {
-    if (!path) {
-        return stub_dlopen("", sh_translate_dlopen_flags(flags));
+    clearGlibcDlError();
+    consumeStubError();
+
+    auto translated = sh_translate_dlopen_flags(flags);
+    auto* provider = path ? runtimeProvider(path) : "";
+    auto runtime = provider != nullptr;
+    auto* handle = stub_dlopen(runtime ? provider : path, translated);
+
+    if (!handle) {
+        copyStubError("library not found");
+        return nullptr;
     }
-    return stub_dlopen(path, sh_translate_dlopen_flags(flags));
+
+    try {
+        if (runtime) {
+            return new GlibcRuntimeHandle(handle);
+        }
+
+        return new GlibcStubLoaderHandle(handle);
+    } catch (const std::exception& error) {
+        setGlibcDlError(error.what());
+    } catch (...) {
+        setGlibcDlError("unknown dlopen error");
+    }
+
+    return nullptr;
 }
 
 static void* sh_glibc_dlsym(void* handle, const char* name) {
-    if (!handle || handle == (void*)(uintptr_t)-1) {
-        stub_dlsym(NULL, name);
-        return NULL;
+    clearGlibcDlError();
+    consumeStubError();
+
+    if (!name) {
+        setGlibcDlError("symbol name is null");
+        return nullptr;
     }
-    return stub_dlsym(handle, name);
+
+    void* address = nullptr;
+
+    if (!handle || handle == (void*)(uintptr_t)-1) {
+        auto* defaultHandle = stub_dlopen("", RTLD_LOCAL);
+        GlibcRuntimeHandle runtime(defaultHandle);
+
+        address = runtime.lookup(name, {});
+    } else {
+        address = reinterpret_cast<GlibcHandle*>(handle)->lookup(name, {});
+    }
+    if (!address) {
+        copyStubError("symbol not found");
+    } else {
+        consumeStubError();
+    }
+
+    return address;
 }
 
 static void* sh_glibc_dlvsym(void* handle, const char* name, const char* version) {
-    (void)version;
-    return sh_glibc_dlsym(handle, name);
+    clearGlibcDlError();
+    consumeStubError();
+
+    if (!name || !version) {
+        setGlibcDlError("symbol name or version is null");
+        return nullptr;
+    }
+
+    void* address = nullptr;
+
+    if (!handle || handle == (void*)(uintptr_t)-1) {
+        auto* defaultHandle = stub_dlopen("", RTLD_LOCAL);
+        GlibcRuntimeHandle runtime(defaultHandle);
+
+        address = runtime.lookup(name, version);
+    } else {
+        address = reinterpret_cast<GlibcHandle*>(handle)->lookup(name, version);
+    }
+    if (!address) {
+        copyStubError("versioned symbol not found");
+    } else {
+        consumeStubError();
+    }
+
+    return address;
 }
 
 static int sh_glibc_dlclose(void* handle) {
+    clearGlibcDlError();
+    consumeStubError();
+
     if (!handle || handle == (void*)(uintptr_t)-1) {
+        setGlibcDlError("invalid handle");
         return -1;
     }
-    return stub_dlclose(handle);
+
+    delete reinterpret_cast<GlibcHandle*>(handle);
+
+    return 0;
 }
 
 static char* sh_glibc_dlerror(void) {
+    if (auto* error = takeGlibcDlError(); error) {
+        return error;
+    }
+
     return stub_dlerror();
 }
 
@@ -1623,20 +1855,143 @@ struct ShGlibcKeyHash {
     }
 };
 
-static const auto& sh_glibc_providers() {
-    using Providers = std::unordered_map<ShGlibcKey, void*, ShGlibcKeyHash>;
-    static const auto* providers = [] {
-        auto* result = new Providers();
+struct ShGlibcProviders {
+    std::unordered_map<ShGlibcKey, void*, ShGlibcKeyHash> byVersion;
+    std::unordered_map<std::string_view, void*> byName;
+};
 
-        result->reserve(sizeof(sh_glibc_symbols) / sizeof(sh_glibc_symbols[0]));
+static const ShGlibcProviders& sh_glibc_providers() {
+    static const auto* providers = [] {
+        auto* result = new ShGlibcProviders();
+
+        result->byVersion.reserve(sizeof(sh_glibc_symbols) / sizeof(sh_glibc_symbols[0]));
+        result->byName.reserve(sizeof(sh_glibc_symbols) / sizeof(sh_glibc_symbols[0]));
         for (const auto& symbol : sh_glibc_symbols) {
-            result->emplace(ShGlibcKey{symbol.name, symbol.version}, symbol.address);
+            result->byVersion.emplace(ShGlibcKey{symbol.name, symbol.version}, symbol.address);
+            result->byName.emplace(symbol.name, symbol.address);
         }
 
         return result;
     }();
 
     return *providers;
+}
+
+namespace {
+    static const auto& glibcOverrideNames() {
+        static const auto* names = [] {
+            static constexpr std::string_view values[] = {
+                "__cxa_atexit",
+                "__cxa_finalize",
+                "__cxa_thread_atexit_impl",
+                "alphasort64",
+                "dl_iterate_phdr",
+                "dladdr",
+                "dlclose",
+                "dlerror",
+                "dlopen",
+                "dlsym",
+                "dlvsym",
+                "fstat64",
+                "fstatat64",
+                "fstatfs64",
+                "lstat64",
+                "pthread_attr_destroy",
+                "pthread_attr_init",
+                "pthread_attr_setstacksize",
+                "pthread_barrier_destroy",
+                "pthread_barrier_init",
+                "pthread_barrier_wait",
+                "pthread_cancel",
+                "pthread_cond_broadcast",
+                "pthread_cond_destroy",
+                "pthread_cond_init",
+                "pthread_cond_signal",
+                "pthread_cond_timedwait",
+                "pthread_cond_wait",
+                "pthread_condattr_destroy",
+                "pthread_condattr_init",
+                "pthread_condattr_setclock",
+                "pthread_create",
+                "pthread_detach",
+                "pthread_getaffinity_np",
+                "pthread_getname_np",
+                "pthread_join",
+                "pthread_mutex_destroy",
+                "pthread_mutex_init",
+                "pthread_mutex_lock",
+                "pthread_mutex_unlock",
+                "pthread_mutexattr_destroy",
+                "pthread_mutexattr_init",
+                "pthread_mutexattr_settype",
+                "pthread_once",
+                "pthread_rwlock_destroy",
+                "pthread_rwlock_init",
+                "pthread_rwlock_rdlock",
+                "pthread_rwlock_unlock",
+                "pthread_rwlock_wrlock",
+                "pthread_self",
+                "pthread_setaffinity_np",
+                "pthread_setname_np",
+                "pthread_setschedparam",
+                "readdir64",
+                "scandir64",
+                "stat64",
+                "statfs64",
+                "strerror_r",
+            };
+            auto* result = new std::unordered_set<std::string_view>();
+
+            result->reserve(sizeof(values) / sizeof(values[0]));
+            for (auto value : values) {
+                result->emplace(value);
+            }
+
+            return result;
+        }();
+
+        return *names;
+    }
+
+    static bool hasGlibcSymbolVersion(std::string_view name, std::string_view version) {
+        const auto& providers = sh_glibc_providers();
+
+        return providers.byVersion.contains({name, version}) || hasGlibcStub(name, version);
+    }
+
+    static void* findGlibcOverride(std::string_view name, std::string_view version) {
+        if (!glibcOverrideNames().contains(name)) {
+            return nullptr;
+        }
+        if (!version.empty() && !hasGlibcSymbolVersion(name, version)) {
+            return nullptr;
+        }
+
+        const auto& providers = sh_glibc_providers();
+
+        if (auto provider = providers.byName.find(name); provider != providers.byName.end()) {
+            return provider->second;
+        }
+
+        return nullptr;
+    }
+
+    static void* findGlibcFallback(std::string_view name, std::string_view version) {
+        const auto& providers = sh_glibc_providers();
+
+        if (version.empty()) {
+            if (auto provider = providers.byName.find(name); provider != providers.byName.end()) {
+                return provider->second;
+            }
+
+            return nullptr;
+        }
+        if (auto provider = providers.byVersion.find({name, version}); provider != providers.byVersion.end()) {
+            return provider->second;
+        }
+
+        return resolveGlibcStub(name, version);
+    }
 }
 
 void* resolveGlibcSymbol(std::string_view name, std::string_view version, bool weak) {
@@ -1649,9 +2004,8 @@ void* resolveGlibcSymbol(std::string_view name, std::string_view version, bool w
     if (name == "_ITM_deregisterTMCloneTable" || name == "_ITM_registerTMCloneTable" || name == "__gmon_start__") {
         return NULL;
     }
-    const auto& providers = sh_glibc_providers();
-    if (auto provider = providers.find({name, version}); provider != providers.end()) {
-        return provider->second;
+    if (auto* address = findGlibcOverride(name, version); address) {
+        return address;
     }
     std::string symbolName(name);
     void* libc_handle = stub_dlopen("c", RTLD_LOCAL);
@@ -1660,8 +2014,8 @@ void* resolveGlibcSymbol(std::string_view name, std::string_view version, bool w
         return host_address;
     }
     stub_dlerror();
-    if (auto* stub = resolveGlibcStub(name, version); stub) {
-        return stub;
+    if (auto* address = findGlibcFallback(name, version); address) {
+        return address;
     }
     if (!weak) {
         fprintf(stderr, "glibc bridge: no ABI thunk for %.*s%.*s%.*s\n", static_cast<int>(name.size()), name.data(), version.empty() ? 0 : 1, "@", static_cast<int>(version.size()), version.data());

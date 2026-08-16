@@ -17,6 +17,7 @@ build.cxxflags += [
 ]
 
 cc = os.environ.get("CC", "cc")
+glibc_test_cc = os.environ.get("GLIBC_TEST_CC", cc)
 
 linker_flags = []
 
@@ -678,7 +679,7 @@ for name, url, filename, sha256 in arch_packages:
 
 arch_smoke = command(
     name="arch_smoke",
-    inputs=["$(S)/tst/run_smoke.py", *archives],
+    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/run_smoke.py", *archives],
     outputs=["$(B)/tst/arch-smoke.log"],
     deps=[smoke, *downloads],
     cmd=[
@@ -687,7 +688,11 @@ arch_smoke = command(
         "$(B)/tst/arch-smoke.log",
         *archives,
     ],
-    env={"DLFCN_SMOKE": "$(B)/tst/smoke"},
+    env={
+        "DLFCN_CC": glibc_test_cc,
+        "DLFCN_GLIBC_TEST_SOURCE": "$(S)/tst/glibc_test.c",
+        "DLFCN_SMOKE": "$(B)/tst/smoke",
+    },
     descr="TS",
     color="green",
 )

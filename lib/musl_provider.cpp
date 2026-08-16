@@ -28,7 +28,7 @@ namespace {
 
     static void* muslDlsym(void* handle, const char* name) {
         if (!handle || handle == reinterpret_cast<void*>(static_cast<uintptr_t>(-1))) {
-            return stub_dlsym(nullptr, name);
+            handle = stub_dlopen("", RTLD_LOCAL);
         }
 
         return stub_dlsym(handle, name);
