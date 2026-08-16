@@ -5,9 +5,9 @@
 #include <vulkan/vulkan.h>
 
 namespace {
-    constexpr uint32_t imageWidth = 512;
-    constexpr uint32_t imageHeight = 512;
-    constexpr VkDeviceSize imageSize = imageWidth * imageHeight * 4;
+    static constexpr uint32_t imageWidth = 512;
+    static constexpr uint32_t imageHeight = 512;
+    static constexpr VkDeviceSize imageSize = imageWidth * imageHeight * 4;
 
     alignas(4) static const uint32_t shaderCode[] = {
 #include "shader.inc"

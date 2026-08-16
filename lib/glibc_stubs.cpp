@@ -9,22 +9,22 @@
 #include <unordered_map>
 
 namespace {
-    [[noreturn]] void abortStub(const char* name, const char* version) noexcept {
+    [[noreturn]] static void abortStub(const char* name, const char* version) noexcept {
         fprintf(stderr, "glibc bridge: called unimplemented ABI %s@%s\n", name, version);
         abort();
     }
 
 #define GLIBC_JOIN_(LEFT, RIGHT) LEFT##RIGHT
 #define GLIBC_JOIN(LEFT, RIGHT) GLIBC_JOIN_(LEFT, RIGHT)
-#define GLIBC_FUNCTION_STUB(ID, NAME, VERSION, SIZE)                 \
-    [[noreturn]] void GLIBC_JOIN(glibcFunctionStub, ID)() noexcept { \
-        abortStub(NAME, VERSION);                                    \
+#define GLIBC_FUNCTION_STUB(ID, NAME, VERSION, SIZE)                        \
+    [[noreturn]] static void GLIBC_JOIN(glibcFunctionStub, ID)() noexcept { \
+        abortStub(NAME, VERSION);                                           \
     }
-#define GLIBC_OBJECT_STUB(ID, NAME, VERSION, SIZE) alignas(max_align_t) unsigned char GLIBC_JOIN(glibcObjectStub, ID)[SIZE ? SIZE : 1] = {};
-#define GLIBC_TLS_STUB(ID, NAME, VERSION, SIZE)                                                         \
-    alignas(max_align_t) thread_local unsigned char GLIBC_JOIN(glibcTlsStub, ID)[SIZE ? SIZE : 1] = {}; \
-    void* GLIBC_JOIN(glibcTlsStubAddress, ID)() noexcept {                                              \
-        return GLIBC_JOIN(glibcTlsStub, ID);                                                            \
+#define GLIBC_OBJECT_STUB(ID, NAME, VERSION, SIZE) alignas(max_align_t) static unsigned char GLIBC_JOIN(glibcObjectStub, ID)[SIZE ? SIZE : 1] = {};
+#define GLIBC_TLS_STUB(ID, NAME, VERSION, SIZE)                                                                \
+    alignas(max_align_t) static thread_local unsigned char GLIBC_JOIN(glibcTlsStub, ID)[SIZE ? SIZE : 1] = {}; \
+    static void* GLIBC_JOIN(glibcTlsStubAddress, ID)() noexcept {                                              \
+        return GLIBC_JOIN(glibcTlsStub, ID);                                                                   \
     }
 #include "glibc_stubs.inc"
 #undef GLIBC_FUNCTION_STUB
@@ -38,7 +38,7 @@ namespace {
         void* (*addressFunction)() noexcept;
     };
 
-    const Stub STUBS[] = {
+    static const Stub STUBS[] = {
 #define GLIBC_FUNCTION_STUB(ID, NAME, VERSION, SIZE) {NAME, VERSION, reinterpret_cast<void*>(GLIBC_JOIN(glibcFunctionStub, ID)), nullptr},
 #define GLIBC_OBJECT_STUB(ID, NAME, VERSION, SIZE) {NAME, VERSION, GLIBC_JOIN(glibcObjectStub, ID), nullptr},
 #define GLIBC_TLS_STUB(ID, NAME, VERSION, SIZE) {NAME, VERSION, nullptr, GLIBC_JOIN(glibcTlsStubAddress, ID)},
@@ -52,24 +52,30 @@ namespace {
         std::string_view name;
         std::string_view version;
 
-        bool operator==(const Key&) const noexcept = default;
+        bool operator==(const Key&) const noexcept;
     };
 
     struct KeyHash {
-        size_t operator()(const Key& key) const noexcept {
-            auto name = std::hash<std::string_view>()(key.name);
-            auto version = std::hash<std::string_view>()(key.version);
-
-            return splitMix64(name ^ version);
-        }
+        size_t operator()(const Key& key) const noexcept;
     };
 
     struct Provider {
         void* address;
         void* (*addressFunction)() noexcept;
     };
+}
 
-    const auto& providers() {
+bool Key::operator==(const Key&) const noexcept = default;
+
+size_t KeyHash::operator()(const Key& key) const noexcept {
+    auto name = std::hash<std::string_view>()(key.name);
+    auto version = std::hash<std::string_view>()(key.version);
+
+    return splitMix64(name ^ version);
+}
+
+namespace {
+    static const auto& providers() {
         using Providers = std::unordered_map<Key, Provider, KeyHash>;
         static const auto* result = [] {
             auto* value = new Providers();

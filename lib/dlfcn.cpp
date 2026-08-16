@@ -28,34 +28,13 @@ namespace {
     }
 
     struct Dbg {
-        inline void out(const void* buf, size_t len) noexcept {
-            static auto xfd = OpenFD();
-
-            write(xfd, buf, len);
-        }
-
-        inline void out(const char* s) noexcept {
-            if (!s) {
-                s = "(null)";
-            }
-
-            out(s, strlen(s));
-        }
-
-        inline void out(int i) noexcept {
-            out(std::to_string(i));
-        }
-
-        inline void out(std::string_view s) noexcept {
-            out(s.data(), s.size());
-        }
+        void out(const void* buf, size_t len) noexcept;
+        void out(const char* s) noexcept;
+        void out(int i) noexcept;
+        void out(std::string_view s) noexcept;
 
         template <typename T>
-        inline auto& operator<<(T s) noexcept {
-            out(s);
-
-            return *this;
-        }
+        auto& operator<<(T s) noexcept;
     };
 
     static inline bool debugEnabled() {
@@ -75,98 +54,24 @@ namespace {
     };
 
     struct Handle: public IfaceHandle, public std::unordered_map<std::string, void*> {
-        void* lookup(const std::string_view& s) const override {
-            if (auto it = find(std::string(s)); it != end()) {
-                DBG("found " << s);
-
-                return it->second;
-            }
-
-            DBG("not found " << s);
-
-            return nullptr;
-        }
+        void* lookup(const std::string_view& s) const override;
     };
 
     struct Handles: public IfaceHandle, public std::unordered_map<std::string, Handle> {
         Handles();
 
         // default handle lookup
-        void* lookup(const std::string_view& s) const override {
-            for (const auto& it : *this) {
-                if (auto res = it.second.lookup(s); res) {
-                    DBG("found global " << s);
-
-                    return res;
-                }
-            }
-
-            DBG("not found global " << s);
-
-            return nullptr;
-        }
-
-        inline IfaceHandle* findHandle(const std::string& s) {
-            DBG("try open handle " << s);
-
-            if (auto it = find(s); it != end()) {
-                DBG("found handle " << s);
-
-                return &it->second;
-            }
-
-            DBG("not found handle " << s);
-
-            return nullptr;
-        }
-
-        inline void registar(const char* lib, const char* symbol, void* ptr) {
-            DBG("register " << lib << ", " << symbol);
-
-            (*this)[lib][symbol] = ptr;
-        }
-
-        static inline Handles* instance() {
-            static Handles* h = new Handles();
-
-            return h;
-        }
+        void* lookup(const std::string_view& s) const override;
+        IfaceHandle* findHandle(const std::string& s);
+        void registar(const char* lib, const char* symbol, void* ptr);
+        static Handles* instance();
     };
-
-    Handles::Handles() {
-        registar("dl", "dlopen", reinterpret_cast<void*>(stub_dlopen));
-        registar("dl", "dlsym", reinterpret_cast<void*>(stub_dlsym));
-        registar("dl", "dlclose", reinterpret_cast<void*>(stub_dlclose));
-        registar("dl", "dlerror", reinterpret_cast<void*>(stub_dlerror));
-        registar("dl", "dladdr", reinterpret_cast<void*>(stub_dladdr));
-
-        auto provider = muslProvider();
-
-        for (size_t index = 0; index < provider.symbolCount; ++index) {
-            const auto& symbol = provider.symbols[index];
-
-            registar("c", symbol.name, symbol.address);
-        }
-        for (size_t index = 0; index < provider.overrideCount; ++index) {
-            const auto& symbol = provider.overrides[index];
-
-            registar("c", symbol.name, symbol.address);
-        }
-        registar("c", "dlclose", reinterpret_cast<void*>(stub_dlclose));
-        registar("c", "dlerror", reinterpret_cast<void*>(stub_dlerror));
-        registar("c", "dladdr", reinterpret_cast<void*>(stub_dladdr));
-    }
 
 #if defined(__linux__)
     struct ElfHandle: public IfaceHandle {
-        explicit ElfHandle(ElfImage* image_)
-            : image(image_)
-        {
-        }
+        explicit ElfHandle(ElfImage* image);
 
-        void* lookup(const std::string_view& symbol) const override {
-            return image ? image->lookup(symbol) : nullptr;
-        }
+        void* lookup(const std::string_view& symbol) const override;
 
         ElfImage* image;
     };
@@ -242,6 +147,122 @@ namespace {
         return cutExt(cutPrefix(baseName(s), "lib"));
     }
 }
+
+void Dbg::out(const void* buf, size_t len) noexcept {
+    static auto xfd = OpenFD();
+
+    write(xfd, buf, len);
+}
+
+void Dbg::out(const char* s) noexcept {
+    if (!s) {
+        s = "(null)";
+    }
+
+    out(s, strlen(s));
+}
+
+void Dbg::out(int i) noexcept {
+    out(std::to_string(i));
+}
+
+void Dbg::out(std::string_view s) noexcept {
+    out(s.data(), s.size());
+}
+
+template <typename T>
+auto& Dbg::operator<<(T s) noexcept {
+    out(s);
+
+    return *this;
+}
+
+void* Handle::lookup(const std::string_view& s) const {
+    if (auto it = find(std::string(s)); it != end()) {
+        DBG("found " << s);
+
+        return it->second;
+    }
+
+    DBG("not found " << s);
+
+    return nullptr;
+}
+
+Handles::Handles() {
+    registar("dl", "dlopen", reinterpret_cast<void*>(stub_dlopen));
+    registar("dl", "dlsym", reinterpret_cast<void*>(stub_dlsym));
+    registar("dl", "dlclose", reinterpret_cast<void*>(stub_dlclose));
+    registar("dl", "dlerror", reinterpret_cast<void*>(stub_dlerror));
+    registar("dl", "dladdr", reinterpret_cast<void*>(stub_dladdr));
+
+    auto provider = muslProvider();
+
+    for (size_t index = 0; index < provider.symbolCount; ++index) {
+        const auto& symbol = provider.symbols[index];
+
+        registar("c", symbol.name, symbol.address);
+    }
+    for (size_t index = 0; index < provider.overrideCount; ++index) {
+        const auto& symbol = provider.overrides[index];
+
+        registar("c", symbol.name, symbol.address);
+    }
+    registar("c", "dlclose", reinterpret_cast<void*>(stub_dlclose));
+    registar("c", "dlerror", reinterpret_cast<void*>(stub_dlerror));
+    registar("c", "dladdr", reinterpret_cast<void*>(stub_dladdr));
+}
+
+void* Handles::lookup(const std::string_view& s) const {
+    for (const auto& it : *this) {
+        if (auto res = it.second.lookup(s); res) {
+            DBG("found global " << s);
+
+            return res;
+        }
+    }
+
+    DBG("not found global " << s);
+
+    return nullptr;
+}
+
+IfaceHandle* Handles::findHandle(const std::string& s) {
+    DBG("try open handle " << s);
+
+    if (auto it = find(s); it != end()) {
+        DBG("found handle " << s);
+
+        return &it->second;
+    }
+
+    DBG("not found handle " << s);
+
+    return nullptr;
+}
+
+void Handles::registar(const char* lib, const char* symbol, void* ptr) {
+    DBG("register " << lib << ", " << symbol);
+
+    (*this)[lib][symbol] = ptr;
+}
+
+Handles* Handles::instance() {
+    static Handles* h = new Handles();
+
+    return h;
+}
+
+#if defined(__linux__)
+ElfHandle::ElfHandle(ElfImage* image)
+    : image(image)
+{
+}
+
+void* ElfHandle::lookup(const std::string_view& symbol) const {
+    return image ? image->lookup(symbol) : nullptr;
+}
+#endif
 
 extern "C" void* stub_dlsym(void* handle, const char* symbol) {
     clearLastError();

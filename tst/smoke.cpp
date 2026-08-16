@@ -7,26 +7,28 @@
 #include <stdint.h>
 #include <exception>
 
-using EnumerateInstanceVersion = int32_t (*)(uint32_t* version);
-using DynamicDlsym = void* (*)(void* handle, const char* symbol);
-using GlibcLookup = void* (*)(const char* library, const char* symbol);
-using GlibcDefaultLookup = void* (*)(const char* symbol);
-using GlibcVersionLookup = void* (*)(const char* library, const char* symbol, const char* version);
-using GlibcDlFunction = void* (*)(const char* symbol);
-using GlibcTest = int (*)();
+namespace {
+    using EnumerateInstanceVersion = int32_t (*)(uint32_t* version);
+    using DynamicDlsym = void* (*)(void* handle, const char* symbol);
+    using GlibcLookup = void* (*)(const char* library, const char* symbol);
+    using GlibcDefaultLookup = void* (*)(const char* symbol);
+    using GlibcVersionLookup = void* (*)(const char* library, const char* symbol, const char* version);
+    using GlibcDlFunction = void* (*)(const char* symbol);
+    using GlibcTest = int (*)();
 
-static int testProviderValue(int value) {
-    return value + 35;
-}
-
-static void* requiredSymbol(void* handle, const char* name) {
-    auto* address = stub_dlsym(handle, name);
-
-    if (!address) {
-        fprintf(stderr, "glibc test symbol missing: %s: %s\n", name, stub_dlerror());
+    static int testProviderValue(int value) {
+        return value + 35;
     }
 
-    return address;
+    static void* requiredSymbol(void* handle, const char* name) {
+        auto* address = stub_dlsym(handle, name);
+
+        if (!address) {
+            fprintf(stderr, "glibc test symbol missing: %s: %s\n", name, stub_dlerror());
+        }
+
+        return address;
+    }
 }
 
 int main() {
