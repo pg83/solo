@@ -158,10 +158,6 @@ linked into my executable." This lets the application embed the newest
 `libwayland` instead of targeting the oldest version available on every
 supported system.
 
-- [Cosmopolitan Libc's `cosmo_dlopen()`](https://github.com/jart/cosmopolitan/blob/master/libc/dlopen/dlopen.c)
-  follows the same split-runtime scheme as Detour, with all of its advantages
-  and drawbacks: it bootstraps the host's ELF interpreter and libc, then
-  delegates loading the target DSO to the host's `dlopen()`.
 - [gcompat](https://github.com/Stantheman/gcompat) is a distribution-level
   glibc API shim for running prebuilt glibc binaries on musl. Its loader stub
   re-executes the program through musl's dynamic linker with `libgcompat.so`
@@ -176,6 +172,10 @@ supported system.
   `ld-linux` and allows multiple C runtimes to coexist. SoLo takes the opposite
   route: it maps the required DSOs itself and translates their glibc imports
   onto musl, so a second libc and its TLS state never enter the process.
+- [Cosmopolitan Libc's `cosmo_dlopen()`](https://github.com/jart/cosmopolitan/blob/master/libc/dlopen/dlopen.c)
+  follows the same split-runtime scheme as Detour, with all of its advantages
+  and drawbacks: it bootstraps the host's ELF interpreter and libc, then
+  delegates loading the target DSO to the host's `dlopen()`.
 - ClickHouse's experimental [userspace dynamic loader](https://github.com/ClickHouse/ClickHouse/pull/110125)
   currently maps ELF objects itself, but stops short of loading glibc. Its
   proposed path to real-world system libraries such as CUDA is Detour-like:
