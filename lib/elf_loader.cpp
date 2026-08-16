@@ -189,68 +189,49 @@ namespace {
     extern "C" uintptr_t elfTlsDescEntry();
 
     struct Loader {
+        Loader();
+
         static Loader& instance();
 
         LinkMap* load(const std::string_view& requestedPath, int flags);
 
         void* lookup(LinkMap& image, std::string_view name);
-
         void* lookup(LinkMap& image, std::string_view name, std::unordered_set<LinkMap*>& visited);
-
         void* tlsAddress(size_t module, size_t offset);
 
         bool findAddress(const void* address, ElfAddress* res);
-
         int iterateProgramHeaders(ElfProgramHeaderCallback& callback);
 
-        Loader();
-
         LinkMap* findByName(const std::string_view& name) const noexcept;
-
         LinkMap* findByPath(const std::string& path) const noexcept;
 
         static std::optional<std::string> realPath(const std::string& path);
-
         static std::optional<std::string> inDirectory(const std::string_view& directory, const std::string_view& name);
-
         static std::optional<std::string> inSearchPath(std::string_view directories, const std::string_view& name, bool emptyIsCurrentDirectory);
 
         std::optional<std::string> resolvePath(const std::string_view& path) const;
-
         void rememberLibraryDirectory(const std::string& path);
 
         size_t addTlsModule(LinkMap& image);
 
         static bool isGlibcDependency(const std::string_view& name) noexcept;
-
         void loadDependencies(LinkMap& image);
 
         static void parseVersions(LinkMap& image, uintptr_t needAddress, size_t needCount, uintptr_t definitionAddress, size_t definitionCount);
-
         static void parseDynamic(LinkMap& image);
 
         static std::string_view symbolVersion(const LinkMap& image, size_t symbolIndex) noexcept;
-
         static uint32_t gnuHash(const std::string_view& name) noexcept;
-
         static Definition findSymbol(LinkMap& image, const std::string_view& name, const std::string_view& version) noexcept;
-
         static Definition findDefinition(LinkMap& image, const std::string_view& name, const std::string_view& version, std::unordered_set<LinkMap*>& visited);
-
         Definition resolveSymbol(LinkMap& image, size_t symbolIndex);
-
         static void* materialize(Definition definition);
 
         void applyRelativeRelocations(LinkMap& image);
-
         bool applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool allowIfunc);
-
         void applyRelocations(LinkMap& image, std::vector<DeferredRelocation>& deferred);
-
         static void protect(LinkMap& image);
-
         static void applyRelro(LinkMap& image);
-
         static void runInitializers(LinkMap& image);
 
         std::recursive_mutex mutex_;
