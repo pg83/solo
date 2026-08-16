@@ -176,6 +176,13 @@ supported system.
   `ld-linux` and allows multiple C runtimes to coexist. SoLo takes the opposite
   route: it maps the required DSOs itself and translates their glibc imports
   onto musl, so a second libc and its TLS state never enter the process.
+- ClickHouse's experimental [userspace dynamic loader](https://github.com/ClickHouse/ClickHouse/pull/110125)
+  currently maps ELF objects itself, but stops short of loading glibc. Its
+  proposed path to real-world system libraries such as CUDA is Detour-like:
+  bootstrap the system's `ld.so`, keep a second libc runtime, and swap the
+  musl/glibc thread pointer at every boundary. SoLo instead implements the
+  glibc ABI over the host's musl runtime and can satisfy DSO dependencies from
+  providers already linked into the static executable.
 - [graphics.gd's `musl` + `dlopen` experiment](https://github.com/quaadgras/graphics.gd/discussions/242)
   follows the same split-runtime model as Detour: an embedded helper brings in
   the host's glibc loader, and assembly trampolines switch between musl and
