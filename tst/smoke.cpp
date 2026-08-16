@@ -82,10 +82,11 @@ int main() {
     auto glibcFactory = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_factory"));
     auto glibcOwnSymbol = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_own_symbol"));
     auto glibcThread = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_thread"));
+    auto glibcManyPthreadObjects = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_many_pthread_objects"));
     auto glibcError = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_error"));
     auto glibcClose = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_close"));
 
-    if (!glibcLookup || !glibcDefaultLookup || !glibcVersionLookup || !glibcDlFunction || !glibcFactory || !glibcOwnSymbol || !glibcThread || !glibcError || !glibcClose) {
+    if (!glibcLookup || !glibcDefaultLookup || !glibcVersionLookup || !glibcDlFunction || !glibcFactory || !glibcOwnSymbol || !glibcThread || !glibcManyPthreadObjects || !glibcError || !glibcClose) {
         return 1;
     }
 
@@ -136,6 +137,10 @@ int main() {
     }
     if (auto result = glibcThread(); result != 0) {
         fprintf(stderr, "glibc pthread bridge execution failed: %d\n", result);
+        return 1;
+    }
+    if (auto result = glibcManyPthreadObjects(); result != 0) {
+        fprintf(stderr, "glibc pthread object maps failed: %d\n", result);
         return 1;
     }
     if (auto result = glibcError(); result != 0) {

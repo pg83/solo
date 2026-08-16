@@ -115,6 +115,121 @@ int glibc_test_thread(void) {
     return value == 73 && result == &value ? 0 : 7;
 }
 
+enum {
+    GlibcObjectCount = 600,
+    GlibcAttributeCount = 80,
+};
+
+union GlibcPthreadObject {
+    unsigned char bytes[64];
+    unsigned long alignment;
+};
+
+static union GlibcPthreadObject mutexes[GlibcObjectCount];
+static union GlibcPthreadObject onceFlags[GlibcObjectCount];
+static union GlibcPthreadObject conditions[GlibcObjectCount];
+static union GlibcPthreadObject rwlocks[GlibcObjectCount];
+static union GlibcPthreadObject barriers[GlibcObjectCount];
+static union GlibcPthreadObject threadAttributes[GlibcAttributeCount];
+static int onceCalls;
+
+static void countOnceCall(void) {
+    ++onceCalls;
+}
+
+int glibc_test_many_pthread_objects(void) {
+    typedef int (*Init)(void*, const void*);
+    typedef int (*Destroy)(void*);
+    typedef int (*Lock)(void*);
+    typedef int (*Once)(void*, void (*)(void));
+    typedef int (*BarrierInit)(void*, const void*, unsigned);
+    typedef int (*AttributeInit)(void*);
+    typedef int (*AttributeSetstacksize)(void*, unsigned long);
+
+    void* handle = openLibrary("libpthread.so.0");
+    Init mutexInit = handle ? (Init)dlsym(handle, "pthread_mutex_init") : (Init)0;
+    Destroy mutexDestroy = handle ? (Destroy)dlsym(handle, "pthread_mutex_destroy") : (Destroy)0;
+    Lock mutexLock = handle ? (Lock)dlsym(handle, "pthread_mutex_lock") : (Lock)0;
+    Lock mutexUnlock = handle ? (Lock)dlsym(handle, "pthread_mutex_unlock") : (Lock)0;
+    Once once = handle ? (Once)dlsym(handle, "pthread_once") : (Once)0;
+    Init conditionInit = handle ? (Init)dlsym(handle, "pthread_cond_init") : (Init)0;
+    Destroy conditionDestroy = handle ? (Destroy)dlsym(handle, "pthread_cond_destroy") : (Destroy)0;
+    Lock conditionSignal = handle ? (Lock)dlsym(handle, "pthread_cond_signal") : (Lock)0;
+    Init rwlockInit = handle ? (Init)dlsym(handle, "pthread_rwlock_init") : (Init)0;
+    Destroy rwlockDestroy = handle ? (Destroy)dlsym(handle, "pthread_rwlock_destroy") : (Destroy)0;
+    Lock rwlockReadLock = handle ? (Lock)dlsym(handle, "pthread_rwlock_rdlock") : (Lock)0;
+    Lock rwlockUnlock = handle ? (Lock)dlsym(handle, "pthread_rwlock_unlock") : (Lock)0;
+    BarrierInit barrierInit = handle ? (BarrierInit)dlsym(handle, "pthread_barrier_init") : (BarrierInit)0;
+    Destroy barrierDestroy = handle ? (Destroy)dlsym(handle, "pthread_barrier_destroy") : (Destroy)0;
+    Lock barrierWait = handle ? (Lock)dlsym(handle, "pthread_barrier_wait") : (Lock)0;
+    AttributeInit attributeInit = handle ? (AttributeInit)dlsym(handle, "pthread_attr_init") : (AttributeInit)0;
+    Destroy attributeDestroy = handle ? (Destroy)dlsym(handle, "pthread_attr_destroy") : (Destroy)0;
+    AttributeSetstacksize attributeSetstacksize = handle ? (AttributeSetstacksize)dlsym(handle, "pthread_attr_setstacksize") : (AttributeSetstacksize)0;
+
+    if (!mutexInit || !mutexDestroy || !mutexLock || !mutexUnlock || !once || !conditionInit || !conditionDestroy || !conditionSignal || !rwlockInit || !rwlockDestroy || !rwlockReadLock || !rwlockUnlock || !barrierInit || !barrierDestroy || !barrierWait || !attributeInit || !attributeDestroy || !attributeSetstacksize) {
+        return 1;
+    }
+
+    for (int index = 0; index < GlibcObjectCount; ++index) {
+        if (mutexInit(&mutexes[index], (void*)0) != 0) {
+            return 2;
+        }
+        if (conditionInit(&conditions[index], (void*)0) != 0) {
+            return 3;
+        }
+        if (rwlockInit(&rwlocks[index], (void*)0) != 0) {
+            return 4;
+        }
+        if (barrierInit(&barriers[index], (void*)0, 1) != 0) {
+            return 5;
+        }
+        if (once(&onceFlags[index], countOnceCall) != 0) {
+            return 6;
+        }
+    }
+    if (onceCalls != GlibcObjectCount) {
+        return 7;
+    }
+
+    for (int index = 0; index < GlibcAttributeCount; ++index) {
+        if (attributeInit(&threadAttributes[index]) != 0) {
+            return 8;
+        }
+        if (attributeSetstacksize(&threadAttributes[index], 65536) != 0) {
+            return 9;
+        }
+    }
+
+    for (int index = 0; index < GlibcObjectCount; ++index) {
+        if (mutexLock(&mutexes[index]) != 0 || mutexUnlock(&mutexes[index]) != 0) {
+            return 10;
+        }
+        if (conditionSignal(&conditions[index]) != 0) {
+            return 11;
+        }
+        if (rwlockReadLock(&rwlocks[index]) != 0 || rwlockUnlock(&rwlocks[index]) != 0) {
+            return 12;
+        }
+        int barrierResult = barrierWait(&barriers[index]);
+        if (barrierResult != 0 && barrierResult != -1) {
+            return 13;
+        }
+    }
+
+    for (int index = 0; index < GlibcAttributeCount; ++index) {
+        if (attributeDestroy(&threadAttributes[index]) != 0) {
+            return 14;
+        }
+    }
+    for (int index = 0; index < GlibcObjectCount; ++index) {
+        if (barrierDestroy(&barriers[index]) != 0 || rwlockDestroy(&rwlocks[index]) != 0 || conditionDestroy(&conditions[index]) != 0 || mutexDestroy(&mutexes[index]) != 0) {
+            return 15;
+        }
+    }
+
+    return 0;
+}
+
 int glibc_test_error(void) {
     void* handle = openLibrary("libc.so.6");
 

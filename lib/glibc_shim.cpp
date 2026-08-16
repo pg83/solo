@@ -46,6 +46,7 @@
 
 #include <string>
 #include <exception>
+#include <mutex>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -57,11 +58,11 @@ extern "C" int __cxa_atexit(void (*function)(void*), void* argument, void* dso);
 #define SH_OBJECT(name, version, object) {name, version, (void*)(uintptr_t)(&(object))}
 
 namespace {
-    typedef struct {
+    struct GlibcSymbol {
         const char* name;
         const char* version;
         void* address;
-    } ShGlibcSymbol;
+    };
 
     static void sh_fortify_fail(void) {
         fputs("glibc bridge: fortified operation overflow\n", stderr);
@@ -410,68 +411,144 @@ namespace {
         return __cxa_atexit(function, argument, dso);
     }
 
-    static unsigned char sh_libc_single_threaded;
+    struct ForeignMutex {
+        pthread_mutex_t host;
+    };
 
-    static int sh_tolower_table[384];
-    static const int* sh_tolower_pointer = sh_tolower_table + 128;
-    static pthread_once_t sh_tolower_once = PTHREAD_ONCE_INIT;
+    struct ForeignOnce {
+        pthread_once_t host;
+    };
 
-    static void sh_initialize_tolower(void) {
-        for (int value = -128; value < 256; ++value) {
-            sh_tolower_table[value + 128] = value;
-        }
-        for (int value = 'A'; value <= 'Z'; ++value) {
-            sh_tolower_table[value + 128] = value - 'A' + 'a';
-        }
-    }
+    struct ForeignCondition {
+        pthread_cond_t host;
+    };
+
+    struct ForeignRwlock {
+        pthread_rwlock_t host;
+    };
+
+    struct ForeignBarrier {
+        pthread_barrier_t host;
+    };
+
+    struct ForeignThreadAttributes {
+        pthread_attr_t host;
+    };
+
+    struct ThreadDestructor {
+        void (*function)(void*);
+        void* argument;
+        ThreadDestructor* next;
+    };
+
+    struct GlibcSymbolKey {
+        std::string_view name;
+        std::string_view version;
+
+        bool operator==(const GlibcSymbolKey&) const noexcept;
+    };
+
+    struct GlibcSymbolKeyHash {
+        size_t operator()(const GlibcSymbolKey& key) const noexcept;
+    };
+
+    struct GlibcProviders {
+        std::unordered_map<GlibcSymbolKey, void*, GlibcSymbolKeyHash> byVersion;
+        std::unordered_map<std::string_view, void*> byName;
+    };
+
+    struct GlibcDlError {
+        char text[1024];
+        bool present;
+    };
+
+    struct GlibcAdapter {
+        GlibcAdapter();
+
+        static GlibcAdapter& instance();
+
+        const int** ctypeTolower();
+        const int** ctypeToupper();
+        const unsigned short** ctypeFlags();
+        void* libcSingleThreaded();
+
+        int mutexInit(void* foreign, const void* foreignAttributes);
+        int mutexDestroy(void* foreign);
+        int mutexLock(void* foreign);
+        int mutexUnlock(void* foreign);
+
+        int once(void* foreign, void (*initialize)(void));
+
+        int conditionInit(void* foreign, const void* foreignAttributes);
+        int conditionDestroy(void* foreign);
+        int conditionSignal(void* foreign);
+        int conditionBroadcast(void* foreign);
+        int conditionWait(void* foreignCondition, void* foreignMutex);
+        int conditionTimedWait(void* foreignCondition, void* foreignMutex, const struct timespec* deadline);
+
+        int rwlockInit(void* foreign);
+        int rwlockDestroy(void* foreign);
+        int rwlockReadLock(void* foreign);
+        int rwlockWriteLock(void* foreign);
+        int rwlockUnlock(void* foreign);
+
+        int barrierInit(void* foreign, unsigned count);
+        int barrierDestroy(void* foreign);
+        int barrierWait(void* foreign);
+
+        int threadAttributesInit(void* foreign);
+        int threadAttributesDestroy(void* foreign);
+        int threadAttributesSetStackSize(void* foreign, size_t size);
+        int threadCreate(uintptr_t* foreignThread, const void* foreignAttributes, void* (*start)(void*), void* argument);
+        int threadAtExit(void (*function)(void*), void* argument);
+
+        bool hasSymbolVersion(std::string_view name, std::string_view version) const;
+        void* findOverride(std::string_view name, std::string_view version) const;
+        void* findFallback(std::string_view name, std::string_view version) const;
+        void* resolveSymbol(std::string_view name, std::string_view version, bool weak);
+
+        void clearDlError();
+        void setDlError(std::string_view error);
+        char* takeDlError();
+
+        ForeignMutex* findMutex(void* foreign, bool create, int type);
+        ForeignCondition* findCondition(void* foreign, bool create, const void* foreignAttributes);
+        ForeignRwlock* findRwlock(void* foreign, bool create);
+        ForeignThreadAttributes* findThreadAttributes(void* foreign);
+        static GlibcDlError& dlError();
+        static void runThreadDestructors(void* opaqueList);
+
+        std::mutex lock_;
+        std::unordered_map<void*, ForeignMutex> mutexes_;
+        std::unordered_map<void*, ForeignOnce> onceFlags_;
+        std::unordered_map<void*, ForeignCondition> conditions_;
+        std::unordered_map<void*, ForeignRwlock> rwlocks_;
+        std::unordered_map<void*, ForeignBarrier> barriers_;
+        std::unordered_map<void*, ForeignThreadAttributes> threadAttributes_;
+        pthread_key_t destructorKey_;
+
+        unsigned char libcSingleThreaded_;
+        int tolowerTable_[384];
+        const int* tolowerPointer_;
+        int toupperTable_[384];
+        const int* toupperPointer_;
+        unsigned short ctypeTable_[384];
+        const unsigned short* ctypePointer_;
+
+        GlibcProviders providers_;
+        std::unordered_set<std::string_view> overrideNames_;
+    };
 
     static const int** sh_ctype_tolower_loc(void) {
-        pthread_once(&sh_tolower_once, sh_initialize_tolower);
-        return &sh_tolower_pointer;
-    }
-
-    static int sh_toupper_table[384];
-    static const int* sh_toupper_pointer = sh_toupper_table + 128;
-    static unsigned short sh_ctype_table[384];
-    static const unsigned short* sh_ctype_pointer = sh_ctype_table + 128;
-    static pthread_once_t sh_ctype_once = PTHREAD_ONCE_INIT;
-
-    static void sh_initialize_ctype(void) {
-        for (int value = -128; value < 256; ++value) {
-            const int index = value + 128;
-            sh_toupper_table[index] = value;
-            if (value >= 'a' && value <= 'z') {
-                sh_toupper_table[index] = value - 'a' + 'A';
-            }
-            if (value < 0) {
-                continue;
-            }
-
-            unsigned short flags = 0;
-            flags |= isupper(value) ? 0x0100 : 0;
-            flags |= islower(value) ? 0x0200 : 0;
-            flags |= isalpha(value) ? 0x0400 : 0;
-            flags |= isdigit(value) ? 0x0800 : 0;
-            flags |= isxdigit(value) ? 0x1000 : 0;
-            flags |= isspace(value) ? 0x2000 : 0;
-            flags |= isprint(value) ? 0x4000 : 0;
-            flags |= isgraph(value) ? 0x8000 : 0;
-            flags |= isblank(value) ? 0x0001 : 0;
-            flags |= iscntrl(value) ? 0x0002 : 0;
-            flags |= ispunct(value) ? 0x0004 : 0;
-            flags |= isalnum(value) ? 0x0008 : 0;
-            sh_ctype_table[index] = flags;
-        }
+        return GlibcAdapter::instance().ctypeTolower();
     }
 
     static const int** sh_ctype_toupper_loc(void) {
-        pthread_once(&sh_ctype_once, sh_initialize_ctype);
-        return &sh_toupper_pointer;
+        return GlibcAdapter::instance().ctypeToupper();
     }
 
     static const unsigned short** sh_ctype_b_loc(void) {
-        pthread_once(&sh_ctype_once, sh_initialize_ctype);
-        return &sh_ctype_pointer;
+        return GlibcAdapter::instance().ctypeFlags();
     }
 
     static size_t sh_ctype_get_mb_cur_max(void) {
@@ -591,64 +668,6 @@ namespace {
         return ElfImage::iterateProgramHeaders(context);
     }
 
-    enum {
-        SH_MAX_FOREIGN_MUTEXES = 512
-    };
-
-    typedef struct {
-        void* foreign;
-        pthread_mutex_t host;
-        int used;
-    } ShForeignMutex;
-
-    static pthread_mutex_t sh_mutex_table_lock = PTHREAD_MUTEX_INITIALIZER;
-    static ShForeignMutex sh_mutex_table[SH_MAX_FOREIGN_MUTEXES];
-
-    static ShForeignMutex* sh_find_mutex(void* foreign, int create, int type) {
-        ShForeignMutex* free_slot = NULL;
-        pthread_mutex_lock(&sh_mutex_table_lock);
-        for (size_t index = 0; index < SH_MAX_FOREIGN_MUTEXES; ++index) {
-            ShForeignMutex* slot = &sh_mutex_table[index];
-            if (slot->used && slot->foreign == foreign) {
-                pthread_mutex_unlock(&sh_mutex_table_lock);
-                return slot;
-            }
-            if (!slot->used && !free_slot) {
-                free_slot = slot;
-            }
-        }
-        if (!create || !free_slot) {
-            pthread_mutex_unlock(&sh_mutex_table_lock);
-            return NULL;
-        }
-
-        /* glibc's static recursive/error-check initializers encode __kind at
-       byte offset 16 of pthread_mutex_t. Explicit pthread_mutex_init calls
-       pass the translated attribute instead. */
-        if (type < 0) {
-            type = ((const int*)foreign)[4] & 3;
-        }
-
-        pthread_mutexattr_t attributes;
-        pthread_mutexattr_init(&attributes);
-        if (type == 1) {
-            pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_RECURSIVE);
-        }
-        if (type == 2) {
-            pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_ERRORCHECK);
-        }
-        int result = pthread_mutex_init(&free_slot->host, &attributes);
-        pthread_mutexattr_destroy(&attributes);
-        if (result != 0) {
-            pthread_mutex_unlock(&sh_mutex_table_lock);
-            return NULL;
-        }
-        free_slot->foreign = foreign;
-        free_slot->used = 1;
-        pthread_mutex_unlock(&sh_mutex_table_lock);
-        return free_slot;
-    }
-
     static int sh_pthread_mutexattr_init(void* foreign_attributes) {
         *(int*)foreign_attributes = 0;
         return 0;
@@ -660,50 +679,25 @@ namespace {
     }
 
     static int sh_pthread_mutex_init(void* foreign, const void* foreign_attributes) {
-        int type = foreign_attributes ? *(const int*)foreign_attributes : 0;
-        return sh_find_mutex(foreign, 1, type) ? 0 : ENOMEM;
+        return GlibcAdapter::instance().mutexInit(foreign, foreign_attributes);
     }
 
     static int sh_pthread_mutex_destroy(void* foreign) {
-        pthread_mutex_lock(&sh_mutex_table_lock);
-        for (size_t index = 0; index < SH_MAX_FOREIGN_MUTEXES; ++index) {
-            ShForeignMutex* slot = &sh_mutex_table[index];
-            if (slot->used && slot->foreign == foreign) {
-                int result = pthread_mutex_destroy(&slot->host);
-                if (result == 0) {
-                    slot->used = 0;
-                    slot->foreign = NULL;
-                }
-                pthread_mutex_unlock(&sh_mutex_table_lock);
-                return result;
-            }
-        }
-        pthread_mutex_unlock(&sh_mutex_table_lock);
-        return 0;
+        return GlibcAdapter::instance().mutexDestroy(foreign);
     }
 
     static int sh_pthread_mutex_lock(void* foreign) {
-        ShForeignMutex* slot = sh_find_mutex(foreign, 1, -1);
-        return slot ? pthread_mutex_lock(&slot->host) : ENOMEM;
+        return GlibcAdapter::instance().mutexLock(foreign);
     }
 
     static int sh_pthread_mutex_unlock(void* foreign) {
-        ShForeignMutex* slot = sh_find_mutex(foreign, 0, 0);
-        return slot ? pthread_mutex_unlock(&slot->host) : EINVAL;
+        return GlibcAdapter::instance().mutexUnlock(foreign);
     }
 
     static int sh_pthread_mutexattr_destroy(void* foreign_attributes) {
         (void)foreign_attributes;
         return 0;
     }
-
-    typedef struct {
-        void* foreign;
-        pthread_once_t host;
-        int used;
-    } ShForeignOnce;
-
-    static ShForeignOnce sh_once_table[SH_MAX_FOREIGN_MUTEXES];
 
     static int sh_trace_enabled(void) {
         return getenv("SH_GLIBC_BRIDGE_TRACE") != NULL;
@@ -713,71 +707,7 @@ namespace {
         if (sh_trace_enabled()) {
             fprintf(stderr, "glibc bridge: pthread_once(%p, %p)\n", foreign, (void*)(uintptr_t)initialize);
         }
-        ShForeignOnce* slot = NULL;
-        pthread_mutex_lock(&sh_mutex_table_lock);
-        for (size_t index = 0; index < SH_MAX_FOREIGN_MUTEXES; ++index) {
-            if (sh_once_table[index].used && sh_once_table[index].foreign == foreign) {
-                slot = &sh_once_table[index];
-                break;
-            }
-            if (!sh_once_table[index].used && !slot) {
-                slot = &sh_once_table[index];
-            }
-        }
-        if (slot && !slot->used) {
-            pthread_once_t initial = PTHREAD_ONCE_INIT;
-            slot->host = initial;
-            slot->foreign = foreign;
-            slot->used = 1;
-        }
-        pthread_mutex_unlock(&sh_mutex_table_lock);
-        return slot ? pthread_once(&slot->host, initialize) : ENOMEM;
-    }
-
-    typedef struct {
-        void* foreign;
-        pthread_cond_t host;
-        int used;
-    } ShForeignCondition;
-
-    static ShForeignCondition sh_condition_table[SH_MAX_FOREIGN_MUTEXES];
-
-    static ShForeignCondition* sh_find_condition(void* foreign, int create, const void* foreign_attributes) {
-        ShForeignCondition* free_slot = NULL;
-        pthread_mutex_lock(&sh_mutex_table_lock);
-        for (size_t index = 0; index < SH_MAX_FOREIGN_MUTEXES; ++index) {
-            ShForeignCondition* slot = &sh_condition_table[index];
-            if (slot->used && slot->foreign == foreign) {
-                pthread_mutex_unlock(&sh_mutex_table_lock);
-                return slot;
-            }
-            if (!slot->used && !free_slot) {
-                free_slot = slot;
-            }
-        }
-        if (!create || !free_slot) {
-            pthread_mutex_unlock(&sh_mutex_table_lock);
-            return NULL;
-        }
-        pthread_condattr_t attributes;
-        pthread_condattr_t* attributes_pointer = NULL;
-        if (foreign_attributes) {
-            pthread_condattr_init(&attributes);
-            pthread_condattr_setclock(&attributes, *(const int*)foreign_attributes);
-            attributes_pointer = &attributes;
-        }
-        int result = pthread_cond_init(&free_slot->host, attributes_pointer);
-        if (attributes_pointer) {
-            pthread_condattr_destroy(attributes_pointer);
-        }
-        if (result != 0) {
-            pthread_mutex_unlock(&sh_mutex_table_lock);
-            return NULL;
-        }
-        free_slot->foreign = foreign;
-        free_slot->used = 1;
-        pthread_mutex_unlock(&sh_mutex_table_lock);
-        return free_slot;
+        return GlibcAdapter::instance().once(foreign, initialize);
     }
 
     static int sh_pthread_condattr_init(void* foreign_attributes) {
@@ -796,250 +726,77 @@ namespace {
     }
 
     static int sh_pthread_cond_init(void* foreign, const void* foreign_attributes) {
-        return sh_find_condition(foreign, 1, foreign_attributes) ? 0 : ENOMEM;
+        return GlibcAdapter::instance().conditionInit(foreign, foreign_attributes);
     }
 
     static int sh_pthread_cond_destroy(void* foreign) {
-        pthread_mutex_lock(&sh_mutex_table_lock);
-        for (size_t index = 0; index < SH_MAX_FOREIGN_MUTEXES; ++index) {
-            ShForeignCondition* slot = &sh_condition_table[index];
-            if (slot->used && slot->foreign == foreign) {
-                int result = pthread_cond_destroy(&slot->host);
-                if (result == 0) {
-                    slot->used = 0;
-                    slot->foreign = NULL;
-                }
-                pthread_mutex_unlock(&sh_mutex_table_lock);
-                return result;
-            }
-        }
-        pthread_mutex_unlock(&sh_mutex_table_lock);
-        return 0;
+        return GlibcAdapter::instance().conditionDestroy(foreign);
     }
 
     static int sh_pthread_cond_signal(void* foreign) {
-        ShForeignCondition* slot = sh_find_condition(foreign, 1, NULL);
-        return slot ? pthread_cond_signal(&slot->host) : ENOMEM;
+        return GlibcAdapter::instance().conditionSignal(foreign);
     }
 
     static int sh_pthread_cond_broadcast(void* foreign) {
-        ShForeignCondition* slot = sh_find_condition(foreign, 1, NULL);
-        return slot ? pthread_cond_broadcast(&slot->host) : ENOMEM;
+        return GlibcAdapter::instance().conditionBroadcast(foreign);
     }
 
     static int sh_pthread_cond_wait(void* foreign_condition, void* foreign_mutex) {
-        ShForeignCondition* condition = sh_find_condition(foreign_condition, 1, NULL);
-        ShForeignMutex* mutex = sh_find_mutex(foreign_mutex, 1, -1);
-        return condition && mutex ? pthread_cond_wait(&condition->host, &mutex->host) : ENOMEM;
+        return GlibcAdapter::instance().conditionWait(foreign_condition, foreign_mutex);
     }
 
     static int sh_pthread_cond_timedwait(void* foreign_condition, void* foreign_mutex, const struct timespec* deadline) {
-        ShForeignCondition* condition = sh_find_condition(foreign_condition, 1, NULL);
-        ShForeignMutex* mutex = sh_find_mutex(foreign_mutex, 1, -1);
-        return condition && mutex ? pthread_cond_timedwait(&condition->host, &mutex->host, deadline) : ENOMEM;
-    }
-
-    typedef struct {
-        void* foreign;
-        pthread_rwlock_t host;
-        int used;
-    } ShForeignRwlock;
-
-    static ShForeignRwlock sh_rwlock_table[SH_MAX_FOREIGN_MUTEXES];
-
-    static ShForeignRwlock* sh_find_rwlock(void* foreign, int create) {
-        ShForeignRwlock* free_slot = NULL;
-        pthread_mutex_lock(&sh_mutex_table_lock);
-        for (size_t index = 0; index < SH_MAX_FOREIGN_MUTEXES; ++index) {
-            ShForeignRwlock* slot = &sh_rwlock_table[index];
-            if (slot->used && slot->foreign == foreign) {
-                pthread_mutex_unlock(&sh_mutex_table_lock);
-                return slot;
-            }
-            if (!slot->used && !free_slot) {
-                free_slot = slot;
-            }
-        }
-        if (!create || !free_slot || pthread_rwlock_init(&free_slot->host, NULL) != 0) {
-            pthread_mutex_unlock(&sh_mutex_table_lock);
-            return NULL;
-        }
-        free_slot->foreign = foreign;
-        free_slot->used = 1;
-        pthread_mutex_unlock(&sh_mutex_table_lock);
-        return free_slot;
+        return GlibcAdapter::instance().conditionTimedWait(foreign_condition, foreign_mutex, deadline);
     }
 
     static int sh_pthread_rwlock_init(void* foreign, const void* attributes) {
         (void)attributes;
-        return sh_find_rwlock(foreign, 1) ? 0 : ENOMEM;
+        return GlibcAdapter::instance().rwlockInit(foreign);
     }
 
     static int sh_pthread_rwlock_destroy(void* foreign) {
-        pthread_mutex_lock(&sh_mutex_table_lock);
-        for (size_t index = 0; index < SH_MAX_FOREIGN_MUTEXES; ++index) {
-            ShForeignRwlock* slot = &sh_rwlock_table[index];
-            if (slot->used && slot->foreign == foreign) {
-                int result = pthread_rwlock_destroy(&slot->host);
-                if (result == 0) {
-                    slot->used = 0;
-                    slot->foreign = NULL;
-                }
-                pthread_mutex_unlock(&sh_mutex_table_lock);
-                return result;
-            }
-        }
-        pthread_mutex_unlock(&sh_mutex_table_lock);
-        return 0;
+        return GlibcAdapter::instance().rwlockDestroy(foreign);
     }
 
     static int sh_pthread_rwlock_rdlock(void* foreign) {
-        ShForeignRwlock* slot = sh_find_rwlock(foreign, 1);
-        return slot ? pthread_rwlock_rdlock(&slot->host) : ENOMEM;
+        return GlibcAdapter::instance().rwlockReadLock(foreign);
     }
 
     static int sh_pthread_rwlock_wrlock(void* foreign) {
-        ShForeignRwlock* slot = sh_find_rwlock(foreign, 1);
-        return slot ? pthread_rwlock_wrlock(&slot->host) : ENOMEM;
+        return GlibcAdapter::instance().rwlockWriteLock(foreign);
     }
 
     static int sh_pthread_rwlock_unlock(void* foreign) {
-        ShForeignRwlock* slot = sh_find_rwlock(foreign, 0);
-        return slot ? pthread_rwlock_unlock(&slot->host) : EINVAL;
+        return GlibcAdapter::instance().rwlockUnlock(foreign);
     }
-
-    typedef struct {
-        void* foreign;
-        pthread_barrier_t host;
-        int used;
-    } ShForeignBarrier;
-
-    static ShForeignBarrier sh_barrier_table[SH_MAX_FOREIGN_MUTEXES];
 
     static int sh_pthread_barrier_init(void* foreign, const void* attributes, unsigned count) {
         (void)attributes;
-        pthread_mutex_lock(&sh_mutex_table_lock);
-        for (size_t index = 0; index < SH_MAX_FOREIGN_MUTEXES; ++index) {
-            ShForeignBarrier* slot = &sh_barrier_table[index];
-            if (!slot->used) {
-                int result = pthread_barrier_init(&slot->host, NULL, count);
-                if (result == 0) {
-                    slot->foreign = foreign;
-                    slot->used = 1;
-                }
-                pthread_mutex_unlock(&sh_mutex_table_lock);
-                return result;
-            }
-        }
-        pthread_mutex_unlock(&sh_mutex_table_lock);
-        return ENOMEM;
-    }
-
-    static ShForeignBarrier* sh_find_barrier(void* foreign) {
-        for (size_t index = 0; index < SH_MAX_FOREIGN_MUTEXES; ++index) {
-            if (sh_barrier_table[index].used && sh_barrier_table[index].foreign == foreign) {
-                return &sh_barrier_table[index];
-            }
-        }
-        return NULL;
+        return GlibcAdapter::instance().barrierInit(foreign, count);
     }
 
     static int sh_pthread_barrier_wait(void* foreign) {
-        pthread_mutex_lock(&sh_mutex_table_lock);
-        ShForeignBarrier* slot = sh_find_barrier(foreign);
-        pthread_mutex_unlock(&sh_mutex_table_lock);
-        return slot ? pthread_barrier_wait(&slot->host) : EINVAL;
+        return GlibcAdapter::instance().barrierWait(foreign);
     }
 
     static int sh_pthread_barrier_destroy(void* foreign) {
-        pthread_mutex_lock(&sh_mutex_table_lock);
-        ShForeignBarrier* slot = sh_find_barrier(foreign);
-        int result = slot ? pthread_barrier_destroy(&slot->host) : 0;
-        if (slot && result == 0) {
-            slot->used = 0;
-            slot->foreign = NULL;
-        }
-        pthread_mutex_unlock(&sh_mutex_table_lock);
-        return result;
-    }
-
-    typedef struct {
-        void* foreign;
-        pthread_attr_t host;
-        int used;
-    } ShForeignThreadAttributes;
-
-    static ShForeignThreadAttributes sh_thread_attribute_table[64];
-
-    static ShForeignThreadAttributes* sh_find_thread_attributes(void* foreign) {
-        for (size_t index = 0; index < sizeof(sh_thread_attribute_table) / sizeof(sh_thread_attribute_table[0]); ++index) {
-            if (sh_thread_attribute_table[index].used && sh_thread_attribute_table[index].foreign == foreign) {
-                return &sh_thread_attribute_table[index];
-            }
-        }
-        return NULL;
+        return GlibcAdapter::instance().barrierDestroy(foreign);
     }
 
     static int sh_pthread_attr_init(void* foreign) {
-        pthread_mutex_lock(&sh_mutex_table_lock);
-        for (size_t index = 0; index < sizeof(sh_thread_attribute_table) / sizeof(sh_thread_attribute_table[0]); ++index) {
-            ShForeignThreadAttributes* slot = &sh_thread_attribute_table[index];
-            if (!slot->used) {
-                int result = pthread_attr_init(&slot->host);
-                if (result == 0) {
-                    slot->foreign = foreign;
-                    slot->used = 1;
-                }
-                pthread_mutex_unlock(&sh_mutex_table_lock);
-                return result;
-            }
-        }
-        pthread_mutex_unlock(&sh_mutex_table_lock);
-        return ENOMEM;
+        return GlibcAdapter::instance().threadAttributesInit(foreign);
     }
 
     static int sh_pthread_attr_destroy(void* foreign) {
-        pthread_mutex_lock(&sh_mutex_table_lock);
-        ShForeignThreadAttributes* slot = sh_find_thread_attributes(foreign);
-        int result = slot ? pthread_attr_destroy(&slot->host) : EINVAL;
-        if (slot && result == 0) {
-            slot->used = 0;
-            slot->foreign = NULL;
-        }
-        pthread_mutex_unlock(&sh_mutex_table_lock);
-        return result;
+        return GlibcAdapter::instance().threadAttributesDestroy(foreign);
     }
 
     static int sh_pthread_attr_setstacksize(void* foreign, size_t size) {
-        pthread_mutex_lock(&sh_mutex_table_lock);
-        ShForeignThreadAttributes* slot = sh_find_thread_attributes(foreign);
-        int result = slot ? pthread_attr_setstacksize(&slot->host, size) : EINVAL;
-        pthread_mutex_unlock(&sh_mutex_table_lock);
-        return result;
+        return GlibcAdapter::instance().threadAttributesSetStackSize(foreign, size);
     }
 
     static int sh_pthread_create(uintptr_t* foreign_thread, const void* foreign_attributes, void* (*start)(void*), void* argument) {
-        if (sh_trace_enabled()) {
-            fprintf(stderr, "glibc bridge: pthread_create(start=%p, argument=%p)\n", (void*)(uintptr_t)start, argument);
-        }
-        pthread_attr_t* host_attributes = NULL;
-        if (foreign_attributes) {
-            pthread_mutex_lock(&sh_mutex_table_lock);
-            ShForeignThreadAttributes* slot = sh_find_thread_attributes((void*)foreign_attributes);
-            if (slot) {
-                host_attributes = &slot->host;
-            }
-            pthread_mutex_unlock(&sh_mutex_table_lock);
-            if (!host_attributes) {
-                return EINVAL;
-            }
-        }
-        pthread_t thread;
-        int result = pthread_create(&thread, host_attributes, start, argument);
-        if (result == 0) {
-            *foreign_thread = (uintptr_t)thread;
-        }
-        return result;
+        return GlibcAdapter::instance().threadCreate(foreign_thread, foreign_attributes, start, argument);
     }
 
     static int sh_pthread_join(uintptr_t thread, void** result) {
@@ -1078,46 +835,9 @@ namespace {
         return pthread_setschedparam((pthread_t)thread, policy, parameters);
     }
 
-    typedef struct ShThreadDestructor {
-        void (*function)(void*);
-        void* argument;
-        struct ShThreadDestructor* next;
-    } ShThreadDestructor;
-
-    static pthread_key_t sh_destructor_key;
-    static pthread_once_t sh_destructor_key_once = PTHREAD_ONCE_INIT;
-
-    static void sh_run_thread_destructors(void* opaque_list) {
-        ShThreadDestructor* item = static_cast<ShThreadDestructor*>(opaque_list);
-        while (item) {
-            ShThreadDestructor* next = item->next;
-            item->function(item->argument);
-            free(item);
-            item = next;
-        }
-    }
-
-    static void sh_create_destructor_key(void) {
-        if (pthread_key_create(&sh_destructor_key, sh_run_thread_destructors) != 0) {
-            abort();
-        }
-    }
-
     static int sh_cxa_thread_atexit_impl(void (*function)(void*), void* argument, void* dso_handle) {
         (void)dso_handle;
-        pthread_once(&sh_destructor_key_once, sh_create_destructor_key);
-        ShThreadDestructor* item = static_cast<ShThreadDestructor*>(malloc(sizeof(*item)));
-        if (!item) {
-            return -1;
-        }
-        item->function = function;
-        item->argument = argument;
-        item->next = static_cast<ShThreadDestructor*>(pthread_getspecific(sh_destructor_key));
-        if (pthread_setspecific(sh_destructor_key, item) != 0) {
-            free(item);
-            return -1;
-        }
-        return 0;
+        return GlibcAdapter::instance().threadAtExit(function, argument);
     }
 
     static FILE* sh_fopen64(const char* path, const char* mode) {
@@ -1250,16 +970,12 @@ namespace {
         return scandir(path, entries, filter, compare);
     }
 
-    typedef struct {
+    struct GlibcDlInfo {
         const char* filename;
         void* base;
         const char* symbol_name;
         void* symbol_address;
-    } ShGlibcDlInfo;
-
-    static bool hasGlibcSymbolVersion(std::string_view name, std::string_view version);
-    static void* findGlibcOverride(std::string_view name, std::string_view version);
-    static void* findGlibcFallback(std::string_view name, std::string_view version);
+    };
 
     struct GlibcHandle {
         explicit GlibcHandle(void* stubHandle);
@@ -1282,43 +998,15 @@ namespace {
         void* lookup(std::string_view name, std::string_view version) const override;
     };
 
-    static thread_local char glibcDlError[1024] = {};
-    static thread_local bool hasGlibcDlError = false;
-
-    static void clearGlibcDlError() noexcept {
-        hasGlibcDlError = false;
-    }
-
-    static void setGlibcDlError(std::string_view error) noexcept {
-        auto size = error.size();
-
-        if (size >= sizeof(glibcDlError)) {
-            size = sizeof(glibcDlError) - 1;
-        }
-        memcpy(glibcDlError, error.data(), size);
-        glibcDlError[size] = 0;
-        hasGlibcDlError = true;
-    }
-
-    static char* takeGlibcDlError() noexcept {
-        if (!hasGlibcDlError) {
-            return nullptr;
-        }
-
-        hasGlibcDlError = false;
-
-        return glibcDlError;
-    }
-
     static void consumeStubError() noexcept {
         stub_dlerror();
     }
 
     static void copyStubError(std::string_view fallback) noexcept {
         if (auto* error = stub_dlerror(); error) {
-            setGlibcDlError(error);
+            GlibcAdapter::instance().setDlError(error);
         } else {
-            setGlibcDlError(fallback);
+            GlibcAdapter::instance().setDlError(fallback);
         }
     }
 
@@ -1350,10 +1038,12 @@ GlibcRuntimeHandle::GlibcRuntimeHandle(void* stubHandle)
 }
 
 void* GlibcRuntimeHandle::lookup(std::string_view name, std::string_view version) const {
-    if (!version.empty() && !hasGlibcSymbolVersion(name, version)) {
+    auto& adapter = GlibcAdapter::instance();
+
+    if (!version.empty() && !adapter.hasSymbolVersion(name, version)) {
         return nullptr;
     }
-    if (auto* address = findGlibcOverride(name, version); address) {
+    if (auto* address = adapter.findOverride(name, version); address) {
         return address;
     }
     if (auto* address = lookupStub(stubHandle_, name); address) {
@@ -1365,7 +1055,7 @@ void* GlibcRuntimeHandle::lookup(std::string_view name, std::string_view version
     }
     consumeStubError();
 
-    return findGlibcFallback(name, version);
+    return adapter.findFallback(name, version);
 }
 
 GlibcStubLoaderHandle::GlibcStubLoaderHandle(void* stubHandle)
@@ -1374,11 +1064,13 @@ GlibcStubLoaderHandle::GlibcStubLoaderHandle(void* stubHandle)
 }
 
 void* GlibcStubLoaderHandle::lookup(std::string_view name, std::string_view version) const {
+    auto& adapter = GlibcAdapter::instance();
+
     if (auto* address = lookupStub(stubHandle_, name); address) {
         return address;
     }
     consumeStubError();
-    if (auto* address = findGlibcOverride(name, version); address) {
+    if (auto* address = adapter.findOverride(name, version); address) {
         return address;
     }
     if (auto* address = lookupLibc(name); address) {
@@ -1386,7 +1078,7 @@ void* GlibcStubLoaderHandle::lookup(std::string_view name, std::string_view vers
     }
     consumeStubError();
 
-    return findGlibcFallback(name, version);
+    return adapter.findFallback(name, version);
 }
 
 namespace {
@@ -1432,7 +1124,9 @@ namespace {
     }
 
     static void* sh_glibc_dlopen(const char* path, int flags) {
-        clearGlibcDlError();
+        auto& adapter = GlibcAdapter::instance();
+
+        adapter.clearDlError();
         consumeStubError();
 
         auto translated = sh_translate_dlopen_flags(flags);
@@ -1452,20 +1146,22 @@ namespace {
 
             return new GlibcStubLoaderHandle(handle);
         } catch (const std::exception& error) {
-            setGlibcDlError(error.what());
+            adapter.setDlError(error.what());
         } catch (...) {
-            setGlibcDlError("unknown dlopen error");
+            adapter.setDlError("unknown dlopen error");
         }
 
         return nullptr;
     }
 
     static void* sh_glibc_dlsym(void* handle, const char* name) {
-        clearGlibcDlError();
+        auto& adapter = GlibcAdapter::instance();
+
+        adapter.clearDlError();
         consumeStubError();
 
         if (!name) {
-            setGlibcDlError("symbol name is null");
+            adapter.setDlError("symbol name is null");
             return nullptr;
         }
 
@@ -1489,11 +1185,13 @@ namespace {
     }
 
     static void* sh_glibc_dlvsym(void* handle, const char* name, const char* version) {
-        clearGlibcDlError();
+        auto& adapter = GlibcAdapter::instance();
+
+        adapter.clearDlError();
         consumeStubError();
 
         if (!name || !version) {
-            setGlibcDlError("symbol name or version is null");
+            adapter.setDlError("symbol name or version is null");
             return nullptr;
         }
 
@@ -1517,11 +1215,13 @@ namespace {
     }
 
     static int sh_glibc_dlclose(void* handle) {
-        clearGlibcDlError();
+        auto& adapter = GlibcAdapter::instance();
+
+        adapter.clearDlError();
         consumeStubError();
 
         if (!handle || handle == (void*)(uintptr_t)-1) {
-            setGlibcDlError("invalid handle");
+            adapter.setDlError("invalid handle");
             return -1;
         }
 
@@ -1531,7 +1231,7 @@ namespace {
     }
 
     static char* sh_glibc_dlerror(void) {
-        if (auto* error = takeGlibcDlError(); error) {
+        if (auto* error = GlibcAdapter::instance().takeDlError(); error) {
             return error;
         }
 
@@ -1582,7 +1282,7 @@ namespace {
         return towctrans_l(character, transform, locale);
     }
 
-    static int sh_glibc_dladdr(const void* address, ShGlibcDlInfo* glibc_info) {
+    static int sh_glibc_dladdr(const void* address, GlibcDlInfo* glibc_info) {
         Dl_info info;
         int result = stub_dladdr(address, &info);
         if (result && glibc_info) {
@@ -1594,7 +1294,7 @@ namespace {
         return result;
     }
 
-    static const ShGlibcSymbol sh_glibc_symbols[] = {
+    static const GlibcSymbol sh_glibc_symbols[] = {
         SH_FUNCTION("bcmp", "GLIBC_2.2.5", sh_bcmp),
         SH_FUNCTION("__getdelim", "GLIBC_2.2.5", getdelim),
         SH_FUNCTION("statfs", "GLIBC_2.2.5", statfs),
@@ -1836,192 +1536,629 @@ namespace {
         SH_FUNCTION("__wmemcpy_chk", "GLIBC_2.4", sh_wmemcpy_chk),
         SH_FUNCTION("__wmemset_chk", "GLIBC_2.4", sh_wmemset_chk),
     };
-
-    struct ShGlibcKey {
-        std::string_view name;
-        std::string_view version;
-
-        bool operator==(const ShGlibcKey&) const noexcept;
-    };
-
-    struct ShGlibcKeyHash {
-        size_t operator()(const ShGlibcKey& key) const noexcept;
-    };
-
-    struct ShGlibcProviders {
-        std::unordered_map<ShGlibcKey, void*, ShGlibcKeyHash> byVersion;
-        std::unordered_map<std::string_view, void*> byName;
-    };
 }
 
-bool ShGlibcKey::operator==(const ShGlibcKey&) const noexcept = default;
+bool GlibcSymbolKey::operator==(const GlibcSymbolKey&) const noexcept = default;
 
-size_t ShGlibcKeyHash::operator()(const ShGlibcKey& key) const noexcept {
+size_t GlibcSymbolKeyHash::operator()(const GlibcSymbolKey& key) const noexcept {
     auto name = std::hash<std::string_view>()(key.name);
     auto version = std::hash<std::string_view>()(key.version);
 
     return splitMix64(name ^ version);
 }
 
-namespace {
-    static const ShGlibcProviders& sh_glibc_providers() {
-        static const auto* providers = [] {
-            auto* result = new ShGlibcProviders();
+GlibcAdapter::GlibcAdapter()
+    : destructorKey_()
+    , libcSingleThreaded_(0)
+    , tolowerPointer_(tolowerTable_ + 128)
+    , toupperPointer_(toupperTable_ + 128)
+    , ctypePointer_(ctypeTable_ + 128)
+{
+    for (int value = -128; value < 256; ++value) {
+        const int index = value + 128;
+        tolowerTable_[index] = value;
+        toupperTable_[index] = value;
+        ctypeTable_[index] = 0;
 
-            result->byVersion.reserve(sizeof(sh_glibc_symbols) / sizeof(sh_glibc_symbols[0]));
-            result->byName.reserve(sizeof(sh_glibc_symbols) / sizeof(sh_glibc_symbols[0]));
-            for (const auto& symbol : sh_glibc_symbols) {
-                result->byVersion.emplace(ShGlibcKey{symbol.name, symbol.version}, symbol.address);
-                result->byName.emplace(symbol.name, symbol.address);
-            }
+        if (value >= 'A' && value <= 'Z') {
+            tolowerTable_[index] = value - 'A' + 'a';
+        }
+        if (value >= 'a' && value <= 'z') {
+            toupperTable_[index] = value - 'a' + 'A';
+        }
+        if (value < 0) {
+            continue;
+        }
 
-            return result;
-        }();
-
-        return *providers;
+        unsigned short flags = 0;
+        flags |= isupper(value) ? 0x0100 : 0;
+        flags |= islower(value) ? 0x0200 : 0;
+        flags |= isalpha(value) ? 0x0400 : 0;
+        flags |= isdigit(value) ? 0x0800 : 0;
+        flags |= isxdigit(value) ? 0x1000 : 0;
+        flags |= isspace(value) ? 0x2000 : 0;
+        flags |= isprint(value) ? 0x4000 : 0;
+        flags |= isgraph(value) ? 0x8000 : 0;
+        flags |= isblank(value) ? 0x0001 : 0;
+        flags |= iscntrl(value) ? 0x0002 : 0;
+        flags |= ispunct(value) ? 0x0004 : 0;
+        flags |= isalnum(value) ? 0x0008 : 0;
+        ctypeTable_[index] = flags;
     }
 
-    static const auto& glibcOverrideNames() {
-        static const auto* names = [] {
-            static constexpr std::string_view values[] = {
-                "__cxa_atexit",
-                "__cxa_finalize",
-                "__cxa_thread_atexit_impl",
-                "alphasort64",
-                "dl_iterate_phdr",
-                "dladdr",
-                "dlclose",
-                "dlerror",
-                "dlopen",
-                "dlsym",
-                "dlvsym",
-                "fstat64",
-                "fstatat64",
-                "fstatfs64",
-                "lstat64",
-                "pthread_attr_destroy",
-                "pthread_attr_init",
-                "pthread_attr_setstacksize",
-                "pthread_barrier_destroy",
-                "pthread_barrier_init",
-                "pthread_barrier_wait",
-                "pthread_cancel",
-                "pthread_cond_broadcast",
-                "pthread_cond_destroy",
-                "pthread_cond_init",
-                "pthread_cond_signal",
-                "pthread_cond_timedwait",
-                "pthread_cond_wait",
-                "pthread_condattr_destroy",
-                "pthread_condattr_init",
-                "pthread_condattr_setclock",
-                "pthread_create",
-                "pthread_detach",
-                "pthread_getaffinity_np",
-                "pthread_getname_np",
-                "pthread_join",
-                "pthread_mutex_destroy",
-                "pthread_mutex_init",
-                "pthread_mutex_lock",
-                "pthread_mutex_unlock",
-                "pthread_mutexattr_destroy",
-                "pthread_mutexattr_init",
-                "pthread_mutexattr_settype",
-                "pthread_once",
-                "pthread_rwlock_destroy",
-                "pthread_rwlock_init",
-                "pthread_rwlock_rdlock",
-                "pthread_rwlock_unlock",
-                "pthread_rwlock_wrlock",
-                "pthread_self",
-                "pthread_setaffinity_np",
-                "pthread_setname_np",
-                "pthread_setschedparam",
-                "readdir64",
-                "scandir64",
-                "stat64",
-                "statfs64",
-                "strerror_r",
-            };
-            auto* result = new std::unordered_set<std::string_view>();
-
-            result->reserve(sizeof(values) / sizeof(values[0]));
-            for (auto value : values) {
-                result->emplace(value);
-            }
-
-            return result;
-        }();
-
-        return *names;
+    if (pthread_key_create(&destructorKey_, runThreadDestructors) != 0) {
+        abort();
     }
 
-    static bool hasGlibcSymbolVersion(std::string_view name, std::string_view version) {
-        const auto& providers = sh_glibc_providers();
-
-        return providers.byVersion.contains({name, version}) || hasGlibcStub(name, version);
+    providers_.byVersion.reserve(sizeof(sh_glibc_symbols) / sizeof(sh_glibc_symbols[0]));
+    providers_.byName.reserve(sizeof(sh_glibc_symbols) / sizeof(sh_glibc_symbols[0]));
+    for (const auto& symbol : sh_glibc_symbols) {
+        providers_.byVersion.emplace(GlibcSymbolKey{symbol.name, symbol.version}, symbol.address);
+        providers_.byName.emplace(symbol.name, symbol.address);
     }
 
-    static void* findGlibcOverride(std::string_view name, std::string_view version) {
-        if (!glibcOverrideNames().contains(name)) {
-            return nullptr;
-        }
-        if (!version.empty() && !hasGlibcSymbolVersion(name, version)) {
-            return nullptr;
-        }
+    static constexpr std::string_view overrideNames[] = {
+        "__cxa_atexit",
+        "__cxa_finalize",
+        "__cxa_thread_atexit_impl",
+        "alphasort64",
+        "dl_iterate_phdr",
+        "dladdr",
+        "dlclose",
+        "dlerror",
+        "dlopen",
+        "dlsym",
+        "dlvsym",
+        "fstat64",
+        "fstatat64",
+        "fstatfs64",
+        "lstat64",
+        "pthread_attr_destroy",
+        "pthread_attr_init",
+        "pthread_attr_setstacksize",
+        "pthread_barrier_destroy",
+        "pthread_barrier_init",
+        "pthread_barrier_wait",
+        "pthread_cancel",
+        "pthread_cond_broadcast",
+        "pthread_cond_destroy",
+        "pthread_cond_init",
+        "pthread_cond_signal",
+        "pthread_cond_timedwait",
+        "pthread_cond_wait",
+        "pthread_condattr_destroy",
+        "pthread_condattr_init",
+        "pthread_condattr_setclock",
+        "pthread_create",
+        "pthread_detach",
+        "pthread_getaffinity_np",
+        "pthread_getname_np",
+        "pthread_join",
+        "pthread_mutex_destroy",
+        "pthread_mutex_init",
+        "pthread_mutex_lock",
+        "pthread_mutex_unlock",
+        "pthread_mutexattr_destroy",
+        "pthread_mutexattr_init",
+        "pthread_mutexattr_settype",
+        "pthread_once",
+        "pthread_rwlock_destroy",
+        "pthread_rwlock_init",
+        "pthread_rwlock_rdlock",
+        "pthread_rwlock_unlock",
+        "pthread_rwlock_wrlock",
+        "pthread_self",
+        "pthread_setaffinity_np",
+        "pthread_setname_np",
+        "pthread_setschedparam",
+        "readdir64",
+        "scandir64",
+        "stat64",
+        "statfs64",
+        "strerror_r",
+    };
 
-        const auto& providers = sh_glibc_providers();
-
-        if (auto provider = providers.byName.find(name); provider != providers.byName.end()) {
-            return provider->second;
-        }
-
-        return nullptr;
-    }
-
-    static void* findGlibcFallback(std::string_view name, std::string_view version) {
-        const auto& providers = sh_glibc_providers();
-
-        if (version.empty()) {
-            if (auto provider = providers.byName.find(name); provider != providers.byName.end()) {
-                return provider->second;
-            }
-
-            return nullptr;
-        }
-        if (auto provider = providers.byVersion.find({name, version}); provider != providers.byVersion.end()) {
-            return provider->second;
-        }
-
-        return resolveGlibcStub(name, version);
+    overrideNames_.reserve(sizeof(overrideNames) / sizeof(overrideNames[0]));
+    for (auto name : overrideNames) {
+        overrideNames_.emplace(name);
     }
 }
 
-void* resolveGlibcSymbol(std::string_view name, std::string_view version, bool weak) {
+GlibcAdapter& GlibcAdapter::instance() {
+    static auto* adapter = new GlibcAdapter();
+
+    return *adapter;
+}
+
+const int** GlibcAdapter::ctypeTolower() {
+    return &tolowerPointer_;
+}
+
+const int** GlibcAdapter::ctypeToupper() {
+    return &toupperPointer_;
+}
+
+const unsigned short** GlibcAdapter::ctypeFlags() {
+    return &ctypePointer_;
+}
+
+void* GlibcAdapter::libcSingleThreaded() {
+    return &libcSingleThreaded_;
+}
+
+ForeignMutex* GlibcAdapter::findMutex(void* foreign, bool create, int type) {
+    std::lock_guard lock(lock_);
+    auto item = mutexes_.find(foreign);
+
+    if (item != mutexes_.end()) {
+        return &item->second;
+    }
+    if (!create) {
+        return nullptr;
+    }
+
+    auto [inserted, isNew] = mutexes_.try_emplace(foreign);
+    assert(isNew);
+
+    // glibc's static recursive and error-check initializers encode __kind at byte offset 16 of pthread_mutex_t.
+    if (type < 0) {
+        type = static_cast<const int*>(foreign)[4] & 3;
+    }
+
+    pthread_mutexattr_t attributes;
+    int result = pthread_mutexattr_init(&attributes);
+    const bool attributesInitialized = result == 0;
+    if (result == 0 && type == 1) {
+        result = pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_RECURSIVE);
+    }
+    if (result == 0 && type == 2) {
+        result = pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_ERRORCHECK);
+    }
+    if (result == 0) {
+        result = pthread_mutex_init(&inserted->second.host, &attributes);
+    }
+    if (attributesInitialized) {
+        pthread_mutexattr_destroy(&attributes);
+    }
+    if (result != 0) {
+        mutexes_.erase(inserted);
+        return nullptr;
+    }
+
+    return &inserted->second;
+}
+
+int GlibcAdapter::mutexInit(void* foreign, const void* foreignAttributes) {
+    const int type = foreignAttributes ? *static_cast<const int*>(foreignAttributes) : 0;
+
+    return findMutex(foreign, true, type) ? 0 : ENOMEM;
+}
+
+int GlibcAdapter::mutexDestroy(void* foreign) {
+    std::lock_guard lock(lock_);
+    auto item = mutexes_.find(foreign);
+
+    if (item == mutexes_.end()) {
+        return 0;
+    }
+
+    int result = pthread_mutex_destroy(&item->second.host);
+    if (result == 0) {
+        mutexes_.erase(item);
+    }
+
+    return result;
+}
+
+int GlibcAdapter::mutexLock(void* foreign) {
+    auto* mutex = findMutex(foreign, true, -1);
+
+    return mutex ? pthread_mutex_lock(&mutex->host) : ENOMEM;
+}
+
+int GlibcAdapter::mutexUnlock(void* foreign) {
+    auto* mutex = findMutex(foreign, false, 0);
+
+    return mutex ? pthread_mutex_unlock(&mutex->host) : EINVAL;
+}
+
+int GlibcAdapter::once(void* foreign, void (*initialize)(void)) {
+    ForeignOnce* onceFlag;
+    {
+        std::lock_guard lock(lock_);
+        auto [item, inserted] = onceFlags_.try_emplace(foreign);
+        if (inserted) {
+            pthread_once_t initial = PTHREAD_ONCE_INIT;
+            item->second.host = initial;
+        }
+        onceFlag = &item->second;
+    }
+
+    return pthread_once(&onceFlag->host, initialize);
+}
+
+ForeignCondition* GlibcAdapter::findCondition(void* foreign, bool create, const void* foreignAttributes) {
+    std::lock_guard lock(lock_);
+    auto item = conditions_.find(foreign);
+
+    if (item != conditions_.end()) {
+        return &item->second;
+    }
+    if (!create) {
+        return nullptr;
+    }
+
+    auto [inserted, isNew] = conditions_.try_emplace(foreign);
+    assert(isNew);
+
+    pthread_condattr_t attributes;
+    pthread_condattr_t* attributesPointer = nullptr;
+    int result = 0;
+    bool attributesInitialized = false;
+    if (foreignAttributes) {
+        result = pthread_condattr_init(&attributes);
+        attributesInitialized = result == 0;
+        if (result == 0) {
+            result = pthread_condattr_setclock(&attributes, *static_cast<const int*>(foreignAttributes));
+        }
+        if (result == 0) {
+            attributesPointer = &attributes;
+        }
+    }
+    if (result == 0) {
+        result = pthread_cond_init(&inserted->second.host, attributesPointer);
+    }
+    if (attributesInitialized) {
+        pthread_condattr_destroy(&attributes);
+    }
+    if (result != 0) {
+        conditions_.erase(inserted);
+        return nullptr;
+    }
+
+    return &inserted->second;
+}
+
+int GlibcAdapter::conditionInit(void* foreign, const void* foreignAttributes) {
+    return findCondition(foreign, true, foreignAttributes) ? 0 : ENOMEM;
+}
+
+int GlibcAdapter::conditionDestroy(void* foreign) {
+    std::lock_guard lock(lock_);
+    auto item = conditions_.find(foreign);
+
+    if (item == conditions_.end()) {
+        return 0;
+    }
+
+    int result = pthread_cond_destroy(&item->second.host);
+    if (result == 0) {
+        conditions_.erase(item);
+    }
+
+    return result;
+}
+
+int GlibcAdapter::conditionSignal(void* foreign) {
+    auto* condition = findCondition(foreign, true, nullptr);
+
+    return condition ? pthread_cond_signal(&condition->host) : ENOMEM;
+}
+
+int GlibcAdapter::conditionBroadcast(void* foreign) {
+    auto* condition = findCondition(foreign, true, nullptr);
+
+    return condition ? pthread_cond_broadcast(&condition->host) : ENOMEM;
+}
+
+int GlibcAdapter::conditionWait(void* foreignCondition, void* foreignMutex) {
+    auto* condition = findCondition(foreignCondition, true, nullptr);
+    auto* mutex = findMutex(foreignMutex, true, -1);
+
+    return condition && mutex ? pthread_cond_wait(&condition->host, &mutex->host) : ENOMEM;
+}
+
+int GlibcAdapter::conditionTimedWait(void* foreignCondition, void* foreignMutex, const struct timespec* deadline) {
+    auto* condition = findCondition(foreignCondition, true, nullptr);
+    auto* mutex = findMutex(foreignMutex, true, -1);
+
+    return condition && mutex ? pthread_cond_timedwait(&condition->host, &mutex->host, deadline) : ENOMEM;
+}
+
+ForeignRwlock* GlibcAdapter::findRwlock(void* foreign, bool create) {
+    std::lock_guard lock(lock_);
+    auto item = rwlocks_.find(foreign);
+
+    if (item != rwlocks_.end()) {
+        return &item->second;
+    }
+    if (!create) {
+        return nullptr;
+    }
+
+    auto [inserted, isNew] = rwlocks_.try_emplace(foreign);
+    assert(isNew);
+    if (pthread_rwlock_init(&inserted->second.host, nullptr) != 0) {
+        rwlocks_.erase(inserted);
+        return nullptr;
+    }
+
+    return &inserted->second;
+}
+
+int GlibcAdapter::rwlockInit(void* foreign) {
+    return findRwlock(foreign, true) ? 0 : ENOMEM;
+}
+
+int GlibcAdapter::rwlockDestroy(void* foreign) {
+    std::lock_guard lock(lock_);
+    auto item = rwlocks_.find(foreign);
+
+    if (item == rwlocks_.end()) {
+        return 0;
+    }
+
+    int result = pthread_rwlock_destroy(&item->second.host);
+    if (result == 0) {
+        rwlocks_.erase(item);
+    }
+
+    return result;
+}
+
+int GlibcAdapter::rwlockReadLock(void* foreign) {
+    auto* rwlock = findRwlock(foreign, true);
+
+    return rwlock ? pthread_rwlock_rdlock(&rwlock->host) : ENOMEM;
+}
+
+int GlibcAdapter::rwlockWriteLock(void* foreign) {
+    auto* rwlock = findRwlock(foreign, true);
+
+    return rwlock ? pthread_rwlock_wrlock(&rwlock->host) : ENOMEM;
+}
+
+int GlibcAdapter::rwlockUnlock(void* foreign) {
+    auto* rwlock = findRwlock(foreign, false);
+
+    return rwlock ? pthread_rwlock_unlock(&rwlock->host) : EINVAL;
+}
+
+int GlibcAdapter::barrierInit(void* foreign, unsigned count) {
+    std::lock_guard lock(lock_);
+    auto [item, inserted] = barriers_.try_emplace(foreign);
+
+    if (!inserted) {
+        return EBUSY;
+    }
+
+    int result = pthread_barrier_init(&item->second.host, nullptr, count);
+    if (result != 0) {
+        barriers_.erase(item);
+    }
+
+    return result;
+}
+
+int GlibcAdapter::barrierDestroy(void* foreign) {
+    std::lock_guard lock(lock_);
+    auto item = barriers_.find(foreign);
+
+    if (item == barriers_.end()) {
+        return 0;
+    }
+
+    int result = pthread_barrier_destroy(&item->second.host);
+    if (result == 0) {
+        barriers_.erase(item);
+    }
+
+    return result;
+}
+
+int GlibcAdapter::barrierWait(void* foreign) {
+    ForeignBarrier* barrier;
+    {
+        std::lock_guard lock(lock_);
+        auto item = barriers_.find(foreign);
+        if (item == barriers_.end()) {
+            return EINVAL;
+        }
+        barrier = &item->second;
+    }
+
+    return pthread_barrier_wait(&barrier->host);
+}
+
+ForeignThreadAttributes* GlibcAdapter::findThreadAttributes(void* foreign) {
+    auto item = threadAttributes_.find(foreign);
+
+    return item == threadAttributes_.end() ? nullptr : &item->second;
+}
+
+int GlibcAdapter::threadAttributesInit(void* foreign) {
+    std::lock_guard lock(lock_);
+    auto [item, inserted] = threadAttributes_.try_emplace(foreign);
+
+    if (!inserted) {
+        return EBUSY;
+    }
+
+    int result = pthread_attr_init(&item->second.host);
+    if (result != 0) {
+        threadAttributes_.erase(item);
+    }
+
+    return result;
+}
+
+int GlibcAdapter::threadAttributesDestroy(void* foreign) {
+    std::lock_guard lock(lock_);
+    auto item = threadAttributes_.find(foreign);
+
+    if (item == threadAttributes_.end()) {
+        return EINVAL;
+    }
+
+    int result = pthread_attr_destroy(&item->second.host);
+    if (result == 0) {
+        threadAttributes_.erase(item);
+    }
+
+    return result;
+}
+
+int GlibcAdapter::threadAttributesSetStackSize(void* foreign, size_t size) {
+    std::lock_guard lock(lock_);
+    auto* attributes = findThreadAttributes(foreign);
+
+    return attributes ? pthread_attr_setstacksize(&attributes->host, size) : EINVAL;
+}
+
+int GlibcAdapter::threadCreate(uintptr_t* foreignThread, const void* foreignAttributes, void* (*start)(void*), void* argument) {
+    if (sh_trace_enabled()) {
+        fprintf(stderr, "glibc bridge: pthread_create(start=%p, argument=%p)\n", (void*)(uintptr_t)start, argument);
+    }
+
+    pthread_attr_t* hostAttributes = nullptr;
+    if (foreignAttributes) {
+        std::lock_guard lock(lock_);
+        auto* attributes = findThreadAttributes(const_cast<void*>(foreignAttributes));
+        if (!attributes) {
+            return EINVAL;
+        }
+        hostAttributes = &attributes->host;
+    }
+
+    pthread_t thread;
+    int result = pthread_create(&thread, hostAttributes, start, argument);
+    if (result == 0) {
+        *foreignThread = (uintptr_t)thread;
+    }
+
+    return result;
+}
+
+void GlibcAdapter::runThreadDestructors(void* opaqueList) {
+    auto* item = static_cast<ThreadDestructor*>(opaqueList);
+
+    while (item) {
+        auto* next = item->next;
+        item->function(item->argument);
+        delete item;
+        item = next;
+    }
+}
+
+int GlibcAdapter::threadAtExit(void (*function)(void*), void* argument) {
+    auto* item = new ThreadDestructor{function, argument, static_cast<ThreadDestructor*>(pthread_getspecific(destructorKey_))};
+
+    if (pthread_setspecific(destructorKey_, item) != 0) {
+        delete item;
+        return -1;
+    }
+
+    return 0;
+}
+
+bool GlibcAdapter::hasSymbolVersion(std::string_view name, std::string_view version) const {
+    return providers_.byVersion.contains({name, version}) || hasGlibcStub(name, version);
+}
+
+void* GlibcAdapter::findOverride(std::string_view name, std::string_view version) const {
+    if (!overrideNames_.contains(name)) {
+        return nullptr;
+    }
+    if (!version.empty() && !hasSymbolVersion(name, version)) {
+        return nullptr;
+    }
+
+    auto provider = providers_.byName.find(name);
+
+    return provider == providers_.byName.end() ? nullptr : provider->second;
+}
+
+void* GlibcAdapter::findFallback(std::string_view name, std::string_view version) const {
+    if (version.empty()) {
+        auto provider = providers_.byName.find(name);
+
+        return provider == providers_.byName.end() ? nullptr : provider->second;
+    }
+
+    auto provider = providers_.byVersion.find({name, version});
+    if (provider != providers_.byVersion.end()) {
+        return provider->second;
+    }
+
+    return resolveGlibcStub(name, version);
+}
+
+void* GlibcAdapter::resolveSymbol(std::string_view name, std::string_view version, bool weak) {
     if (name == "stderr" && version == "GLIBC_2.2.5") {
         return (void*)(uintptr_t)&stderr;
     }
     if (name == "__libc_single_threaded" && version == "GLIBC_2.32") {
-        return &sh_libc_single_threaded;
+        return libcSingleThreaded();
     }
     if (name == "_ITM_deregisterTMCloneTable" || name == "_ITM_registerTMCloneTable" || name == "__gmon_start__") {
-        return NULL;
+        return nullptr;
     }
-    if (auto* address = findGlibcOverride(name, version); address) {
+    if (auto* address = findOverride(name, version); address) {
         return address;
     }
+
     std::string symbolName(name);
-    void* libc_handle = stub_dlopen("c", RTLD_LOCAL);
-    void* host_address = libc_handle ? stub_dlsym(libc_handle, symbolName.c_str()) : NULL;
-    if (host_address) {
-        return host_address;
+    auto* libcHandle = stub_dlopen("c", RTLD_LOCAL);
+    auto* hostAddress = libcHandle ? stub_dlsym(libcHandle, symbolName.c_str()) : nullptr;
+
+    if (hostAddress) {
+        return hostAddress;
     }
     stub_dlerror();
-    if (auto* address = findGlibcFallback(name, version); address) {
+    if (auto* address = findFallback(name, version); address) {
         return address;
     }
     if (!weak) {
         fprintf(stderr, "glibc bridge: no ABI thunk for %.*s%.*s%.*s\n", static_cast<int>(name.size()), name.data(), version.empty() ? 0 : 1, "@", static_cast<int>(version.size()), version.data());
     }
-    return NULL;
+
+    return nullptr;
+}
+
+GlibcDlError& GlibcAdapter::dlError() {
+    static thread_local GlibcDlError error{};
+
+    return error;
+}
+
+void GlibcAdapter::clearDlError() {
+    dlError().present = false;
+}
+
+void GlibcAdapter::setDlError(std::string_view error) {
+    auto& state = dlError();
+    auto size = error.size();
+
+    if (size >= sizeof(state.text)) {
+        size = sizeof(state.text) - 1;
+    }
+    memcpy(state.text, error.data(), size);
+    state.text[size] = 0;
+    state.present = true;
+}
+
+char* GlibcAdapter::takeDlError() {
+    auto& state = dlError();
+
+    if (!state.present) {
+        return nullptr;
+    }
+
+    state.present = false;
+
+    return state.text;
+}
+
+void* resolveGlibcSymbol(std::string_view name, std::string_view version, bool weak) {
+    return GlibcAdapter::instance().resolveSymbol(name, version, weak);
 }
