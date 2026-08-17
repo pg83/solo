@@ -1,6 +1,7 @@
 # SoLo — a `.so` loader for static Linux binaries
 
 [![CI](https://github.com/pg83/solo/actions/workflows/ci.yml/badge.svg)](https://github.com/pg83/solo/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/pg83/solo/graph/badge.svg)](https://app.codecov.io/gh/pg83/solo)
 
 **Ship one musl-linked executable. At runtime, load the user's existing
 glibc-linked GPU driver. No container, no AppImage, and no second libc in the
