@@ -96,3 +96,16 @@ The order is what it is because 0→1 give a fast rise in the coverage number
 and a regression corpus, 2 is the three real walls (IE TLS, FILE, link_map)
 that everything "broad" crashes against, and 3 is quality of life once the
 corpus is already large.
+
+## Status
+
+- Done: 1 (corpus runner, per-package nodes), 2 (coverage report + lcov to
+  the coverage service), 3 (`./build abi_diff`, snapshot in
+  dev/abi-diff.txt), 5 (the diff-driven fixes: regex, nftw, sched_param), 8
+  (link_map facade + dlinfo), 9 (lazy binding), 11 (`DL_DEBUG=libs,bindings`),
+  12 (initializers run unlocked), 13 (the per-shim conformance battery in
+  tst/glibc_shim_test.c).
+- 4 done demand-driven: the corpus-demanded adapters are hand-written; a rule
+  generator waits until the corpus demands more than a table's worth.
+- Deliberately skipped for now: 6 (initial-exec TLS), 7 (the FILE facade —
+  the corpus demands no `_IO_2_1_*` object so far), 10 (`dlclose`).
