@@ -517,6 +517,9 @@ png = library(
     deps=[*runtime_generated, pnglibconf],
     includes=vendored_includes,
     cflags=[*c_runtime_flags, "-w"],
+    # The NEON filter paths want the compiler's arm_neon.h, which -nostdinc
+    # hides; the demo writes one PNG, so plain C paths are plenty.
+    cppflags=["-DPNG_ARM_NEON_OPT=0"] if machine == "aarch64" else [],
     output="$(B)/bin/vulkan/lib/libpng.a",
 )
 
