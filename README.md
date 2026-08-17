@@ -215,6 +215,10 @@ Today it is:
 - Linux x86-64 only;
 - focused on real Mesa/Vulkan ICD dependency closures;
 - a load-once runtime (`dlclose` succeeds but does not unload an image);
+- limited to the general-dynamic, local-dynamic, and TLSDESC TLS models: a DSO
+  built with initial-exec TLS expects its variables at a fixed offset in the
+  static TLS block that musl laid out at startup, so loading it fails with an
+  unsupported-relocation error naming the image;
 - explicit about missing ABI coverage: an unimplemented glibc call aborts and
   names itself.
 
