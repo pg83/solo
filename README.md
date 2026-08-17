@@ -27,23 +27,24 @@ compute shader, and writes the result to a PNG.
 
 ## See it work
 
-On x86-64 Linux, with Python 3 and a C/C++ compiler in `PATH`:
+Grab the prebuilt binary — no clone, no toolchain, any Linux with a Vulkan
+driver installed (`mesa-vulkan-drivers` is enough):
 
 ```sh
-git clone https://github.com/pg83/solo.git
-cd solo
-./build vulkan
-./vulkan hello.png
+curl -LO https://github.com/pg83/solo/releases/latest/download/vulkan-x86_64
+chmod +x vulkan-x86_64
+./vulkan-x86_64 hello.png
 ```
 
-The last command discovers the distro-installed Vulkan ICD in the usual way
-and produces a 512×512 RGBA image. This is how we build the
+`vulkan-aarch64` is the same demo for arm64 machines. The command discovers
+the distro-installed Vulkan ICD in the usual way and produces a 512×512 RGBA
+image. This is how we build the
 [Shitty release binaries](https://github.com/pg83/shitty/releases)—a blazingly
 fast terminal emulator, BTW! To force a particular driver:
 
 ```sh
-./vulkan --driver /usr/share/vulkan/icd.d/radeon_icd.x86_64.json radeon.png
-./vulkan --driver /usr/share/vulkan/icd.d/lvp_icd.json lavapipe.png
+./vulkan-x86_64 --driver /usr/share/vulkan/icd.d/radeon_icd.x86_64.json radeon.png
+./vulkan-x86_64 --driver /usr/share/vulkan/icd.d/lvp_icd.json lavapipe.png
 ```
 
 ICD manifest names vary slightly between distributions. Passing no `--driver`
@@ -52,8 +53,18 @@ lets the embedded Khronos loader perform its normal discovery.
 You can verify that the executable itself is not dynamically linked:
 
 ```sh
-readelf -lW ./vulkan | grep INTERP       # no output
-readelf -dW ./vulkan                     # "There is no dynamic section"
+readelf -lW ./vulkan-x86_64 | grep INTERP    # no output
+readelf -dW ./vulkan-x86_64                  # "There is no dynamic section"
+```
+
+Or build the same demo from source, with Python 3 and a C/C++ compiler in
+`PATH`:
+
+```sh
+git clone https://github.com/pg83/solo.git
+cd solo
+./build vulkan
+./vulkan hello.png
 ```
 
 This is not a toy call to `vkCreateInstance`. The demo:
