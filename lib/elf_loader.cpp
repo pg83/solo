@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -250,6 +251,7 @@ namespace {
         Elf64_Sym* symbols = nullptr;
         size_t symbolCount = 0;
         uint32_t* gnuHash = nullptr;
+        uint32_t* sysvHash = nullptr;
         Elf64_Half* symbolVersions = nullptr;
         std::vector<std::string_view> versionNames;
         std::vector<Dependency> dependencies;
@@ -301,6 +303,7 @@ namespace {
         std::string substituteOrigin(std::string_view directories) const;
         std::string_view symbolVersion(size_t symbolIndex) const noexcept;
         Definition findSymbol(const std::string_view& name, const std::string_view& version) noexcept;
+        Definition matchSymbol(size_t index, const std::string_view& name, const std::string_view& version) noexcept;
         void* tlsAddress(size_t offset) const;
         void applyRelativeRelocations();
         void protect();
@@ -362,6 +365,7 @@ namespace {
         static std::optional<std::string> realPath(const std::string& path);
         static std::optional<std::string> inDirectory(const std::string_view& directory, const std::string_view& name);
         static std::optional<std::string> inSearchPath(std::string_view directories, const std::string_view& name, bool emptyIsCurrentDirectory);
+        static std::optional<std::string> inCache(const std::string_view& name);
 
         std::optional<std::string> resolvePath(const std::string_view& path) const;
         void rememberLibraryDirectory(const std::string& path);
@@ -973,6 +977,80 @@ std::optional<std::string> Loader::inSearchPath(std::string_view directories, co
     }
 }
 
+// ldconfig's /etc/ld.so.cache, in the standalone new format: a header, an
+// entry table, and a string table the entries' offsets index from the start
+// of the file. This is how ld.so.conf.d directories reach us without parsing
+// the configuration ourselves.
+std::optional<std::string> Loader::inCache(const std::string_view& name) {
+    struct Header {
+        char magic[17];
+        char version[3];
+        uint32_t count;
+        uint32_t stringsLength;
+        uint8_t flags;
+        uint8_t padding[3];
+        uint32_t extensionOffset;
+        uint32_t unused[3];
+    };
+    struct Entry {
+        int32_t flags;
+        uint32_t key;
+        uint32_t value;
+        uint32_t osVersion;
+        uint64_t hwcap;
+    };
+    // FLAG_ELF_LIBC6 plus the architecture bits ldconfig stamps on entries.
+#if defined(__x86_64__)
+    constexpr int32_t architectureFlags = 0x0303;
+#elif defined(__aarch64__)
+    constexpr int32_t architectureFlags = 0x0a03;
+#endif
+
+    auto descriptor = open("/etc/ld.so.cache", O_RDONLY | O_CLOEXEC);
+
+    if (descriptor < 0) {
+        return std::nullopt;
+    }
+
+    struct stat status;
+
+    if (fstat(descriptor, &status) || static_cast<size_t>(status.st_size) < sizeof(Header)) {
+        close(descriptor);
+        return std::nullopt;
+    }
+
+    auto size = static_cast<size_t>(status.st_size);
+    auto* data = static_cast<const char*>(mmap(nullptr, size, PROT_READ, MAP_PRIVATE, descriptor, 0));
+
+    close(descriptor);
+    if (data == MAP_FAILED) {
+        return std::nullopt;
+    }
+
+    std::optional<std::string> resolved;
+    const auto& header = *reinterpret_cast<const Header*>(data);
+
+    if (memcmp(header.magic, "glibc-ld.so.cache", sizeof(header.magic)) == 0 && memcmp(header.version, "1.1", sizeof(header.version)) == 0 && sizeof(Header) + header.count * sizeof(Entry) <= size) {
+        const auto* entries = reinterpret_cast<const Entry*>(data + sizeof(Header));
+
+        for (uint32_t index = 0; index < header.count && !resolved; ++index) {
+            const auto& entry = entries[index];
+
+            // hwcap bits mark glibc-hwcaps subdirectory variants; the
+            // baseline library is the right pick.
+            if (entry.flags != architectureFlags || entry.hwcap || entry.key >= size || entry.value >= size) {
+                continue;
+            }
+            if (std::string_view(data + entry.key) == name) {
+                resolved = std::string(data + entry.value);
+            }
+        }
+    }
+    munmap(const_cast<char*>(data), size);
+
+    return resolved;
+}
+
 std::optional<std::string> Loader::resolvePath(const std::string_view& path) const {
     if (path.find('/') != std::string_view::npos) {
         return realPath(std::string(path));
@@ -1003,6 +1081,9 @@ std::optional<std::string> Loader::resolvePath(const std::string_view& path) con
         if (auto resolved = inDirectory(libraryDirectory_, path); resolved) {
             return resolved;
         }
+    }
+    if (auto resolved = inCache(path); resolved) {
+        return resolved;
     }
 
     static constexpr std::array systemDirectories = {
@@ -1248,6 +1329,9 @@ void LinkMap::parseDynamic() {
             case DT_GNU_HASH:
                 gnuHash = reinterpret_cast<uint32_t*>(base + entry->d_un.d_ptr);
                 break;
+            case DT_HASH:
+                sysvHash = reinterpret_cast<uint32_t*>(base + entry->d_un.d_ptr);
+                break;
             case DT_VERSYM:
                 symbolVersions = reinterpret_cast<Elf64_Half*>(base + entry->d_un.d_ptr);
                 break;
@@ -1335,8 +1419,8 @@ void LinkMap::parseDynamic() {
         }
     }
 
-    if (!strings || !symbols || !gnuHash) {
-        throwError("%s: missing dynamic string, symbol, or GNU hash table", path.c_str());
+    if (!strings || !symbols || (!gnuHash && !sysvHash)) {
+        throwError("%s: missing dynamic string, symbol, or hash table", path.c_str());
     }
     if (relocationSize && relocationEntrySize != sizeof(Elf64_Rela)) {
         throwError("%s: unsupported RELA entry size %zu", path.c_str(), relocationEntrySize);
@@ -1393,6 +1477,11 @@ std::string LinkMap::substituteOrigin(std::string_view directories) const {
 }
 
 size_t LinkMap::countSymbols() const noexcept {
+    if (!gnuHash) {
+        // The SysV nchain is the dynamic symbol table's size.
+        return sysvHash[1];
+    }
+
     auto bucketCount = gnuHash[0];
     auto symbolOffset = gnuHash[1];
     auto bloomSize = gnuHash[2];
@@ -1430,6 +1519,21 @@ std::string_view LinkMap::symbolVersion(size_t symbolIndex) const noexcept {
     return versionNames[versionIndex];
 }
 
+static uint32_t sysvSymbolHash(const std::string_view& name) noexcept {
+    uint32_t hash = 0;
+
+    for (unsigned char character : name) {
+        hash = (hash << 4) + character;
+
+        auto high = hash & 0xf0000000;
+
+        hash ^= high >> 24;
+        hash &= ~high;
+    }
+
+    return hash;
+}
+
 static uint32_t gnuSymbolHash(const std::string_view& name) noexcept {
     uint32_t hash = 5381;
 
@@ -1440,8 +1544,38 @@ static uint32_t gnuSymbolHash(const std::string_view& name) noexcept {
     return hash;
 }
 
+Definition LinkMap::matchSymbol(size_t index, const std::string_view& name, const std::string_view& version) noexcept {
+    auto* symbol = &symbols[index];
+    auto foundVersion = symbolVersion(index);
+    auto hidden = symbolVersions && (symbolVersions[index] & 0x8000);
+    auto versionMatches = version.empty() ? !hidden : foundVersion == version;
+    auto visibility = ELF64_ST_VISIBILITY(symbol->st_other);
+
+    if (symbol->st_name < stringsSize && std::string_view(strings + symbol->st_name) == name && symbol->st_shndx != SHN_UNDEF && versionMatches && visibility != STV_HIDDEN && visibility != STV_INTERNAL) {
+        return {base + symbol->st_value, this, symbol};
+    }
+
+    return {};
+}
+
 Definition LinkMap::findSymbol(const std::string_view& name, const std::string_view& version) noexcept {
     if (!gnuHash) {
+        // The SysV fallback for images linked with --hash-style=sysv.
+        auto bucketCount = sysvHash[0];
+
+        if (!bucketCount) {
+            return {};
+        }
+
+        auto* buckets = sysvHash + 2;
+        auto* chains = buckets + bucketCount;
+
+        for (auto index = buckets[sysvSymbolHash(name) % bucketCount]; index; index = chains[index]) {
+            if (auto definition = matchSymbol(index, name, version); definition) {
+                return definition;
+            }
+        }
+
         return {};
     }
 
@@ -1476,14 +1610,8 @@ Definition LinkMap::findSymbol(const std::string_view& name, const std::string_v
         auto chain = chains[index - symbolOffset];
 
         if ((chain | 1) == (hash | 1)) {
-            auto* symbol = &symbols[index];
-            auto foundVersion = symbolVersion(index);
-            auto hidden = symbolVersions && (symbolVersions[index] & 0x8000);
-            auto versionMatches = version.empty() ? !hidden : foundVersion == version;
-            auto visibility = ELF64_ST_VISIBILITY(symbol->st_other);
-
-            if (symbol->st_name < stringsSize && std::string_view(strings + symbol->st_name) == name && symbol->st_shndx != SHN_UNDEF && versionMatches && visibility != STV_HIDDEN && visibility != STV_INTERNAL) {
-                return {base + symbol->st_value, this, symbol};
+            if (auto definition = matchSymbol(index, name, version); definition) {
+                return definition;
             }
         }
         if (chain & 1) {
@@ -1523,30 +1651,47 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
     // then the global scope in load order, then the image's own dependency
     // closure — with RTLD_DEEPBIND swapping those two, so interposers in the
     // global scope cannot reach inside the image's closure.
-    if (image.symbolic) {
-        if (auto definition = image.findSymbol(name, version); definition) {
-            debugBinding(image, name, image.path.c_str());
-            return definition;
-        }
-    }
-
-    auto globally = [&]() -> Definition {
-        for (auto* global : globalImages_) {
-            if (auto definition = global->findSymbol(name, version); definition) {
+    auto resolve = [&](const std::string_view& wanted) -> Definition {
+        if (image.symbolic) {
+            if (auto definition = image.findSymbol(name, wanted); definition) {
                 return definition;
             }
         }
 
-        return {};
-    };
-    auto locally = [&]() {
-        return searchScope(image, name, version);
+        auto globally = [&]() -> Definition {
+            for (auto* global : globalImages_) {
+                if (auto definition = global->findSymbol(name, wanted); definition) {
+                    return definition;
+                }
+            }
+
+            return {};
+        };
+        auto locally = [&]() {
+            return searchScope(image, name, wanted);
+        };
+
+        auto definition = image.deepBind ? locally() : globally();
+
+        if (!definition) {
+            definition = image.deepBind ? globally() : locally();
+        }
+
+        return definition;
     };
 
-    auto definition = image.deepBind ? locally() : globally();
+    auto definition = resolve(version);
 
-    if (!definition) {
-        definition = image.deepBind ? globally() : locally();
+    if (!definition && !version.empty()) {
+        // ld.so's compatibility rule: a provider built without any version
+        // information satisfies a versioned reference. Only a genuinely
+        // unversioned definition qualifies — a wrong-version one stays a
+        // loud failure.
+        auto compat = resolve({});
+
+        if (compat && compat.image && compat.symbol && compat.image->symbolVersion(compat.symbol - compat.image->symbols).empty()) {
+            definition = compat;
+        }
     }
     if (definition) {
         debugBinding(image, name, definition.image ? definition.image->path.c_str() : "static provider");

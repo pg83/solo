@@ -212,6 +212,68 @@ def main():
                 ],
                 check=True,
             )
+        # A SysV-hash-only image: the loader's --hash-style=sysv fallback.
+        subprocess.run(
+            [
+                *shlex.split(os.environ["DLFCN_CC"]),
+                "-fPIC",
+                "-fno-stack-protector",
+                "-shared",
+                "-nostdlib",
+                "-Wl,--hash-style=sysv",
+                "-Wl,--no-as-needed",
+                str(root / sysroot_lib / "libc.so.6"),
+                "-Wl,-soname,libdlfcn-test-sysv.so",
+                os.environ["DLFCN_GLIBC_OVERRIDABLE_TEST_SOURCE"],
+                "-o",
+                str(library_path / "libdlfcn-test-sysv.so"),
+            ],
+            check=True,
+        )
+        # The versioned provider exists only for linking; the search path
+        # carries the unversioned build, and the consumer's @V1 reference has
+        # to accept it.
+        version_script = root / "dlfcn-test.map"
+        version_script.write_text("V1 {\n    global:\n        dlfcn_versioned_fn;\n    local: *;\n};\n")
+        versioned_for_linking = root / "libdlfcn-test-versioned.so"
+        for destination, extras in (
+            (versioned_for_linking, [f"-Wl,--version-script={version_script}"]),
+            (library_path / "libdlfcn-test-versioned.so", []),
+        ):
+            subprocess.run(
+                [
+                    *shlex.split(os.environ["DLFCN_CC"]),
+                    "-fPIC",
+                    "-fno-stack-protector",
+                    "-shared",
+                    "-nostdlib",
+                    "-Wl,--no-as-needed",
+                    str(root / sysroot_lib / "libc.so.6"),
+                    "-Wl,-soname,libdlfcn-test-versioned.so",
+                    os.environ["DLFCN_GLIBC_VERSIONED_TEST_SOURCE"],
+                    *extras,
+                    "-o",
+                    str(destination),
+                ],
+                check=True,
+            )
+        subprocess.run(
+            [
+                *shlex.split(os.environ["DLFCN_CC"]),
+                "-fPIC",
+                "-fno-stack-protector",
+                "-shared",
+                "-nostdlib",
+                "-Wl,--no-as-needed",
+                str(root / sysroot_lib / "libc.so.6"),
+                "-Wl,-soname,libdlfcn-test-verconsumer.so",
+                os.environ["DLFCN_GLIBC_VERSION_CONSUMER_TEST_SOURCE"],
+                str(versioned_for_linking),
+                "-o",
+                str(library_path / "libdlfcn-test-verconsumer.so"),
+            ],
+            check=True,
+        )
         # Two builds of the same source: eager binding of the undefined symbol
         # must fail on one image without poisoning the lazily loadable other.
         for lazy_name in ("libdlfcn-test-lazy.so", "libdlfcn-test-lazynow.so"):
@@ -255,6 +317,23 @@ def main():
         environment["LD_LIBRARY_PATH"] = os.pathsep.join(
             (str(root / "missing"), str(library_path))
         )
+        # On glibc hosts, pick a small cached library so the smoke test can
+        # exercise the /etc/ld.so.cache resolution end to end.
+        environment["DLFCN_CACHE_PROBE"] = ""
+        ldconfig = shutil.which("ldconfig") or shutil.which("ldconfig", path="/sbin:/usr/sbin")
+        if ldconfig and os.path.exists("/etc/ld.so.cache"):
+            listing = subprocess.run(
+                [ldconfig, "-p"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if listing.returncode == 0:
+                for candidate in ("libbz2.so.1", "liblzma.so.5", "libexpat.so.1"):
+                    if f"\t{candidate} " in listing.stdout:
+                        environment["DLFCN_CACHE_PROBE"] = candidate
+                        break
         result = subprocess.run(
             [executable],
             check=False,

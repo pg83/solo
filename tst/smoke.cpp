@@ -6,6 +6,7 @@
 #include <semaphore.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <exception>
 
@@ -473,6 +474,41 @@ int main() {
         return 1;
     }
 
+    // A SysV-hash-only image: dlsym goes through the fallback lookup, and
+    // its internal call is interposed like any other image's.
+    auto* sysv = stub_dlopen("libdlfcn-test-sysv.so", RTLD_NOW | RTLD_LOCAL);
+    if (!sysv) {
+        fprintf(stderr, "SysV hash image load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto sysvViaSelf = reinterpret_cast<GlibcTest>(requiredSymbol(sysv, "dlfcn_overridable_via_self"));
+    if (!sysvViaSelf || sysvViaSelf() != 2) {
+        fprintf(stderr, "SysV hash lookup or interposition failed\n");
+        return 1;
+    }
+
+    // The consumer's dlfcn_versioned_fn@V1 reference resolves against the
+    // unversioned runtime provider, per ld.so's compatibility rule.
+    auto* versionConsumer = stub_dlopen("libdlfcn-test-verconsumer.so", RTLD_NOW | RTLD_LOCAL);
+    if (!versionConsumer) {
+        fprintf(stderr, "versioned consumer load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto callVersioned = reinterpret_cast<GlibcTest>(requiredSymbol(versionConsumer, "dlfcn_call_versioned"));
+    if (!callVersioned || callVersioned() != 7) {
+        fprintf(stderr, "unversioned provider did not satisfy the versioned reference\n");
+        return 1;
+    }
+
+    // On glibc hosts the harness picks a library only /etc/ld.so.cache can
+    // resolve.
+    if (const auto* cacheProbe = getenv("DLFCN_CACHE_PROBE"); cacheProbe && *cacheProbe) {
+        if (!stub_dlopen(cacheProbe, RTLD_NOW | RTLD_LOCAL)) {
+            fprintf(stderr, "ld.so.cache resolution of %s failed: %s\n", cacheProbe, stub_dlerror());
+            return 1;
+        }
+    }
+
     // The conformance battery: one check per implemented bridge adapter.
     auto* shim = stub_dlopen("libdlfcn-test-shim.so", RTLD_NOW | RTLD_LOCAL);
     if (!shim) {
@@ -588,6 +624,7 @@ int main() {
         "lazy PLT binding: ok\n"
         "initial-exec TLS: arena placement, both models, fresh and parked threads: ok\n"
         "scope order: global interposition, RTLD_DEEPBIND, -Bsymbolic: ok\n"
+        "SysV hash, unversioned provider compat, ld.so.cache: ok\n"
         "glibc shim conformance battery: ok\n"
         "ELF TLS: per-thread blocks and thread-exit destructors: ok\n"
         "glibc C++ throw, unwind, destructor, catch: ok\n"
