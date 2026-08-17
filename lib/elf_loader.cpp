@@ -162,6 +162,9 @@ namespace {
         uintptr_t initializer = 0;
         uintptr_t initializerArray = 0;
         size_t initializerCount = 0;
+        uintptr_t finalizer = 0;
+        uintptr_t finalizerArray = 0;
+        size_t finalizerCount = 0;
         uintptr_t relroStart = 0;
         size_t relroSize = 0;
 
@@ -213,6 +216,8 @@ namespace {
     extern "C" uintptr_t elfTlsDescEntry();
 
     struct Loader {
+        Loader();
+
         static Loader& instance();
 
         LinkMap* load(const std::string_view& requestedPath, int flags);
@@ -251,6 +256,8 @@ namespace {
         static void protect(LinkMap& image);
         static void applyRelro(LinkMap& image);
         static void runInitializers(LinkMap& image);
+        static void runFinalizers(LinkMap& image);
+        static void runAllFinalizers();
 
         std::recursive_mutex mutex_;
         std::vector<std::unique_ptr<LinkMap>> images_;
@@ -331,6 +338,12 @@ ScopedRequester::ScopedRequester(LinkMap*& slot, LinkMap& image)
 
 ScopedRequester::~ScopedRequester() {
     slot_ = previous_;
+}
+
+// Registered before any loaded DSO can register its own atexit handlers, so
+// like glibc's _dl_fini it runs after them.
+Loader::Loader() {
+    atexit(runAllFinalizers);
 }
 
 Loader& Loader::instance() {
@@ -917,6 +930,15 @@ void LinkMap::parseDynamic() {
             case DT_INIT_ARRAYSZ:
                 initializerCount = entry->d_un.d_val / sizeof(uintptr_t);
                 break;
+            case DT_FINI:
+                finalizer = base + entry->d_un.d_ptr;
+                break;
+            case DT_FINI_ARRAY:
+                finalizerArray = base + entry->d_un.d_ptr;
+                break;
+            case DT_FINI_ARRAYSZ:
+                finalizerCount = entry->d_un.d_val / sizeof(uintptr_t);
+                break;
             case DT_SONAME:
                 sonameOffset = entry->d_un.d_val;
                 break;
@@ -1352,6 +1374,38 @@ void Loader::runInitializers(LinkMap& image) {
         if (initializers[index] && initializers[index] != UINTPTR_MAX) {
             reinterpret_cast<void (*)()>(initializers[index])();
         }
+    }
+}
+
+void Loader::runFinalizers(LinkMap& image) {
+    auto* finalizers = reinterpret_cast<uintptr_t*>(image.finalizerArray);
+
+    for (size_t index = image.finalizerCount; index; --index) {
+        if (finalizers[index - 1] && finalizers[index - 1] != UINTPTR_MAX) {
+            reinterpret_cast<void (*)()>(finalizers[index - 1])();
+        }
+    }
+    if (image.finalizer) {
+        reinterpret_cast<void (*)()>(image.finalizer)();
+    }
+}
+
+void Loader::runAllFinalizers() {
+    std::vector<LinkMap*> images;
+    {
+        auto& loader = instance();
+        std::lock_guard lock(loader.mutex_);
+
+        images.reserve(loader.images_.size());
+        for (const auto& image : loader.images_) {
+            if (image->state == LinkMap::State::Ready) {
+                images.push_back(image.get());
+            }
+        }
+    }
+
+    for (auto image = images.rbegin(); image != images.rend(); ++image) {
+        runFinalizers(**image);
     }
 }
 
