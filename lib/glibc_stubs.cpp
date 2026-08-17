@@ -38,18 +38,7 @@ namespace {
         void* address;
         void* (*addressFunction)() noexcept;
     };
-}
 
-bool Key::operator==(const Key&) const noexcept = default;
-
-size_t KeyHash::operator()(const Key& key) const noexcept {
-    auto name = std::hash<std::string_view>()(key.name);
-    auto version = std::hash<std::string_view>()(key.version);
-
-    return splitMix64(name ^ version);
-}
-
-namespace {
     static const auto& providers() {
         using Providers = std::unordered_map<Key, Provider, KeyHash>;
 
@@ -57,6 +46,7 @@ namespace {
             auto* value = new Providers();
 
             value->reserve(sizeof(glibcStubTable) / sizeof(glibcStubTable[0]));
+
             for (const auto& stub : glibcStubTable) {
                 value->emplace(Key{stub.name, stub.version}, Provider{stub.address, stub.addressFunction});
             }
@@ -72,6 +62,15 @@ namespace {
             fprintf(stderr, "glibc bridge: resolved fallback %.*s@%.*s\n", static_cast<int>(name.size()), name.data(), static_cast<int>(version.size()), version.data());
         }
     }
+}
+
+bool Key::operator==(const Key&) const noexcept = default;
+
+size_t KeyHash::operator()(const Key& key) const noexcept {
+    auto name = std::hash<std::string_view>()(key.name);
+    auto version = std::hash<std::string_view>()(key.version);
+
+    return splitMix64(name ^ version);
 }
 
 bool hasGlibcStub(std::string_view name, std::string_view version) {
