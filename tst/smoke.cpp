@@ -60,9 +60,11 @@ int main() {
         fprintf(stderr, "static libc provider failed: %s\n", stub_dlerror());
         return 1;
     }
-    for (size_t index = 0; index < MUSL_SYMBOL_COUNT; ++index) {
-        if (!stub_dlsym(libc, MUSL_SYMBOLS[index].name)) {
-            fprintf(stderr, "static libc symbol missing: %s: %s\n", MUSL_SYMBOLS[index].name, stub_dlerror());
+    auto symbols = muslSymbols();
+
+    for (size_t index = 0; index < symbols.count; ++index) {
+        if (!stub_dlsym(libc, symbols.symbols[index].name)) {
+            fprintf(stderr, "static libc symbol missing: %s: %s\n", symbols.symbols[index].name, stub_dlerror());
             return 1;
         }
     }
@@ -278,7 +280,7 @@ int main() {
         "C++ exceptions across static/glibc boundaries in both directions: ok\n"
         "recursive DT_NEEDED: libpciaccess -> libz: ok\n"
         "vkEnumerateInstanceVersion: result=%d version=%u.%u.%u\n",
-        MUSL_SYMBOL_COUNT,
+        symbols.count,
         result,
         version >> 22,
         (version >> 12) & 0x3ff,

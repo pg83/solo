@@ -14,6 +14,7 @@ namespace {
         constexpr int muslRtldNodelete = 4096;
 
         int translated = flags & muslRtldLazy ? RTLD_LAZY : 0;
+
         translated |= flags & muslRtldNow ? RTLD_NOW : 0;
         translated |= flags & muslRtldGlobal ? RTLD_GLOBAL : RTLD_LOCAL;
         translated |= flags & muslRtldNodelete ? RTLD_NODELETE : 0;
@@ -42,9 +43,11 @@ namespace {
 }
 
 MuslProvider muslProvider() {
+    auto symbols = muslSymbols();
+
     return {
-        MUSL_SYMBOLS,
-        MUSL_SYMBOL_COUNT,
+        symbols.symbols,
+        symbols.count,
         muslOverrides,
         sizeof(muslOverrides) / sizeof(muslOverrides[0]),
     };

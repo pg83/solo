@@ -77,6 +77,7 @@ size_t KeyHash::operator()(const Key& key) const noexcept {
 namespace {
     static const auto& providers() {
         using Providers = std::unordered_map<Key, Provider, KeyHash>;
+
         static const auto* result = [] {
             auto* value = new Providers();
 

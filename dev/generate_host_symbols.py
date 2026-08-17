@@ -75,17 +75,24 @@ def main() -> None:
     lines.extend([
         "}",
         "",
-        "const MuslSymbol MUSL_SYMBOLS[] = {",
+        "namespace {",
+        "    static const MuslSymbol muslSymbolTable[] = {",
     ])
     for symbol in direct:
         escaped = symbol.replace("\\", "\\\\").replace('"', '\\"')
         lines.append(
-            f'    {{"{escaped}", &{escaped}}},'
+            f'        {{"{escaped}", &{escaped}}},'
         )
     lines.extend([
-        "};",
+        "    };",
+        "}",
         "",
-        "const size_t MUSL_SYMBOL_COUNT = sizeof(MUSL_SYMBOLS) / sizeof(MUSL_SYMBOLS[0]);",
+        "MuslSymbols muslSymbols() {",
+        "    return {",
+        "        muslSymbolTable,",
+        "        sizeof(muslSymbolTable) / sizeof(muslSymbolTable[0]),",
+        "    };",
+        "}",
         "",
     ])
 

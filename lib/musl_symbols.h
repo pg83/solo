@@ -7,5 +7,9 @@ struct MuslSymbol {
     void* address;
 };
 
-extern const MuslSymbol MUSL_SYMBOLS[];
-extern const size_t MUSL_SYMBOL_COUNT;
+struct MuslSymbols {
+    const MuslSymbol* symbols;
+    size_t count;
+};
+
+MuslSymbols muslSymbols();
