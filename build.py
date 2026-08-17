@@ -1082,6 +1082,45 @@ corpus_dependencies = {
     "util-linux-libs": ["sqlite", "systemd-libs", "libgcc"],
 }
 
+downloadPackage(
+    "linux-api-headers",
+    "https://archive.archlinux.org/packages/l/linux-api-headers/"
+    "linux-api-headers-7.2-1-x86_64.pkg.tar.zst",
+    "linux-api-headers-7.2-1-x86_64.pkg.tar.zst",
+    "d8d3483363e70b353ae31bbf8773df77780724eaeaa140faf4e4111bdb87588f",
+)
+
+# The glibc-vs-musl ABI table: reruns only when the pinned glibc, the vendored
+# musl, or the suspect list in the probe changes.
+abi_diff = command(
+    name="abi_diff",
+    inputs=[
+        "$(S)/dev/abi_diff.py",
+        "$(S)/dev/abi_probe.c",
+        downloadOutputs["glibc"],
+        downloadOutputs["linux-api-headers"],
+    ],
+    outputs=["$(B)/tst/abi-diff.txt"],
+    deps=[
+        musl_alltypes,
+        musl_syscall,
+        downloadTargets["glibc"],
+        downloadTargets["linux-api-headers"],
+    ],
+    cmd=[
+        "python3",
+        "$(S)/dev/abi_diff.py",
+        "$(B)/tst/abi-diff.txt",
+        cc,
+        "$(S)/dev/abi_probe.c",
+        downloadOutputs["glibc"],
+        downloadOutputs["linux-api-headers"],
+        f"{musl_root}/arch/x86_64:{musl_root}/arch/generic:$(B)/bin/vulkan/musl/include:{musl_root}/include",
+    ],
+    descr="TS",
+    color="green",
+)
+
 corpus_load = vendoredTest("corpus_load", "$(S)/tst/corpus_load.cpp")
 
 corpus_results = []
