@@ -59,4 +59,13 @@ locale-archive (we stay in C/UTF-8, like musl).
   and smoke sysroots from the same Debian snapshot's arm64 pool, and a native
   arm64 CI job. The ABI probe (`abi_diff`) still reads the Arch package
   layout and stays x86-64-only for now.
+- The loader-defect batch landed: file-backed copy-on-write segment mappings
+  (page-cache sharing, names in /proc/self/maps for debuggers), ld.so's
+  symbol scope order (global interposition, RTLD_DEEPBIND, DT_SYMBOLIC, and
+  interposable self-references), the SysV hash fallback, the
+  unversioned-provider compatibility rule confined to relocations, and
+  /etc/ld.so.cache resolution. Known and accepted residue: the lazy resolver
+  is not async-signal-safe, the static TLS arena is a fixed 16 KiB with no
+  rollback on a failed load, and PT_GNU_PROPERTY (BTI/CET) is not carried
+  into mappings.
 - Deliberately deferred: 10 (`dlclose`).
