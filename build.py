@@ -778,12 +778,14 @@ arch_packages = [
     ),
 ]
 
-downloads = []
-archives = []
+downloadTargets = {}
+downloadOutputs = {}
 
-for name, url, filename, sha256 in arch_packages:
-    output = f"$(B)/tst/packages/{filename}"
-    downloads.append(command(
+
+def downloadPackage(name, url, filename, sha256):
+    output = downloadOutputs[name] = f"$(B)/tst/packages/{filename}"
+
+    downloadTargets[name] = command(
         name=f"download_{name}",
         inputs=["$(S)/tst/download.py"],
         outputs=[output],
@@ -796,8 +798,13 @@ for name, url, filename, sha256 in arch_packages:
         ],
         descr="DL",
         color="cyan",
-    ))
-    archives.append(output)
+    )
+
+    return output
+
+
+archives = [downloadPackage(*package) for package in arch_packages]
+downloads = list(downloadTargets.values())
 
 arch_smoke = command(
     name="arch_smoke",
@@ -817,6 +824,110 @@ arch_smoke = command(
         "DLFCN_GLIBC_TEST_SOURCE": "$(S)/tst/glibc_test.c",
         "DLFCN_SMOKE": "$(B)/tst/smoke",
     },
+    descr="TS",
+    color="green",
+)
+
+# A corpus of real glibc-linked libraries with a dependency closure that stays
+# inside the corpus (plus zlib from the smoke set). Every .so is loaded
+# eagerly through SoLo, and the resulting glibc ABI coverage lands in
+# $(B)/tst/coverage.info for the coverage service.
+corpus_packages = [
+    (
+        "sqlite",
+        "https://archive.archlinux.org/packages/s/sqlite/"
+        "sqlite-3.53.4-1-x86_64.pkg.tar.zst",
+        "sqlite-3.53.4-1-x86_64.pkg.tar.zst",
+        "910e7e59acc3a51c7e3468bb45c7ca20d5e987eaf2c26e4e8ad9f0624bef76d2",
+    ),
+    (
+        "openssl",
+        "https://archive.archlinux.org/packages/o/openssl/"
+        "openssl-3.6.3-1-x86_64.pkg.tar.zst",
+        "openssl-3.6.3-1-x86_64.pkg.tar.zst",
+        "85fdbdd57b6773a9b94d4d54c39deecd808aac6bc48d6d42c36ce712283665b3",
+    ),
+    (
+        "expat",
+        "https://archive.archlinux.org/packages/e/expat/"
+        "expat-2.8.3-1-x86_64.pkg.tar.zst",
+        "expat-2.8.3-1-x86_64.pkg.tar.zst",
+        "04785503de1fb932eec7c8a7d50a815c4706df293bf7acf92953be02882c6cad",
+    ),
+    (
+        "libffi",
+        "https://archive.archlinux.org/packages/l/libffi/"
+        "libffi-3.8.0-1-x86_64.pkg.tar.zst",
+        "libffi-3.8.0-1-x86_64.pkg.tar.zst",
+        "5d21227f2a1d10db60d0cf5bb02b36a1801ae61dc7dae8c3bc1afa548afd8601",
+    ),
+    (
+        "pcre2",
+        "https://archive.archlinux.org/packages/p/pcre2/"
+        "pcre2-10.47-1-x86_64.pkg.tar.zst",
+        "pcre2-10.47-1-x86_64.pkg.tar.zst",
+        "54e0d8c998d2748f47fead1926b04357719bdd00fa1cea84901c3af501aab002",
+    ),
+    (
+        "zstd",
+        "https://archive.archlinux.org/packages/z/zstd/"
+        "zstd-1.5.7-3-x86_64.pkg.tar.zst",
+        "zstd-1.5.7-3-x86_64.pkg.tar.zst",
+        "d4cf0049137124c8a025eedfad267a3e8a02310c9efb9d1ae4a61aa1d02789fc",
+    ),
+    (
+        "xz",
+        "https://archive.archlinux.org/packages/x/xz/"
+        "xz-5.8.3-1-x86_64.pkg.tar.zst",
+        "xz-5.8.3-1-x86_64.pkg.tar.zst",
+        "03b9eefeb02c27c4f30fce4481cb5bd2922c0391f628665911c156970285d5d9",
+    ),
+    (
+        "bzip2",
+        "https://archive.archlinux.org/packages/b/bzip2/"
+        "bzip2-1.0.8-6-x86_64.pkg.tar.zst",
+        "bzip2-1.0.8-6-x86_64.pkg.tar.zst",
+        "8779003d659c441b952095c19907603a738c1366f25cc51be3fd139fa4e95748",
+    ),
+    (
+        "libpng",
+        "https://archive.archlinux.org/packages/l/libpng/"
+        "libpng-1.6.58-2-x86_64.pkg.tar.zst",
+        "libpng-1.6.58-2-x86_64.pkg.tar.zst",
+        "54d7a4647f7289e2c5dc44f87e325d3c84af82b6277fcc292f9a80cdf31e2a69",
+    ),
+    (
+        "brotli",
+        "https://archive.archlinux.org/packages/b/brotli/"
+        "brotli-1.2.0-1-x86_64.pkg.tar.zst",
+        "brotli-1.2.0-1-x86_64.pkg.tar.zst",
+        "4a0c95d5967476d0efdaf76d344b61e3eee02cd7920a315e457f3fd96311b7ec",
+    ),
+]
+
+corpus_archives = [downloadPackage(*package) for package in corpus_packages]
+corpus_archives.append(downloadOutputs["zlib"])
+
+corpus_load = vendoredTest("corpus_load", "$(S)/tst/corpus_load.cpp")
+
+corpus = command(
+    name="corpus",
+    inputs=[
+        "$(S)/tst/corpus.py",
+        "$(S)/lib/glibc_symbols.json",
+        *corpus_archives,
+    ],
+    outputs=["$(B)/tst/corpus-report.txt", "$(B)/tst/coverage.info"],
+    deps=[corpus_load, *[downloadTargets[package[0]] for package in corpus_packages], downloadTargets["zlib"]],
+    cmd=[
+        "python3",
+        "$(S)/tst/corpus.py",
+        "$(B)/tst/corpus-report.txt",
+        "$(B)/tst/coverage.info",
+        "$(B)/tst/corpus_load",
+        "$(S)/lib/glibc_symbols.json",
+        *corpus_archives,
+    ],
     descr="TS",
     color="green",
 )
