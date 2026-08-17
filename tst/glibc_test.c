@@ -8,6 +8,7 @@ extern void* dlvsym(void* handle, const char* name, const char* version);
 
 enum {
     GlibcRtldLazy = 1,
+    GlibcRtldGlobal = 0x100,
 };
 
 static void* openLibrary(const char* library) {
@@ -313,6 +314,22 @@ int glibc_test_close(void) {
     void* handle = openLibrary("libc.so.6");
 
     return handle ? dlclose(handle) : -1;
+}
+
+int glibc_test_global(void) {
+    if (!dlopen("libz.so.1", GlibcRtldLazy | GlibcRtldGlobal)) {
+        return 1;
+    }
+    /* the RTLD_GLOBAL image now serves the default lookup */
+    if (!dlsym((void*)0, "crc32")) {
+        return 2;
+    }
+
+    return 0;
+}
+
+void* glibc_test_next(const char* symbol) {
+    return dlsym((void*)-1, symbol);
 }
 
 void* glibc_test_dl_function(const char* symbol) {

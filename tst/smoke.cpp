@@ -122,8 +122,10 @@ int main() {
     auto glibcManyPthreadObjects = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_many_pthread_objects"));
     auto glibcError = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_error"));
     auto glibcClose = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_close"));
+    auto glibcGlobal = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_global"));
+    auto glibcNext = reinterpret_cast<GlibcDlFunction>(requiredSymbol(glibc, "glibc_test_next"));
 
-    if (!glibcLookup || !glibcDefaultLookup || !glibcVersionLookup || !glibcDlFunction || !glibcFactory || !glibcOwnSymbol || !glibcThread || !glibcThreadTls || !glibcManyPthreadObjects || !glibcError || !glibcClose) {
+    if (!glibcLookup || !glibcDefaultLookup || !glibcVersionLookup || !glibcDlFunction || !glibcFactory || !glibcOwnSymbol || !glibcThread || !glibcThreadTls || !glibcManyPthreadObjects || !glibcError || !glibcClose || !glibcGlobal || !glibcNext) {
         return 1;
     }
 
@@ -190,6 +192,16 @@ int main() {
     }
     if (glibcClose() != 0) {
         fprintf(stderr, "glibc dlclose contract failed\n");
+        return 1;
+    }
+    if (auto result = glibcGlobal(); result != 0) {
+        fprintf(stderr, "glibc RTLD_GLOBAL lookup failed: %d\n", result);
+        return 1;
+    }
+    // crc32 lives in libz, loaded after the test library; the test library's
+    // own marker must stay invisible to its RTLD_NEXT.
+    if (!glibcNext("crc32") || glibcNext("glibc_test_marker")) {
+        fprintf(stderr, "glibc RTLD_NEXT lookup failed\n");
         return 1;
     }
 
@@ -288,6 +300,7 @@ int main() {
     printf(
         "static libc provider: %zu symbols\n"
         "glibc dlopen/dlsym bridge: libc, libdl, pthread, factory, ELF, versions: ok\n"
+        "RTLD_GLOBAL and RTLD_NEXT: ok\n"
         "ELF TLS: per-thread blocks and thread-exit destructors: ok\n"
         "glibc C++ throw, unwind, destructor, catch: ok\n"
         "C++ exceptions across static/glibc boundaries in both directions: ok\n"

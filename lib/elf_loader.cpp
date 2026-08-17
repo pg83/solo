@@ -231,6 +231,9 @@ namespace {
         LinkMap* load(const std::string_view& requestedPath, int flags);
 
         void* lookup(LinkMap& image, std::string_view name);
+        void* lookupGlobal(std::string_view name);
+        void* lookupNext(const void* caller, std::string_view name, std::string_view version);
+        void makeGlobal(LinkMap& image);
 
         bool findAddress(const void* address, ElfAddress* res);
         int iterateProgramHeaders(ElfProgramHeaderCallback& callback);
@@ -265,6 +268,8 @@ namespace {
         size_t tlsModuleCount_ = 0;
         std::string libraryDirectory_;
         LinkMap* requester_ = nullptr;
+        // Images whose symbols every later relocation may use, in load order.
+        std::vector<LinkMap*> globalImages_;
     };
 
     struct LoadedElf final: public ElfImage {
@@ -362,6 +367,9 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
         if (image->state == LinkMap::State::Failed) {
             throwError("%s: a previous load failed", image->path.c_str());
         }
+        if (flags & RTLD_GLOBAL) {
+            makeGlobal(*image);
+        }
 
         return image;
     }
@@ -375,6 +383,9 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
     if (auto* image = findByPath(*resolved); image) {
         if (image->state == LinkMap::State::Failed) {
             throwError("%s: a previous load failed", image->path.c_str());
+        }
+        if (flags & RTLD_GLOBAL) {
+            makeGlobal(*image);
         }
 
         return image;
@@ -485,9 +496,66 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
 
     image.wrapper.reset(new LoadedElf(image));
     image.state = LinkMap::State::Ready;
+    if (flags & RTLD_GLOBAL) {
+        makeGlobal(image);
+    }
     image.runInitializers();
 
     return imagePointer;
+}
+
+// RTLD_GLOBAL publishes the image's whole local scope, so the global search
+// list grows by the dependency closure in breadth-first order, like ld.so.
+void Loader::makeGlobal(LinkMap& image) {
+    std::deque<LinkMap*> queue({&image});
+
+    while (!queue.empty()) {
+        auto* current = queue.front();
+
+        queue.pop_front();
+        if (std::find(globalImages_.begin(), globalImages_.end(), current) != globalImages_.end()) {
+            continue;
+        }
+        globalImages_.push_back(current);
+        for (const auto& dependency : current->dependencies) {
+            if (dependency.image) {
+                queue.push_back(dependency.image);
+            }
+        }
+    }
+}
+
+void* Loader::lookupGlobal(std::string_view name) {
+    std::lock_guard lock(mutex_);
+
+    for (auto* image : globalImages_) {
+        if (auto definition = image->findSymbol(name, {}); definition) {
+            return materialize(definition);
+        }
+    }
+
+    return nullptr;
+}
+
+void* Loader::lookupNext(const void* caller, std::string_view name, std::string_view version) {
+    std::lock_guard lock(mutex_);
+    auto needle = reinterpret_cast<uintptr_t>(caller);
+    bool after = false;
+
+    for (const auto& image : images_) {
+        if (!after) {
+            after = needle >= image->mapStart && needle < image->mapStart + image->mapSize;
+            continue;
+        }
+        if (image->state != LinkMap::State::Ready) {
+            continue;
+        }
+        if (auto definition = image->findSymbol(name, version); definition) {
+            return materialize(definition);
+        }
+    }
+
+    return nullptr;
 }
 
 void* Loader::lookup(LinkMap& image, std::string_view name) {
@@ -1135,6 +1203,11 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
     if (auto definition = searchScope(image, name, version); definition) {
         return definition;
     }
+    for (auto* global : globalImages_) {
+        if (auto definition = global->findSymbol(name, version); definition) {
+            return definition;
+        }
+    }
 
     auto* address = image.glibcAbi ? resolveGlibcSymbol(name, version, weak) : nullptr;
 
@@ -1432,6 +1505,14 @@ bool ElfImage::findAddress(const void* address, ElfAddress* res) {
 
 int ElfImage::iterateProgramHeaders(ElfProgramHeaderCallback& callback) {
     return Loader::instance().iterateProgramHeaders(callback);
+}
+
+void* ElfImage::lookupGlobal(std::string_view symbol) {
+    return Loader::instance().lookupGlobal(symbol);
+}
+
+void* ElfImage::lookupNext(const void* caller, std::string_view symbol, std::string_view version) {
+    return Loader::instance().lookupNext(caller, symbol, version);
 }
 
 extern "C" void* elfTlsAddress(const uintptr_t index[2]) {

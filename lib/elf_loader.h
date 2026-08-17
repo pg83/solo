@@ -34,6 +34,11 @@ struct ElfImage: public IfaceHandle {
     static ElfImage* loadElf(std::string_view path, int flags);
     static bool findAddress(const void* address, ElfAddress* res);
     static int iterateProgramHeaders(ElfProgramHeaderCallback& callback);
+
+    // The RTLD_DEFAULT search over images loaded with RTLD_GLOBAL.
+    static void* lookupGlobal(std::string_view symbol);
+    // The RTLD_NEXT search over images loaded after the one holding caller.
+    static void* lookupNext(const void* caller, std::string_view symbol, std::string_view version);
 };
 
 extern "C" void* elfTlsAddress(const uintptr_t index[2]);

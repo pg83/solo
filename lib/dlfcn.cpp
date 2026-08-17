@@ -194,6 +194,14 @@ void* Handles::lookup(std::string_view s) const {
         }
     }
 
+#if defined(__linux__)
+    if (auto* res = ElfImage::lookupGlobal(s); res) {
+        DBG("found RTLD_GLOBAL " << s);
+
+        return res;
+    }
+#endif
+
     DBG("not found global " << s);
 
     return nullptr;

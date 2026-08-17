@@ -1327,7 +1327,10 @@ namespace {
 
         void* address = nullptr;
 
-        if (!handle || handle == (void*)(uintptr_t)-1) {
+        if (handle == (void*)(uintptr_t)-1) {
+            // RTLD_NEXT: search the images loaded after the caller's one.
+            address = ElfImage::lookupNext(__builtin_return_address(0), name, {});
+        } else if (!handle) {
             auto* defaultHandle = stub_dlopen("", RTLD_LOCAL);
             GlibcRuntimeHandle runtime(defaultHandle);
 
@@ -1354,7 +1357,9 @@ namespace {
 
         void* address = nullptr;
 
-        if (!handle || handle == (void*)(uintptr_t)-1) {
+        if (handle == (void*)(uintptr_t)-1) {
+            address = ElfImage::lookupNext(__builtin_return_address(0), name, version);
+        } else if (!handle) {
             auto* defaultHandle = stub_dlopen("", RTLD_LOCAL);
             GlibcRuntimeHandle runtime(defaultHandle);
 
