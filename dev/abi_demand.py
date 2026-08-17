@@ -25,6 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tst"))
 from corpus import glibc_imports  # noqa: E402
 
 SNAPSHOT = "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+# glibc itself is what the bridge replaces: its own imports are not
+# client demand.
+GLIBC = {"libc6"}
 
 
 def parse_packages(path):
@@ -126,7 +129,11 @@ def main():
 
     popcon, packages_xz, count, cache_dir, output = sys.argv[1:]
     packages = parse_packages(packages_xz)
-    ranking = ranked_libraries(packages, parse_votes(popcon))[: int(count)]
+    ranking = [
+        (vote, name)
+        for vote, name in ranked_libraries(packages, parse_votes(popcon))
+        if name not in GLIBC
+    ][: int(count)]
     cache = Path(cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
 

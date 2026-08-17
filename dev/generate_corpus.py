@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tst"))
-from abi_demand import SNAPSHOT, fetch, parse_packages, parse_votes, ranked_libraries  # noqa: E402
+from abi_demand import GLIBC, SNAPSHOT, fetch, parse_packages, parse_votes, ranked_libraries  # noqa: E402
 from corpus import elf_dynamic, glibc_imports  # noqa: E402
 
 CONTENTS = SNAPSHOT + "dists/sid/main/Contents-amd64.gz"
@@ -39,8 +39,6 @@ SKIP = {
     "libhwasan0": "requires the kernel's tagged address ABI",
     "liblsan0": "56 KiB of initial-exec TLS, beyond any dlopen-time surplus",
 }
-# The bridge provides the glibc runtime itself.
-GLIBC = {"libc6"}
 BRIDGED_SONAMES = {
     "libc.so.6",
     "libpthread.so.0",
