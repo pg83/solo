@@ -358,6 +358,17 @@ namespace {
         return 0;
     }
 
+    static int testNullMutex() {
+        // NVIDIA's finalizers are reported to lock a null mutex when
+        // teardown races their worker threads; EINVAL, not a fault.
+        DLFCN_CHECK(BRIDGE.mutexLock(nullptr) == EINVAL);
+        DLFCN_CHECK(BRIDGE.mutexTryLock(nullptr) == EINVAL);
+        DLFCN_CHECK(BRIDGE.mutexUnlock(nullptr) == EINVAL);
+        DLFCN_CHECK(BRIDGE.mutexDestroy(nullptr) == EINVAL);
+
+        return 0;
+    }
+
     __attribute__((noinline)) static size_t stackEater(int depth) {
         volatile char buffer[16 * 1024];
 
@@ -403,6 +414,7 @@ namespace {
         {"condition variable handoff", testCondition},
         {"thread attributes and create/join", testThreadAttributes},
         {"default thread stack is glibc-sized", testDefaultStackSize},
+        {"null mutex declines with EINVAL", testNullMutex},
     };
 }
 

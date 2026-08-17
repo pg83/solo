@@ -1349,6 +1349,10 @@ namespace {
     }
 
     static int sh_pthread_mutex_clocklock(pthread_mutex_t* mutex, clockid_t clock, const struct timespec* deadline) {
+        if (!mutex) {
+            return EINVAL;
+        }
+
         auto real = convertDeadline(clock, deadline);
 
         return pthread_mutex_timedlock(mutex, &real);
@@ -2735,28 +2739,49 @@ namespace {
     }
 
     static int sh_pthread_mutex_destroy(void* foreign) {
+        if (!foreign) {
+            return EINVAL;
+        }
+
         return pthread_mutex_destroy(static_cast<pthread_mutex_t*>(foreign));
     }
 
+    // A null mutex is EINVAL, the error POSIX names for a value that does
+    // not refer to an initialized mutex, not a fault: NVIDIA's finalizers
+    // are reported to reach here with one when teardown races their worker
+    // threads.
     static int sh_pthread_mutex_lock(void* foreign) {
+        if (!foreign) {
+            return EINVAL;
+        }
         sh_adopt_static_mutex(foreign);
 
         return pthread_mutex_lock(static_cast<pthread_mutex_t*>(foreign));
     }
 
     static int sh_pthread_mutex_trylock(void* foreign) {
+        if (!foreign) {
+            return EINVAL;
+        }
         sh_adopt_static_mutex(foreign);
 
         return pthread_mutex_trylock(static_cast<pthread_mutex_t*>(foreign));
     }
 
     static int sh_pthread_mutex_timedlock(void* foreign, const struct timespec* deadline) {
+        if (!foreign) {
+            return EINVAL;
+        }
         sh_adopt_static_mutex(foreign);
 
         return pthread_mutex_timedlock(static_cast<pthread_mutex_t*>(foreign), deadline);
     }
 
     static int sh_pthread_mutex_unlock(void* foreign) {
+        if (!foreign) {
+            return EINVAL;
+        }
+
         return pthread_mutex_unlock(static_cast<pthread_mutex_t*>(foreign));
     }
 
