@@ -246,6 +246,7 @@ namespace {
         static Loader& instance();
 
         LinkMap* load(const std::string_view& requestedPath, int flags);
+        void runPendingInitializers();
 
         void* lookup(LinkMap& image, std::string_view name);
         void* lookupGlobal(std::string_view name);
@@ -272,6 +273,7 @@ namespace {
 
         static Definition searchScope(LinkMap& image, const std::string_view& name, const std::string_view& version);
         Definition resolveSymbol(LinkMap& image, size_t symbolIndex);
+        void debugBinding(const LinkMap& image, const std::string_view& name, const char* provider) const;
         static void* materialize(Definition definition);
 
         bool applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool allowIfunc);
@@ -286,7 +288,10 @@ namespace {
         size_t tlsModuleCount_ = 0;
         std::string libraryDirectory_;
         LinkMap* requester_ = nullptr;
+        std::vector<LinkMap*> pendingInitializers_;
         bool bindNow_ = false;
+        bool debugLibs_ = false;
+        bool debugBindings_ = false;
         // Images whose symbols every later relocation may use, in load order.
         std::vector<LinkMap*> globalImages_;
     };
@@ -370,6 +375,12 @@ ScopedRequester::~ScopedRequester() {
 // like glibc's _dl_fini it runs after them.
 Loader::Loader() {
     bindNow_ = getenv("LD_BIND_NOW") != nullptr;
+    if (const auto* debug = getenv("DL_DEBUG"); debug) {
+        std::string_view flags(debug);
+
+        debugLibs_ = flags.find("libs") != std::string_view::npos || flags == "all";
+        debugBindings_ = flags.find("bindings") != std::string_view::npos || flags == "all";
+    }
     atexit(runAllFinalizers);
 }
 
@@ -523,9 +534,31 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
     if (flags & RTLD_GLOBAL) {
         makeGlobal(image);
     }
-    image.runInitializers();
+    if (debugLibs_) {
+        fprintf(stderr, "solo: loaded %s at %#lx%s\n", image.path.c_str(), image.base, lazy ? " (lazy)" : "");
+    }
+    pendingInitializers_.push_back(&image);
 
     return imagePointer;
+}
+
+// Initializers run without the loader mutex, so a thread an initializer
+// spawns can enter the loader; the queue is drained by the public entry once
+// the outermost load released the lock.
+void Loader::runPendingInitializers() {
+    for (;;) {
+        LinkMap* image = nullptr;
+        {
+            std::lock_guard lock(mutex_);
+
+            if (pendingInitializers_.empty()) {
+                return;
+            }
+            image = pendingInitializers_.front();
+            pendingInitializers_.erase(pendingInitializers_.begin());
+        }
+        image->runInitializers();
+    }
 }
 
 // RTLD_GLOBAL publishes the image's whole local scope, so the global search
@@ -1232,15 +1265,18 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
 
     if (image.glibcAbi) {
         if (auto* address = resolveGlibcOverride(name, version); address) {
+            debugBinding(image, name, "glibc bridge (override)");
             return {reinterpret_cast<uintptr_t>(address), nullptr, nullptr};
         }
     }
 
     if (auto definition = searchScope(image, name, version); definition) {
+        debugBinding(image, name, definition.image ? definition.image->path.c_str() : "static provider");
         return definition;
     }
     for (auto* global : globalImages_) {
         if (auto definition = global->findSymbol(name, version); definition) {
+            debugBinding(image, name, global->path.c_str());
             return definition;
         }
     }
@@ -1251,7 +1287,14 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
         throwError("%s: unresolved symbol %.*s%.*s%.*s", image.path.c_str(), static_cast<int>(name.size()), name.data(), version.empty() ? 0 : 1, "@", static_cast<int>(version.size()), version.data());
     }
 
+    debugBinding(image, name, address ? "glibc bridge" : "weak, unresolved");
     return {reinterpret_cast<uintptr_t>(address), nullptr, nullptr};
+}
+
+void Loader::debugBinding(const LinkMap& image, const std::string_view& name, const char* provider) const {
+    if (debugBindings_) {
+        fprintf(stderr, "solo: bind %s: %.*s -> %s\n", image.path.c_str(), static_cast<int>(name.size()), name.data(), provider);
+    }
 }
 
 void* Loader::materialize(Definition definition) {
@@ -1572,7 +1615,10 @@ ElfImage::~ElfImage() noexcept {
 }
 
 ElfImage* ElfImage::loadElf(std::string_view path, int flags) {
-    auto* image = Loader::instance().load(path, flags);
+    auto& loader = Loader::instance();
+    auto* image = loader.load(path, flags);
+
+    loader.runPendingInitializers();
 
     return image ? image->wrapper.get() : nullptr;
 }
