@@ -16,13 +16,19 @@ build.cxxflags += [
 ]
 
 cc = os.environ.get("CC", "cc")
-glibc_test_cc = os.environ.get("GLIBC_TEST_CC", cc)
-glibc_test_cxx = os.environ.get("GLIBC_TEST_CXX", os.environ.get("CXX", "c++"))
 
 linker_flags = []
 
 if shutil.which("ld") is None and (lld := shutil.which("ld.lld")):
     linker_flags.append(f"-fuse-ld={lld}")
+
+# run_smoke.py links its glibc test DSOs with these commands directly, so they
+# need the same linker selection as the graph's own link steps.
+glibc_test_cc = " ".join([os.environ.get("GLIBC_TEST_CC", cc), *linker_flags])
+glibc_test_cxx = " ".join([
+    os.environ.get("GLIBC_TEST_CXX", os.environ.get("CXX", "c++")),
+    *linker_flags,
+])
 
 
 def symbolHeader(kind):
