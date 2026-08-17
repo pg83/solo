@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build / ${{ matrix.machine }}
+    strategy:
+      matrix:
+        include:
+          - machine: x86_64
+            runner: ubuntu-latest
+          - machine: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang g++ libarchive-tools mesa-vulkan-drivers python3
+
+      # The released binary is exactly the one the test just rendered with:
+      # vulkan_test drives it against the host's lavapipe and checks the
+      # image, then the cached build publishes the same output.
+      - name: Test
+        env:
+          CC: clang
+          CXX: clang++
+        run: ./build vulkan_test
+
+      - name: Package
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          ./build vulkan
+          cp -L vulkan "vulkan-${{ matrix.machine }}"
+          strip "vulkan-${{ matrix.machine }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-${{ matrix.machine }}
+          path: vulkan-${{ matrix.machine }}
+          if-no-files-found: error
+
+  release:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --notes "A static musl executable that loads the host's unmodified glibc Vulkan stack and renders an image with it. Download, \`chmod +x\`, run: \`./vulkan-x86_64 out.png\` (needs any Vulkan driver, e.g. mesa-vulkan-drivers)."
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+            vulkan-x86_64 vulkan-aarch64
