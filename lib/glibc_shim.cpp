@@ -55,6 +55,7 @@
 #include <algorithm>
 #include <string>
 #include <exception>
+#include <mutex>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -891,6 +892,8 @@ namespace {
         std::unordered_map<std::string_view, void*> byName;
     };
 
+    struct GlibcHandle;
+
     struct GlibcAdapter {
         GlibcAdapter();
 
@@ -906,6 +909,9 @@ namespace {
         void* findFallback(std::string_view name, std::string_view version) const;
         void* resolveSymbol(std::string_view name, std::string_view version, bool weak);
 
+        GlibcHandle* handleFor(void* stubHandle, bool runtime);
+        GlibcHandle* defaultHandle();
+
         unsigned char libcSingleThreaded_;
         int tolowerTable_[384];
         const int* tolowerPointer_;
@@ -916,6 +922,9 @@ namespace {
 
         GlibcProviders providers_;
         std::unordered_set<std::string_view> overrideNames_;
+        std::mutex handleMutex_;
+        std::unordered_map<void*, GlibcHandle*> handles_;
+        GlibcHandle* lastHandle_ = nullptr;
     };
 
     static const int** sh_ctype_tolower_loc(void) {
@@ -1616,25 +1625,22 @@ namespace {
         void* symbol_address;
     };
 
+    // The handle sh_glibc_dlopen returns. Its head matches the public prefix
+    // of the glibc link_map, because real code casts the handle and walks
+    // these fields; the handles chain in load order.
     struct GlibcHandle {
-        explicit GlibcHandle(void* stubHandle);
-        virtual ~GlibcHandle() noexcept;
+        uintptr_t l_addr = 0;
+        const char* l_name = "";
+        const void* l_ld = nullptr;
+        GlibcHandle* l_next = nullptr;
+        GlibcHandle* l_prev = nullptr;
 
-        virtual void* lookup(std::string_view name, std::string_view version) const = 0;
+        void* stubHandle = nullptr;
+        // A runtime provider bridges the glibc ABI, so overrides come first;
+        // a loaded ELF image serves its own symbols first.
+        bool runtime = false;
 
-        void* stubHandle_;
-    };
-
-    struct GlibcRuntimeHandle final: public GlibcHandle {
-        explicit GlibcRuntimeHandle(void* stubHandle);
-
-        void* lookup(std::string_view name, std::string_view version) const override;
-    };
-
-    struct GlibcStubLoaderHandle final: public GlibcHandle {
-        explicit GlibcStubLoaderHandle(void* stubHandle);
-
-        void* lookup(std::string_view name, std::string_view version) const override;
+        void* lookup(std::string_view name, std::string_view version) const;
     };
 
     static void consumeStubError() noexcept {
@@ -1666,55 +1672,78 @@ namespace {
     }
 }
 
-GlibcHandle::GlibcHandle(void* stubHandle)
-    : stubHandle_(stubHandle)
-{
+namespace {
+    static uintptr_t mainProgramBase() {
+        auto* headers = reinterpret_cast<const Elf64_Phdr*>(getauxval(AT_PHDR));
+        auto count = getauxval(AT_PHNUM);
+
+        for (unsigned long index = 0; index < count; ++index) {
+            if (headers[index].p_type == PT_PHDR) {
+                return reinterpret_cast<uintptr_t>(headers) - headers[index].p_vaddr;
+            }
+        }
+
+        return 0;
+    }
 }
 
-GlibcHandle::~GlibcHandle() noexcept {
-    stub_dlclose(stubHandle_);
+GlibcHandle* GlibcAdapter::handleFor(void* stubHandle, bool runtime) {
+    std::lock_guard lock(handleMutex_);
+    auto& slot = handles_[stubHandle];
+
+    if (!slot) {
+        auto* handle = new GlibcHandle();
+
+        handle->stubHandle = stubHandle;
+        handle->runtime = runtime;
+        // The path view of a loaded image is NUL-terminated and lives as long
+        // as the image, which is forever.
+        if (auto* image = dynamic_cast<ElfImage*>(static_cast<IfaceHandle*>(stubHandle))) {
+            handle->l_addr = image->base();
+            handle->l_name = image->path().data();
+            handle->l_ld = image->dynamicSection();
+        }
+        handle->l_prev = lastHandle_;
+        if (lastHandle_) {
+            lastHandle_->l_next = handle;
+        }
+        lastHandle_ = handle;
+        slot = handle;
+    }
+
+    return slot;
 }
 
-GlibcRuntimeHandle::GlibcRuntimeHandle(void* stubHandle)
-    : GlibcHandle(stubHandle)
-{
+GlibcHandle* GlibcAdapter::defaultHandle() {
+    auto* handle = handleFor(stub_dlopen("", RTLD_LOCAL), true);
+
+    if (!handle->l_name[0]) {
+        handle->l_addr = mainProgramBase();
+        handle->l_name = "/proc/self/exe";
+    }
+
+    return handle;
 }
 
-void* GlibcRuntimeHandle::lookup(std::string_view name, std::string_view version) const {
+void* GlibcHandle::lookup(std::string_view name, std::string_view version) const {
     auto& adapter = GlibcAdapter::instance();
 
-    if (!version.empty() && !adapter.hasSymbolVersion(name, version)) {
-        return nullptr;
+    if (runtime) {
+        if (!version.empty() && !adapter.hasSymbolVersion(name, version)) {
+            return nullptr;
+        }
+        if (auto* address = adapter.findOverride(name, version); address) {
+            return address;
+        }
     }
-    if (auto* address = adapter.findOverride(name, version); address) {
-        return address;
-    }
-    if (auto* address = lookupStub(stubHandle_, name); address) {
-        return address;
-    }
-    consumeStubError();
-    if (auto* address = lookupLibc(name); address) {
-        return address;
-    }
-    consumeStubError();
-
-    return adapter.findFallback(name, version);
-}
-
-GlibcStubLoaderHandle::GlibcStubLoaderHandle(void* stubHandle)
-    : GlibcHandle(stubHandle)
-{
-}
-
-void* GlibcStubLoaderHandle::lookup(std::string_view name, std::string_view version) const {
-    auto& adapter = GlibcAdapter::instance();
-
-    if (auto* address = lookupStub(stubHandle_, name); address) {
+    if (auto* address = lookupStub(stubHandle, name); address) {
         return address;
     }
     consumeStubError();
-    if (auto* address = adapter.findOverride(name, version); address) {
-        return address;
+    if (!runtime) {
+        if (auto* address = adapter.findOverride(name, version); address) {
+            return address;
+        }
     }
     if (auto* address = lookupLibc(name); address) {
         return address;
@@ -1769,22 +1798,20 @@ namespace {
     static void* sh_glibc_dlopen(const char* path, int flags) {
         ThreadTls::current()->clearDlError();
 
-        auto translated = sh_translate_dlopen_flags(flags);
-        auto* provider = path ? runtimeProvider(path) : "";
-        auto runtime = provider != nullptr;
-        auto* handle = stub_dlopen(runtime ? provider : path, translated);
-
-        if (!handle) {
-            copyStubError("library not found");
-            return nullptr;
-        }
-
         try {
-            if (runtime) {
-                return new GlibcRuntimeHandle(handle);
+            if (!path) {
+                return GlibcAdapter::instance().defaultHandle();
             }
 
-            return new GlibcStubLoaderHandle(handle);
+            auto* provider = runtimeProvider(path);
+            auto* handle = stub_dlopen(provider ? provider : path, sh_translate_dlopen_flags(flags));
+
+            if (!handle) {
+                copyStubError("library not found");
+                return nullptr;
+            }
+
+            return GlibcAdapter::instance().handleFor(handle, provider != nullptr);
         } catch (const std::exception& error) {
             ThreadTls::current()->setDlError(error.what());
         } catch (...) {
@@ -1808,10 +1835,7 @@ namespace {
             // RTLD_NEXT: search the images loaded after the caller's one.
             address = ElfImage::lookupNext(__builtin_return_address(0), name, {});
         } else if (!handle) {
-            auto* defaultHandle = stub_dlopen("", RTLD_LOCAL);
-            GlibcRuntimeHandle runtime(defaultHandle);
-
-            address = runtime.lookup(name, {});
+            address = GlibcAdapter::instance().defaultHandle()->lookup(name, {});
         } else {
             address = reinterpret_cast<GlibcHandle*>(handle)->lookup(name, {});
         }
@@ -1837,10 +1861,7 @@ namespace {
         if (handle == (void*)(uintptr_t)-1) {
             address = ElfImage::lookupNext(__builtin_return_address(0), name, version);
         } else if (!handle) {
-            auto* defaultHandle = stub_dlopen("", RTLD_LOCAL);
-            GlibcRuntimeHandle runtime(defaultHandle);
-
-            address = runtime.lookup(name, version);
+            address = GlibcAdapter::instance().defaultHandle()->lookup(name, version);
         } else {
             address = reinterpret_cast<GlibcHandle*>(handle)->lookup(name, version);
         }
@@ -1861,9 +1882,25 @@ namespace {
             return -1;
         }
 
-        delete reinterpret_cast<GlibcHandle*>(handle);
-
+        // Handles are owned by the registry; a load-once runtime keeps them.
         return 0;
+    }
+
+    static int sh_glibc_dlinfo(void* handle, int request, void* information) {
+        ThreadTls::current()->clearDlError();
+
+        if (!handle || handle == (void*)(uintptr_t)-1) {
+            ThreadTls::current()->setDlError("invalid handle");
+            return -1;
+        }
+        // RTLD_DI_LINKMAP: the handle already is the link_map facade.
+        if (request == 2) {
+            *static_cast<void**>(information) = handle;
+            return 0;
+        }
+
+        ThreadTls::current()->setDlError("unsupported dlinfo request");
+        return -1;
     }
 
     static locale_t sh_newlocale(int mask, const char* name, locale_t base) {
@@ -2140,6 +2177,8 @@ namespace {
         SH_FUNCTION("strerror", "GLIBC_2.2.5", strerror),
         SH_FUNCTION("dlclose", "GLIBC_2.34", sh_glibc_dlclose),
         SH_FUNCTION("dlvsym", "GLIBC_2.34", sh_glibc_dlvsym),
+        SH_FUNCTION("dlinfo", "GLIBC_2.3.3", sh_glibc_dlinfo),
+        SH_FUNCTION("dlinfo", "GLIBC_2.34", sh_glibc_dlinfo),
         SH_FUNCTION("pthread_mutex_init", "GLIBC_2.2.5", sh_pthread_mutex_init),
         SH_FUNCTION("fstat", "GLIBC_2.33", fstat),
         SH_FUNCTION("__cxa_finalize", "GLIBC_2.2.5", sh_cxa_finalize),
@@ -2316,6 +2355,7 @@ GlibcAdapter::GlibcAdapter()
         "dladdr",
         "dlclose",
         "dlerror",
+        "dlinfo",
         "dlopen",
         "dlsym",
         "dlvsym",

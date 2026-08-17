@@ -295,6 +295,9 @@ namespace {
         explicit LoadedElf(LinkMap& image);
 
         void* lookup(std::string_view symbol) const override;
+        std::string_view path() const override;
+        uintptr_t base() const override;
+        const void* dynamicSection() const override;
 
         LinkMap& image_;
     };
@@ -1551,6 +1554,18 @@ LoadedElf::LoadedElf(LinkMap& image)
 
 void* LoadedElf::lookup(std::string_view symbol) const {
     return Loader::instance().lookup(image_, symbol);
+}
+
+std::string_view LoadedElf::path() const {
+    return image_.path;
+}
+
+uintptr_t LoadedElf::base() const {
+    return image_.base;
+}
+
+const void* LoadedElf::dynamicSection() const {
+    return image_.dynamic;
 }
 
 ElfImage::~ElfImage() noexcept {

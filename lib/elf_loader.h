@@ -32,6 +32,12 @@ namespace dyn {
     struct ElfImage: public IfaceHandle {
         virtual ~ElfImage() noexcept;
 
+        // The image's identity, for link_map facades and diagnostics. The
+        // path view is NUL-terminated.
+        virtual std::string_view path() const = 0;
+        virtual uintptr_t base() const = 0;
+        virtual const void* dynamicSection() const = 0;
+
         static ElfImage* loadElf(std::string_view path, int flags);
         static bool findAddress(const void* address, ElfAddress* res);
         static int iterateProgramHeaders(ElfProgramHeaderCallback& callback);
