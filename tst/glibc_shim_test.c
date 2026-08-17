@@ -606,6 +606,67 @@ static void processAndSystem(void) {
     CHECK(__register_atfork(NULL, NULL, NULL, NULL) == 0);
 }
 
+extern char _IO_2_1_stdin_[];
+extern char _IO_2_1_stdout_[];
+extern char _IO_2_1_stderr_[];
+extern int __overflow(FILE*, int);
+extern int __uflow(FILE*);
+
+static void inlinedStdio(void) {
+    /* The old ABI: code compiled against ancient glibc headers references the
+       _IO_2_1_* objects instead of the stdin/stdout/stderr pointers. */
+    CHECK((FILE*)_IO_2_1_stdin_ == stdin);
+    CHECK((FILE*)_IO_2_1_stdout_ == stdout);
+    CHECK((FILE*)_IO_2_1_stderr_ == stderr);
+
+    char path[256];
+    snprintf(path, sizeof(path), "%s/solo-inline-XXXXXX", temporary_directory());
+    int descriptor = mkstemp64(path);
+    CHECK(descriptor >= 0);
+    close(descriptor);
+
+    /* What -O2 compiles putc_unlocked into: poke the glibc _IO_FILE fields,
+       fall back to __overflow. musl lays its FILE out to make this work. */
+    FILE* out = fopen64(path, "w");
+    CHECK(out != NULL);
+    if (out) {
+        struct GlibcIoFile {
+            int flags;
+            char* read_ptr;
+            char* read_end;
+            char* read_base;
+            char* write_base;
+            char* write_ptr;
+            char* write_end;
+        }* raw = (struct GlibcIoFile*)out;
+        int result = raw->write_ptr >= raw->write_end ? __overflow(out, 'Q') : (*raw->write_ptr++ = 'Q');
+        CHECK(result == 'Q');
+        CHECK(putc_unlocked('R', out) == 'R');
+        CHECK(fputc_unlocked('S', out) == 'S');
+        CHECK(fclose(out) == 0);
+    }
+
+    FILE* in = fopen64(path, "r");
+    CHECK(in != NULL);
+    if (in) {
+        struct GlibcIoFile {
+            int flags;
+            char* read_ptr;
+            char* read_end;
+        }* raw = (struct GlibcIoFile*)in;
+        int first = raw->read_ptr < raw->read_end ? *raw->read_ptr++ : __uflow(in);
+        CHECK(first == 'Q');
+        CHECK(getc_unlocked(in) == 'R');
+        CHECK(fgetc_unlocked(in) == 'S');
+        /* the inlined feof_unlocked reads the glibc flag bit */
+        CHECK(getc_unlocked(in) == EOF);
+        CHECK((raw->flags & 0x10) != 0);
+        CHECK(feof_unlocked(in) != 0);
+        CHECK(fclose(in) == 0);
+    }
+    unlink(path);
+}
+
 static void jumps(void) {
     jmp_buf state;
     volatile int reached = 0;
@@ -694,6 +755,7 @@ int glibc_shim_test(void) {
     timeKeeping();
     sorting();
     processAndSystem();
+    inlinedStdio();
     jumps();
     schedulingBridge();
     dynamicLinking();

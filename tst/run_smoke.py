@@ -90,6 +90,9 @@ def main():
         subprocess.run(
             [
                 *compiler,
+                # -O2 turns the glibc extern inlines on, so putc_unlocked and
+                # friends compile into direct _IO_FILE field accesses.
+                "-O2",
                 "-fPIC",
                 "-fno-stack-protector",
                 "-shared",

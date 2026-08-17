@@ -2489,6 +2489,21 @@ void* GlibcAdapter::resolveSymbol(std::string_view name, std::string_view versio
     if (name == "stderr" && version == "GLIBC_2.2.5") {
         return (void*)(uintptr_t)&stderr;
     }
+    // The pre-2.1 stdio ABI: the _IO_2_1_* objects are the FILE structures
+    // themselves, and musl lays its FILE out to serve the accessors compilers
+    // inline (dev/abi-diff.txt notwithstanding: the read pointers, the
+    // always-overflowing write end, and the EOF/ERR bits all line up).
+    if (version == "GLIBC_2.2.5") {
+        if (name == "_IO_2_1_stdin_") {
+            return stdin;
+        }
+        if (name == "_IO_2_1_stdout_") {
+            return stdout;
+        }
+        if (name == "_IO_2_1_stderr_") {
+            return stderr;
+        }
+    }
     if (name == "__libc_single_threaded" && version == "GLIBC_2.32") {
         return libcSingleThreaded();
     }

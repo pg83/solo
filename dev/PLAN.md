@@ -14,12 +14,6 @@ in place) scales — the process is what has to scale.
    allocator in the loader. Without it "fullness" is impossible:
    `-ftls-model=initial-exec` shows up in real distro builds, and a host .so
    cannot be rebuilt.
-7. **A glibc-FILE facade**: compilers inline `putc_unlocked`/`getc_unlocked`
-   straight into DSO code — it reaches into `_IO_FILE` fields past any
-   functions. We need genuine glibc-layout objects (`_IO_2_1_std{in,out,err}_`
-   and a factory for `fopen`) whose buffer pointers and `_IO_jump_t` vtable
-   lead into our adapters over musl FILEs. That is the only honest way to
-   retire the current PROT_NONE mapping of the stdio objects.
 
 ## Phase 3 — loader parity
 
@@ -53,5 +47,10 @@ locale-archive (we stay in C/UTF-8, like musl).
   tst/glibc_shim_test.c.
 - A rule generator for adapter families waits until the corpus demands more
   than a hand-written table's worth.
-- Deliberately deferred: 6 (initial-exec TLS), 7 (the FILE facade — the
-  corpus demands no `_IO_2_1_*` object so far), 10 (`dlclose`).
+- The FILE facade turned out unnecessary: musl deliberately lays its FILE out
+  to serve the accessors compilers inline (glibc read pointer offsets, an
+  always-overflowing write end, matching EOF/ERR bits) and exports
+  `__overflow`/`__uflow`; the `_IO_2_1_*` objects now resolve to musl's own
+  FILE structures, and the conformance battery drives the inlined paths at
+  -O2.
+- Deliberately deferred: 6 (initial-exec TLS), 10 (`dlclose`).
