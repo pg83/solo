@@ -14,6 +14,10 @@ not worth a load node. The output is one JSON table per architecture, which
 build.py turns into download and load nodes.
 
 usage: generate_corpus.py POPCON PACKAGES_XZ_AMD64 PACKAGES_XZ_ARM64 COUNT CACHE_DIR OUTPUT_DIR
+
+The PACKAGES_XZ arguments take comma-separated index files. The first is the
+ranking universe (main); the rest (non-free) only contribute packages the
+keep list names and the closures they pull in.
 """
 
 import json
@@ -30,7 +34,19 @@ from corpus import elf_dynamic, glibc_imports  # noqa: E402
 
 CONTENTS = SNAPSHOT + "dists/sid/main/Contents-amd64.gz"
 
-KEEP = ["libjemalloc2", "openssl-provider-legacy"]
+KEEP = [
+    "libjemalloc2",
+    "openssl-provider-legacy",
+    # The NVIDIA userspace blobs, the field-reported demand source: their
+    # imports (the pre-2.33 stat family, dlmopen, mallinfo) must stay
+    # served. The ICD packages ship only manifests; these carry the code.
+    "libcuda1",
+    "libglx-nvidia0",
+    "libnvidia-eglcore",
+    "libnvidia-glcore",
+    "libnvidia-gpucomp",
+    "libnvidia-ml1",
+]
 # Environment-gated runtimes whose constructors abort by design on ordinary
 # kernels; they would fail under ld.so on the same machine.
 SKIP = {
@@ -144,12 +160,18 @@ def main():
         raise SystemExit(__doc__)
 
     popcon, amd64_xz, arm64_xz, count, cache_dir, output_dir = sys.argv[1:]
-    amd64 = parse_packages(amd64_xz)
-    arm64 = parse_packages(arm64_xz)
+    amd64_indexes = [parse_packages(path) for path in amd64_xz.split(",")]
+    arm64_indexes = [parse_packages(path) for path in arm64_xz.split(",")]
+    amd64 = {}
+    for index in amd64_indexes:
+        amd64.update(index)
+    arm64 = {}
+    for index in arm64_indexes:
+        arm64.update(index)
     votes = parse_votes(popcon)
     profiles = Profiles(Path(cache_dir), amd64)
 
-    candidates = [name for _, name in ranked_libraries(amd64, votes)[: int(count)]]
+    candidates = [name for _, name in ranked_libraries(amd64_indexes[0], votes)[: int(count)]]
     candidates += [name for name in KEEP if name in amd64 and name not in candidates]
 
     # Only packages with glibc-importing shared objects earn a load node,
@@ -172,9 +194,12 @@ def main():
     def library_package(name, packages, providing):
         if name in GLIBC or name not in packages:
             return False
-        # Depends closures stay within library sections; a package that
-        # provably ships a needed soname joins regardless of its section.
-        return packages[name].get("Section") in ("libs", "oldlibs") or name in providing
+        # Depends closures stay within library sections (non-free spells
+        # them "non-free/libs"); a package that provably ships a needed
+        # soname joins regardless of its section.
+        section = packages[name].get("Section", "").split("/")[-1]
+
+        return section in ("libs", "oldlibs") or name in providing
 
     def dependencies(name, packages, provider, providing):
         """The Depends and DT_NEEDED closure of one package."""
