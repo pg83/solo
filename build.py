@@ -1067,6 +1067,16 @@ corpus_packages = [
         "glib2-2.88.3-1-x86_64.pkg.tar.zst",
         "9569884e1f670d46e40ea0b8ca4ea2a1a29689be297fed1390bc5af9a03967d2",
     ),
+    # The red test for dev/PLAN.md item 6: jemalloc carries initial-exec TLS
+    # (1976 bytes of it), so this node stays red until the surplus static TLS
+    # lands.
+    (
+        "jemalloc",
+        "https://archive.archlinux.org/packages/j/jemalloc/"
+        "jemalloc-1:5.3.1-3-x86_64.pkg.tar.zst",
+        "jemalloc-1:5.3.1-3-x86_64.pkg.tar.zst",
+        "6a08d4f038a799e895576b6e970593402cbafdfea1ffcc37476c9f49382b3a57",
+    ),
 ]
 
 for package in corpus_packages:
@@ -1077,6 +1087,7 @@ for package in corpus_packages:
 # keeps the runs parallel and cached independently.
 corpus_dependencies = {
     "glib2": ["pcre2", "libffi", "zlib", "util-linux-libs", "systemd-libs", "libgcc"],
+    "jemalloc": ["libstdcxx", "libgcc"],
     "gmp": ["libstdcxx", "libgcc"],
     "icu": ["libstdcxx", "libgcc"],
     "libgcrypt": ["libgpg-error"],
