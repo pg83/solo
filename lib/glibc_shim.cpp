@@ -25,6 +25,7 @@
 #include <limits.h>
 #include <locale.h>
 #include <malloc.h>
+#include <math.h>
 #include <poll.h>
 #include <pthread.h>
 #include <pwd.h>
