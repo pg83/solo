@@ -2,14 +2,16 @@
 
 #include <stddef.h>
 
-struct MuslSymbol {
-    const char* name;
-    void* address;
-};
+namespace dyn {
+    struct MuslSymbol {
+        const char* name;
+        void* address;
+    };
 
-struct MuslSymbols {
-    const MuslSymbol* symbols;
-    size_t count;
-};
+    struct MuslSymbols {
+        const MuslSymbol* symbols;
+        size_t count;
+    };
 
-MuslSymbols muslSymbols();
+    MuslSymbols muslSymbols();
+}

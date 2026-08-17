@@ -51,6 +51,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+using namespace dyn;
+
 #undef _dl_find_object
 
 extern "C" int __cxa_atexit(void (*function)(void*), void* argument, void* dso);
@@ -1921,10 +1923,10 @@ void* GlibcAdapter::resolveSymbol(std::string_view name, std::string_view versio
     return nullptr;
 }
 
-void* resolveGlibcSymbol(std::string_view name, std::string_view version, bool weak) {
+void* dyn::resolveGlibcSymbol(std::string_view name, std::string_view version, bool weak) {
     return GlibcAdapter::instance().resolveSymbol(name, version, weak);
 }
 
-void* resolveGlibcOverride(std::string_view name, std::string_view version) {
+void* dyn::resolveGlibcOverride(std::string_view name, std::string_view version) {
     return GlibcAdapter::instance().findOverride(name, version);
 }

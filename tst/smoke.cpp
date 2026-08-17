@@ -7,6 +7,8 @@
 #include <string.h>
 #include <exception>
 
+using namespace dyn;
+
 namespace {
     using EnumerateInstanceVersion = int32_t (*)(uint32_t* version);
     using DynamicDlsym = void* (*)(void* handle, const char* symbol);

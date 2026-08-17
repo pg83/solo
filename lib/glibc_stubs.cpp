@@ -9,6 +9,8 @@
 #include <string_view>
 #include <unordered_map>
 
+using namespace dyn;
+
 namespace {
     struct GlibcStub {
         const char* name;
@@ -96,11 +98,11 @@ size_t KeyHash::operator()(const Key& key) const noexcept {
     return splitMix64(name ^ version);
 }
 
-bool hasGlibcStub(std::string_view name, std::string_view version) {
+bool dyn::hasGlibcStub(std::string_view name, std::string_view version) {
     return providers().contains({name, version});
 }
 
-void* resolveGlibcStub(std::string_view name, std::string_view version) {
+void* dyn::resolveGlibcStub(std::string_view name, std::string_view version) {
     const auto& items = providers();
 
     if (auto item = items.find({name, version}); item != items.end()) {

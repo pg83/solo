@@ -6,6 +6,8 @@
 #include <string.h>
 #include <pthread.h>
 
+using namespace dyn;
+
 #define DLFCN_CHECK(condition)                                                  \
     if (!(condition)) {                                                         \
         fprintf(stderr, "%s:%d: failed: %s\n", __FILE__, __LINE__, #condition); \

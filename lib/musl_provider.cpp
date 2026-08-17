@@ -5,6 +5,8 @@
 
 #include <cstdint>
 
+using namespace dyn;
+
 namespace {
     static int translateDlopenFlags(int flags) {
         constexpr int muslRtldLazy = 1;
@@ -42,7 +44,7 @@ namespace {
     };
 }
 
-MuslProvider muslProvider() {
+MuslProvider dyn::muslProvider() {
     auto symbols = muslSymbols();
 
     return {

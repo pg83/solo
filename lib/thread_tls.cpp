@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+using namespace dyn;
+
 extern "C" int __cxa_thread_atexit(void (*function)(void*), void* argument, void* dso);
 
 namespace {

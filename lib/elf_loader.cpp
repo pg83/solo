@@ -30,6 +30,8 @@
 #include <utility>
 #include <vector>
 
+using namespace dyn;
+
 #ifndef DT_RELR
     #define DT_RELR 36
     #define DT_RELRSZ 35

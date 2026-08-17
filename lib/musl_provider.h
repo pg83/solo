@@ -2,11 +2,13 @@
 
 #include "musl_symbols.h"
 
-struct MuslProvider {
-    const MuslSymbol* symbols;
-    size_t symbolCount;
-    const MuslSymbol* overrides;
-    size_t overrideCount;
-};
+namespace dyn {
+    struct MuslProvider {
+        const MuslSymbol* symbols;
+        size_t symbolCount;
+        const MuslSymbol* overrides;
+        size_t overrideCount;
+    };
 
-MuslProvider muslProvider();
+    MuslProvider muslProvider();
+}

@@ -15,6 +15,8 @@
 #include <string_view>
 #include <unordered_map>
 
+using namespace dyn;
+
 namespace {
     static int OpenFD() {
         if (auto env = getenv("DL_STUB_DEBUG"); env && env[0] == '/') {

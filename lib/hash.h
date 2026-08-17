@@ -2,4 +2,6 @@
 
 #include <stddef.h>
 
-size_t splitMix64(size_t value) noexcept;
+namespace dyn {
+    size_t splitMix64(size_t value) noexcept;
+}

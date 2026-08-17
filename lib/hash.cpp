@@ -2,7 +2,9 @@
 
 #include <stdint.h>
 
-size_t splitMix64(size_t value) noexcept {
+using namespace dyn;
+
+size_t dyn::splitMix64(size_t value) noexcept {
     uint64_t mixed = value + UINT64_C(0x9e3779b97f4a7c15);
 
     mixed = (mixed ^ (mixed >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
