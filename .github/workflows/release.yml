@@ -1,8 +1,10 @@
 name: Release
 
+# The release button: builds the static vulkan demo for both architectures,
+# validates each by rendering through the host's lavapipe, then publishes the
+# next numeric tag with the stripped binaries attached.
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -21,7 +23,8 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -39,7 +42,7 @@ jobs:
           CXX: clang++
         run: ./build vulkan_test
 
-      - name: Package
+      - name: Stage
         env:
           CC: clang
           CXX: clang++
@@ -48,11 +51,14 @@ jobs:
           cp -L vulkan "vulkan-${{ matrix.machine }}"
           strip "vulkan-${{ matrix.machine }}"
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vulkan-${{ matrix.machine }}
           path: vulkan-${{ matrix.machine }}
           if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
   release:
     name: Publish
@@ -61,17 +67,43 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           merge-multiple: true
 
-      - name: Publish
+      - name: Publish next release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-              --title "$GITHUB_REF_NAME" \
-              --notes "A static musl executable that loads the host's unmodified glibc Vulkan stack and renders an image with it. Download, \`chmod +x\`, run: \`./vulkan-x86_64 out.png\` (needs any Vulkan driver, e.g. mesa-vulkan-drivers)."
-          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+          set -euo pipefail
+
+          tag="$({
+            gh release list \
+              --repo "$GITHUB_REPOSITORY" \
+              --limit 1000 \
+              --json tagName \
+              --jq '.[].tagName'
+          } | awk '/^[1-9][0-9]*$/ { if ($1 + 0 > max) max = $1 + 0 } END { print max + 1 }')"
+
+          if git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null; then
+            test "$(git rev-parse "refs/tags/$tag^{commit}")" = "$GITHUB_SHA"
+          else
+            git config user.name "solo release bot"
+            git config user.email "noreply@github.com"
+            git tag --annotate "$tag" "$GITHUB_SHA" --message "solo release $tag"
+            git push origin "refs/tags/$tag"
+          fi
+
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$tag" \
+            --generate-notes \
+            --notes "The static demo: a musl-linked executable that loads the host's unmodified glibc Vulkan stack and renders an image with it. Download, \`chmod +x\`, run: \`./vulkan-x86_64 out.png\` (needs any Vulkan driver, e.g. mesa-vulkan-drivers)." \
             vulkan-x86_64 vulkan-aarch64
