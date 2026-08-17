@@ -1,6 +1,5 @@
 import os
 import shutil
-import sys
 
 import build
 
@@ -24,29 +23,6 @@ linker_flags = []
 
 if shutil.which("ld") is None and (lld := shutil.which("ld.lld")):
     linker_flags.append(f"-fuse-ld={lld}")
-
-# Every test links the vendored musl and libc++, like the vulkan demo, and the
-# include list below is global to an invocation. A run that also built the host
-# library would compile it against the vendored libc++ and link it against the
-# host one, so the two worlds are kept in separate invocations, loudly.
-hostTargets = ("dlfcn", "install")
-vendoredTargets = (
-    "arch_smoke",
-    "pthread_bridge",
-    "pthread_test",
-    "smoke",
-    "test",
-    "vulkan",
-    "vulkan_test",
-)
-requested = [argument for argument in sys.argv[1:] if not argument.startswith("-")]
-vendoredBuild = any(argument in vendoredTargets for argument in requested)
-
-if vendoredBuild and any(argument in hostTargets for argument in requested):
-    raise SystemExit(
-        "build.py: the tests build against the vendored runtime and cannot share "
-        "an invocation with the host library; build them separately"
-    )
 
 
 def symbolHeader(kind):
@@ -141,31 +117,34 @@ compiler_rt_root = f"{llvm_root}/compiler-rt/builtins"
 vulkan_headers_root = f"{vulkan_root}/vulkan/headers/include"
 vulkan_loader_root = f"{vulkan_root}/vulkan/loader/loader"
 
-if vendoredBuild:
-    build.includes += [
-        "$(S)/lib",
-        "$(B)/bin/vulkan/libcxx/include",
-        f"{libcxx_root}/include",
-        f"{libcxxabi_root}/include",
-        f"{libunwind_root}/include",
-        f"{musl_root}/arch/x86_64",
-        f"{musl_root}/arch/generic",
-        "$(B)/bin/vulkan/musl/include",
-        f"{musl_root}/include",
-        f"{compiler_rt_root}",
-        f"{libcxx_root}/src",
-        f"{libcxx_root}/src/include",
-        f"{libcxxabi_root}/src",
-        f"{libunwind_root}/src",
-        "$(B)/bin/vulkan/zlib",
-        f"{vulkan_root}/zlib",
-        "$(B)/bin/vulkan/png",
-        f"{vulkan_root}/png",
-        f"{vulkan_loader_root}",
-        f"{vulkan_loader_root}/generated",
-        f"{vulkan_headers_root}",
-        f"{vulkan_root}",
-    ]
+# The tests and the vulkan demo link the vendored musl and libc++; the host
+# library must never see those headers. Include paths are therefore per-target:
+# every vendored target lists this set, and the host targets resolve against
+# the host toolchain alone, so one invocation can build both worlds.
+vendored_includes = [
+    "$(S)/lib",
+    "$(B)/bin/vulkan/libcxx/include",
+    f"{libcxx_root}/include",
+    f"{libcxxabi_root}/include",
+    f"{libunwind_root}/include",
+    f"{musl_root}/arch/x86_64",
+    f"{musl_root}/arch/generic",
+    "$(B)/bin/vulkan/musl/include",
+    f"{musl_root}/include",
+    f"{compiler_rt_root}",
+    f"{libcxx_root}/src",
+    f"{libcxx_root}/src/include",
+    f"{libcxxabi_root}/src",
+    f"{libunwind_root}/src",
+    "$(B)/bin/vulkan/zlib",
+    f"{vulkan_root}/zlib",
+    "$(B)/bin/vulkan/png",
+    f"{vulkan_root}/png",
+    f"{vulkan_loader_root}",
+    f"{vulkan_loader_root}/generated",
+    f"{vulkan_headers_root}",
+    f"{vulkan_root}",
+]
 
 musl_internal_includes = [
     f"{musl_root}/arch/x86_64",
@@ -262,7 +241,7 @@ musl = library(
     name="vulkan_musl",
     srcs=muslSources(),
     deps=runtime_generated,
-    includes=musl_internal_includes,
+    includes=[*musl_internal_includes, *vendored_includes],
     cflags=[
         *c_runtime_flags,
         "-std=c99",
@@ -281,6 +260,7 @@ compiler_rt = library(
     name="vulkan_compiler_rt",
     srcs=compiler_rt_sources,
     deps=runtime_generated,
+    includes=vendored_includes,
     cflags=[*c_runtime_flags, "-ffreestanding", "-w"],
     output="$(B)/bin/vulkan/lib/libcompiler_rt.a",
 )
@@ -301,6 +281,7 @@ libunwind = library(
         ],
     ),
     deps=runtime_generated,
+    includes=vendored_includes,
     cflags=[*c_runtime_flags, "-fexceptions", "-w"],
     cxxflags=[*cxx_runtime_flags, "-fno-rtti"],
     cppflags=[
@@ -336,6 +317,7 @@ libcxxabi = library(
         ],
     ),
     deps=runtime_generated,
+    includes=vendored_includes,
     cflags=[*c_runtime_flags, "-w"],
     cxxflags=cxx_runtime_flags,
     cppflags=[
@@ -393,6 +375,7 @@ libcxx = library(
     name="vulkan_libcxx",
     srcs=libcxx_sources,
     deps=runtime_generated,
+    includes=vendored_includes,
     cflags=[*c_runtime_flags, "-w"],
     cxxflags=cxx_runtime_flags,
     cppflags=[
@@ -406,7 +389,7 @@ dlfcn_static = library(
     name="vulkan_dlfcn",
     srcs=dlfcn_srcs,
     deps=[*runtime_generated, *symbol_headers],
-    includes=["$(B)/lib"],
+    includes=["$(B)/lib", *vendored_includes],
     cflags=c_runtime_flags,
     cxxflags=[
         *cxx_runtime_flags,
@@ -461,6 +444,7 @@ zlib = library(
         )
     ],
     deps=[*runtime_generated, zconf],
+    includes=vendored_includes,
     cflags=[*c_runtime_flags, "-w"],
     cppflags=["-DHAVE_UNISTD_H=1"],
     output="$(B)/bin/vulkan/lib/libz.a",
@@ -510,6 +494,7 @@ png = library(
         )
     ],
     deps=[*runtime_generated, pnglibconf],
+    includes=vendored_includes,
     cflags=[*c_runtime_flags, "-w"],
     output="$(B)/bin/vulkan/lib/libpng.a",
 )
@@ -537,6 +522,7 @@ vulkan_loader = library(
         ],
     ),
     deps=runtime_generated,
+    includes=vendored_includes,
     cflags=[*c_runtime_flags, "-w"],
     cppflags=[
         "-D_GNU_SOURCE",
@@ -564,6 +550,7 @@ vulkan_app = library(
         },
     ],
     deps=[*runtime_generated, pnglibconf],
+    includes=vendored_includes,
     cflags=c_runtime_flags,
     cxxflags=cxx_runtime_flags,
     output="$(B)/bin/vulkan/lib/libvulkan_app.a",
@@ -575,7 +562,7 @@ def muslCrt(name, source):
         name=f"vulkan_{name}",
         srcs=[source],
         deps=runtime_generated,
-        includes=musl_internal_includes,
+        includes=[*musl_internal_includes, *vendored_includes],
         cflags=[
             *target_flags,
             "-w",
@@ -648,7 +635,7 @@ def vendoredTest(name, source):
         name=f"{name}_app",
         srcs=[{"src": source, "inputs": [libcxx_config_path]}],
         deps=[*runtime_generated, *symbol_headers],
-        includes=["$(B)/lib"],
+        includes=["$(B)/lib", *vendored_includes],
         cflags=c_runtime_flags,
         cxxflags=cxx_runtime_flags,
         output=f"$(B)/tst/lib/lib{name}_app.a",
