@@ -66,6 +66,10 @@ using namespace dyn;
     #define R_X86_64_TLSDESC 36
 #endif
 
+#ifndef R_X86_64_TPOFF64
+    #define R_X86_64_TPOFF64 18
+#endif
+
 #ifndef STT_GNU_IFUNC
     #define STT_GNU_IFUNC 10
 #endif
@@ -1392,6 +1396,12 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
             where[1] = reinterpret_cast<uintptr_t>(argument);
             return false;
         }
+    }
+
+    // Initial-exec TLS wants a fixed offset in the static TLS block that
+    // musl laid out at startup; dev/PLAN.md item 6 is the surplus plan.
+    if (type == R_X86_64_TPOFF64) {
+        throwError("%s: initial-exec TLS is not supported", image.path.c_str());
     }
 
     auto definition = resolveSymbol(image, symbolIndex);
