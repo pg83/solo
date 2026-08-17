@@ -246,6 +246,21 @@ int main() {
         return 1;
     }
 
+    // The conformance battery: one check per implemented bridge adapter.
+    auto* shim = stub_dlopen("libdlfcn-test-shim.so", RTLD_NOW | RTLD_LOCAL);
+    if (!shim) {
+        fprintf(stderr, "shim conformance load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto shimTest = reinterpret_cast<GlibcTest>(requiredSymbol(shim, "glibc_shim_test"));
+    if (!shimTest) {
+        return 1;
+    }
+    if (auto result = shimTest(); result != 0) {
+        fprintf(stderr, "glibc shim conformance failed: %d check(s)\n", result);
+        return 1;
+    }
+
     auto* glibcException = stub_dlopen("libdlfcn-test-exception.so", RTLD_NOW | RTLD_LOCAL);
 
     if (!glibcException) {
@@ -343,6 +358,7 @@ int main() {
         "glibc dlopen/dlsym bridge: libc, libdl, pthread, factory, ELF, versions: ok\n"
         "RTLD_GLOBAL and RTLD_NEXT: ok\n"
         "lazy PLT binding: ok\n"
+        "glibc shim conformance battery: ok\n"
         "ELF TLS: per-thread blocks and thread-exit destructors: ok\n"
         "glibc C++ throw, unwind, destructor, catch: ok\n"
         "C++ exceptions across static/glibc boundaries in both directions: ok\n"

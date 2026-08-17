@@ -2,10 +2,31 @@
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+
+def builtin_include(compiler):
+    """The compiler's own header directory (stddef.h and friends)."""
+    for flags in (["-print-file-name=include"], ["-print-resource-dir"]):
+        result = subprocess.run(
+            [*compiler, *flags], text=True, stdout=subprocess.PIPE, check=False
+        )
+        path = Path(result.stdout.strip())
+        if flags[0] == "-print-resource-dir":
+            path = path / "include"
+        if result.returncode == 0 and path.is_absolute() and (path / "stddef.h").is_file():
+            return path
+    binary = shutil.which(compiler[0])
+    if binary:
+        prefix = Path(binary).resolve().parent.parent
+        for candidate in [prefix / "share" / "include", *sorted(prefix.glob("lib/clang/*/include"))]:
+            if (candidate / "stddef.h").is_file():
+                return candidate
+    raise SystemExit(f"run_smoke.py: cannot find the builtin headers of {compiler}")
 
 
 def main():
@@ -59,6 +80,31 @@ def main():
                 "-Wl,-soname,libdlfcn-test-exception.so",
                 "-o",
                 str(glibc_exception_test),
+            ],
+            check=True,
+        )
+        # The conformance battery compiles against the extracted glibc and
+        # Linux headers, so its ABI expectations are exactly glibc's.
+        compiler = shlex.split(os.environ["DLFCN_CC"])
+        shim_test = library_path / "libdlfcn-test-shim.so"
+        subprocess.run(
+            [
+                *compiler,
+                "-fPIC",
+                "-fno-stack-protector",
+                "-shared",
+                "-nostdlib",
+                "-nostdinc",
+                "-isystem",
+                str(root / "usr" / "include"),
+                "-isystem",
+                str(builtin_include(compiler)),
+                "-Wl,--no-as-needed",
+                str(root / "usr" / "lib" / "libc.so.6"),
+                "-Wl,-soname,libdlfcn-test-shim.so",
+                os.environ["DLFCN_GLIBC_SHIM_TEST_SOURCE"],
+                "-o",
+                str(shim_test),
             ],
             check=True,
         )

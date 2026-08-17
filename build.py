@@ -777,6 +777,13 @@ arch_packages = [
         "libstdc++-15.2.1+r604+g0b99615a8aef-1-x86_64.pkg.tar.zst",
         "73dc1b0000e915339759d9492bb30e93ff343e041d5d5601b2befda12235ec78",
     ),
+    (
+        "linux-api-headers",
+        "https://archive.archlinux.org/packages/l/linux-api-headers/"
+        "linux-api-headers-7.2-1-x86_64.pkg.tar.zst",
+        "linux-api-headers-7.2-1-x86_64.pkg.tar.zst",
+        "d8d3483363e70b353ae31bbf8773df77780724eaeaa140faf4e4111bdb87588f",
+    ),
 ]
 
 downloadTargets = {}
@@ -809,7 +816,7 @@ downloads = list(downloadTargets.values())
 
 arch_smoke = command(
     name="arch_smoke",
-    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/glibc_exception_test.cpp", "$(S)/tst/glibc_lazy_test.c", "$(S)/tst/run_smoke.py", *archives],
+    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/glibc_exception_test.cpp", "$(S)/tst/glibc_lazy_test.c", "$(S)/tst/glibc_shim_test.c", "$(S)/tst/run_smoke.py", *archives],
     outputs=["$(B)/tst/arch-smoke.log"],
     deps=[smoke, *downloads],
     cmd=[
@@ -823,6 +830,7 @@ arch_smoke = command(
         "DLFCN_CXX": glibc_test_cxx,
         "DLFCN_GLIBC_EXCEPTION_TEST_SOURCE": "$(S)/tst/glibc_exception_test.cpp",
         "DLFCN_GLIBC_LAZY_TEST_SOURCE": "$(S)/tst/glibc_lazy_test.c",
+        "DLFCN_GLIBC_SHIM_TEST_SOURCE": "$(S)/tst/glibc_shim_test.c",
         "DLFCN_GLIBC_TEST_SOURCE": "$(S)/tst/glibc_test.c",
         "DLFCN_SMOKE": "$(B)/tst/smoke",
     },
@@ -1083,14 +1091,6 @@ corpus_dependencies = {
     "systemd-libs": ["libgcc"],
     "util-linux-libs": ["sqlite", "systemd-libs", "libgcc"],
 }
-
-downloadPackage(
-    "linux-api-headers",
-    "https://archive.archlinux.org/packages/l/linux-api-headers/"
-    "linux-api-headers-7.2-1-x86_64.pkg.tar.zst",
-    "linux-api-headers-7.2-1-x86_64.pkg.tar.zst",
-    "d8d3483363e70b353ae31bbf8773df77780724eaeaa140faf4e4111bdb87588f",
-)
 
 # The glibc-vs-musl ABI table: reruns only when the pinned glibc, the vendored
 # musl, or the suspect list in the probe changes.
