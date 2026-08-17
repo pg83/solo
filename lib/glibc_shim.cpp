@@ -414,6 +414,18 @@ namespace {
         return &errno;
     }
 
+    // C23 sized deallocation: the sizes are advisory.
+    static void sh_free_sized(void* pointer, size_t size) {
+        (void)size;
+        free(pointer);
+    }
+
+    static void sh_free_aligned_sized(void* pointer, size_t alignment, size_t size) {
+        (void)alignment;
+        (void)size;
+        free(pointer);
+    }
+
     __attribute__((noreturn)) static void sh_stack_chk_fail(void) {
         abort();
     }
@@ -1542,6 +1554,8 @@ namespace {
         SH_FUNCTION("__snprintf_chk", "GLIBC_2.3.4", sh_snprintf_chk),
         SH_FUNCTION("dlerror", "GLIBC_2.34", stub_dlerror),
         SH_FUNCTION("free", "GLIBC_2.2.5", free),
+        SH_FUNCTION("free_sized", "GLIBC_2.43", sh_free_sized),
+        SH_FUNCTION("free_aligned_sized", "GLIBC_2.43", sh_free_aligned_sized),
         SH_FUNCTION("abort", "GLIBC_2.2.5", abort),
         SH_FUNCTION("__errno_location", "GLIBC_2.2.5", sh_errno_location),
         SH_FUNCTION("strncpy", "GLIBC_2.2.5", strncpy),
