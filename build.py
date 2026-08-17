@@ -65,17 +65,17 @@ symbol_headers = [musl_symbols_header, glibc_symbols_header]
 
 dlfcn_srcs = [
     "$(S)/lib/dlfcn.cpp",
+    "$(S)/lib/elf_loader.S",
     "$(S)/lib/elf_loader.cpp",
     "$(S)/lib/fts.cpp",
+    "$(S)/lib/glibc_shim.S",
     "$(S)/lib/glibc_shim.cpp",
     "$(S)/lib/glibc_stubs.cpp",
     "$(S)/lib/hash.cpp",
     "$(S)/lib/iface_handle.cpp",
     "$(S)/lib/musl_provider.cpp",
     "$(S)/lib/musl_symbols.cpp",
-    "$(S)/lib/pltresolve.S",
     "$(S)/lib/thread_tls.cpp",
-    "$(S)/lib/tlsdesc.S",
 ]
 
 dlfcn = library(

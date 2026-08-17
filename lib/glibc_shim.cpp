@@ -16,6 +16,13 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <glob.h>
+#include <grp.h>
+#include <netdb.h>
+#include <spawn.h>
+#include <sys/sendfile.h>
+#include <sys/syscall.h>
+#include <sys/uio.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ftw.h>
@@ -32,6 +39,7 @@
 #include <regex.h>
 #include <resolv.h>
 #include <sched.h>
+#include <semaphore.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -78,6 +86,15 @@ extern "C" void _Unwind_Resume();
 extern "C" void _Unwind_Resume_or_Rethrow();
 extern "C" void _Unwind_SetGR();
 extern "C" void _Unwind_SetIP();
+// The two entry points backtrace() rides on, in the vendored
+// libunwind's ABI; the block above only forwards addresses.
+extern "C" int _Unwind_Backtrace(int (*step)(void*, void*), void* opaque);
+extern "C" uintptr_t _Unwind_GetIP(void* context);
+// The assembly halves in glibc_shim.S, against the glibc ucontext_t layout.
+extern "C" int soloGetcontext(void* context);
+extern "C" void soloSetcontext(void* context);
+extern "C" int soloSwapcontext(void* saved, void* target);
+extern "C" void soloStartContext();
 
 #define SH_FUNCTION(name, version, function) {name, version, (void*)(uintptr_t)(function)}
 
@@ -592,12 +609,1208 @@ namespace {
         return VectorFloat4{expf(value[0]), expf(value[1]), expf(value[2]), expf(value[3])};
     }
 
+    // backtrace over the static world's own unwinder: real frames, not a
+    // stub. The symbols come from the loader's dladdr.
+    struct BacktraceState {
+        void** buffer;
+        int size;
+        int count;
+    };
+
+    static int backtraceStep(void* context, void* opaque) {
+        auto* state = static_cast<BacktraceState*>(opaque);
+
+        // 4 is _URC_NORMAL_STOP, 0 is _URC_NO_REASON.
+        if (state->count >= state->size) {
+            return 4;
+        }
+        state->buffer[state->count++] = reinterpret_cast<void*>(_Unwind_GetIP(context));
+
+        return 0;
+    }
+
+    static int sh_backtrace(void** buffer, int size) {
+        BacktraceState state{buffer, size, 0};
+
+        if (size > 0) {
+            _Unwind_Backtrace(backtraceStep, &state);
+        }
+
+        return state.count;
+    }
+
+    static size_t backtraceLine(char* text, size_t size, void* address) {
+        Dl_info info{};
+
+        if (stub_dladdr(address, &info) && info.dli_fname && info.dli_sname) {
+            return snprintf(text, size, "%s(%s+0x%zx) [%p]", info.dli_fname, info.dli_sname, (size_t)((char*)address - (char*)info.dli_saddr), address);
+        }
+        if (stub_dladdr(address, &info) && info.dli_fname) {
+            return snprintf(text, size, "%s(+0x%zx) [%p]", info.dli_fname, (size_t)((char*)address - (char*)info.dli_fbase), address);
+        }
+
+        return snprintf(text, size, "[%p]", address);
+    }
+
+    static char** sh_backtrace_symbols(void* const* buffer, int size) {
+        size_t total = size * sizeof(char*);
+
+        for (int index = 0; index < size; ++index) {
+            total += backtraceLine(nullptr, 0, buffer[index]) + 1;
+        }
+
+        auto** lines = static_cast<char**>(malloc(total));
+
+        if (!lines) {
+            return nullptr;
+        }
+
+        auto* text = reinterpret_cast<char*>(lines + size);
+        auto* end = reinterpret_cast<char*>(lines) + total;
+
+        for (int index = 0; index < size; ++index) {
+            lines[index] = text;
+            text += backtraceLine(text, end - text, buffer[index]) + 1;
+        }
+
+        return lines;
+    }
+
+    static void sh_backtrace_symbols_fd(void* const* buffer, int size, int descriptor) {
+        for (int index = 0; index < size; ++index) {
+            char line[512];
+            auto length = backtraceLine(line, sizeof(line) - 1, buffer[index]);
+
+            line[length < sizeof(line) - 1 ? length : sizeof(line) - 2] = '\n';
+            write(descriptor, line, (length < sizeof(line) - 1 ? length : sizeof(line) - 2) + 1);
+        }
+    }
+
+    // The rest of the fortified family the corpus demands; the checked sizes
+    // are the compiler's business, the calls forward to musl.
+    static int sh_dprintf_chk(int descriptor, int flag, const char* format, ...) {
+        (void)flag;
+
+        va_list arguments;
+
+        va_start(arguments, format);
+
+        auto result = vdprintf(descriptor, format, arguments);
+
+        va_end(arguments);
+
+        return result;
+    }
+
+    static int sh_vdprintf_chk(int descriptor, int flag, const char* format, va_list arguments) {
+        (void)flag;
+        return vdprintf(descriptor, format, arguments);
+    }
+
+    static int sh_vprintf_chk(int flag, const char* format, va_list arguments) {
+        (void)flag;
+        return vprintf(format, arguments);
+    }
+
+    static int sh_swprintf_chk(wchar_t* text, size_t count, int flag, size_t size, const wchar_t* format, ...) {
+        (void)flag;
+        (void)size;
+
+        va_list arguments;
+
+        va_start(arguments, format);
+
+        auto result = vswprintf(text, count, format, arguments);
+
+        va_end(arguments);
+
+        return result;
+    }
+
+    static int sh_vswprintf_chk(wchar_t* text, size_t count, int flag, size_t size, const wchar_t* format, va_list arguments) {
+        (void)flag;
+        (void)size;
+        return vswprintf(text, count, format, arguments);
+    }
+
+    static int sh_wctomb_chk(char* text, wchar_t character, size_t size) {
+        (void)size;
+        return wctomb(text, character);
+    }
+
+    static ssize_t sh_readlink_chk(const char* path, char* buffer, size_t length, size_t size) {
+        (void)size;
+        return readlink(path, buffer, length);
+    }
+
+    static ssize_t sh_recv_chk(int descriptor, void* buffer, size_t length, size_t size, int flags) {
+        (void)size;
+        return recv(descriptor, buffer, length, flags);
+    }
+
+    static ssize_t sh_recvfrom_chk(int descriptor, void* buffer, size_t length, size_t size, int flags, struct sockaddr* address, socklen_t* addressLength) {
+        (void)size;
+        return recvfrom(descriptor, buffer, length, flags, address, addressLength);
+    }
+
+    static int sh_gethostname_chk(char* name, size_t length, size_t size) {
+        (void)size;
+        return gethostname(name, length);
+    }
+
+    static const char* sh_inet_ntop_chk(int family, const void* source, char* destination, socklen_t length, size_t size) {
+        (void)size;
+        return inet_ntop(family, source, destination, length);
+    }
+
+    // File and process plumbing musl spells without the 64 suffix or leaves
+    // to raw syscalls.
+    static ssize_t sh_sendfile64(int destination, int source, off_t* offset, size_t count) {
+        return sendfile(destination, source, offset, count);
+    }
+
+    static int sh_renameat2(int fromDirectory, const char* from, int toDirectory, const char* to, unsigned flags) {
+        return (int)syscall(SYS_renameat2, fromDirectory, from, toDirectory, to, flags);
+    }
+
+    static int sh_prlimit64(pid_t pid, int resource, const struct rlimit* fresh, struct rlimit* old) {
+        return prlimit(pid, resource, fresh, old);
+    }
+
+    static int sh_truncate64(const char* path, off_t length) {
+        return truncate(path, length);
+    }
+
+    static FILE* sh_tmpfile64(void) {
+        return tmpfile();
+    }
+
+    static ssize_t sh_pwritev64(int descriptor, const struct iovec* vector, int count, off_t offset) {
+        return pwritev(descriptor, vector, count, offset);
+    }
+
+    static int sh_readdir64_r(DIR* directory, struct dirent* entry, struct dirent** result) {
+        return readdir_r(directory, entry, result);
+    }
+
+    static ssize_t sh_getdents64(int descriptor, void* buffer, size_t size) {
+        return syscall(SYS_getdents64, descriptor, buffer, size);
+    }
+
+    static char* sh_canonicalize_file_name(const char* path) {
+        return realpath(path, nullptr);
+    }
+
+    static int sh_pidfd_getpid(int descriptor) {
+        char path[64];
+        char text[256];
+
+        snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", descriptor);
+
+        auto* stream = fopen(path, "r");
+
+        if (!stream) {
+            return -1;
+        }
+
+        int pid = -1;
+
+        while (fgets(text, sizeof(text), stream)) {
+            if (sscanf(text, "Pid: %d", &pid) == 1) {
+                break;
+            }
+        }
+        fclose(stream);
+        if (pid <= 0) {
+            errno = EBADF;
+            return -1;
+        }
+
+        return pid;
+    }
+
+    // The spawned child stays unreaped until the caller sees the pidfd, so
+    // opening it by pid after posix_spawnp cannot race a reuse.
+    static int sh_pidfd_spawnp(int* descriptor, const char* file, void* fileActions, void* attributes, char* const argv[], char* const envp[]) {
+        pid_t pid = 0;
+        auto result = posix_spawnp(&pid, file, static_cast<posix_spawn_file_actions_t*>(fileActions), static_cast<posix_spawnattr_t*>(attributes), argv, envp);
+
+        if (result) {
+            return result;
+        }
+
+        auto opened = (int)syscall(434, pid, 0);
+
+        if (opened < 0) {
+            return errno;
+        }
+        *descriptor = opened;
+
+        return 0;
+    }
+
+    static int sh_pkey_alloc(unsigned flags, unsigned rights) {
+        return (int)syscall(SYS_pkey_alloc, flags, rights);
+    }
+
+    static int sh_pkey_free(int key) {
+        return (int)syscall(SYS_pkey_free, key);
+    }
+
+    static int sh_pkey_mprotect(void* address, size_t length, int protection, int key) {
+        return (int)syscall(SYS_pkey_mprotect, address, length, protection, key);
+    }
+
+    static int sh_pkey_set(int key, unsigned rights) {
+#if defined(__x86_64__)
+        unsigned mask = 3u << (2 * key);
+        unsigned value;
+
+        __asm__ volatile("xor %%ecx, %%ecx\n\trdpkru" : "=a"(value) : : "rcx", "rdx");
+        value = (value & ~mask) | (rights << (2 * key));
+        __asm__ volatile("xor %%ecx, %%ecx\n\txor %%edx, %%edx\n\twrpkru" : : "a"(value) : "rcx", "rdx");
+
+        return 0;
+#else
+        (void)key;
+        (void)rights;
+        errno = ENOSYS;
+
+        return -1;
+#endif
+    }
+
+    static int sh_pkey_get(int key) {
+#if defined(__x86_64__)
+        unsigned value;
+
+        __asm__ volatile("xor %%ecx, %%ecx\n\trdpkru" : "=a"(value) : : "rcx", "rdx");
+
+        return (value >> (2 * key)) & 3;
+#else
+        (void)key;
+        errno = ENOSYS;
+
+        return -1;
+#endif
+    }
+
+    // musl's glob_t already has the 64-bit layout glibc calls glob64_t.
+    static int sh_glob64(const char* pattern, int flags, int (*failed)(const char*, int), glob_t* result) {
+        return glob(pattern, flags, failed, result);
+    }
+
+    static void sh_globfree64(glob_t* result) {
+        globfree(result);
+    }
+
+    static int sh_glob_pattern_p(const char* pattern, int quote) {
+        for (const char* character = pattern; *character; ++character) {
+            if (*character == '*' || *character == '?' || *character == '[') {
+                return 1;
+            }
+            if (quote && *character == '\\' && character[1]) {
+                ++character;
+            }
+        }
+
+        return 0;
+    }
+
+    static int sh_isnanf(float value) {
+        return isnan(value);
+    }
+
+    static int sh_isinff(float value) {
+        return isinf(value);
+    }
+
+    static double sh_gamma(double value) {
+        return lgamma(value);
+    }
+
+#if defined(__x86_64__)
+    typedef __float128 Float128;
+#else
+    // On aarch64 long double already is binary128.
+    typedef long double Float128;
+#endif
+
+    // On aarch64 long double is binary128, so these are exact. On x86-64
+    // they round through double, converted by hand in integer arithmetic:
+    // the vendored compiler-rt has no binary128 helpers where long double is
+    // the 80-bit x87 type. The honest best without a native converter.
+#if defined(__x86_64__)
+    static Float128 extendedDouble(double from) {
+        uint64_t bits;
+
+        memcpy(&bits, &from, sizeof(bits));
+
+        unsigned __int128 sign = (unsigned __int128)(bits >> 63) << 127;
+        auto exponent = (int64_t)((bits >> 52) & 0x7ff);
+        unsigned __int128 fraction = bits & ((1ull << 52) - 1);
+        unsigned __int128 packed;
+
+        if (exponent == 0x7ff) {
+            // Infinity or NaN keeps its payload at the top of the fraction.
+            packed = sign | ((unsigned __int128)0x7fff << 112) | (fraction << 60);
+        } else if (exponent == 0 && !fraction) {
+            packed = sign;
+        } else {
+            if (exponent == 0) {
+                // A subnormal double normalizes in binary128's wider range.
+                auto lead = 63 - __builtin_clzll((uint64_t)fraction);
+
+                exponent = lead - 51;
+                fraction = (fraction << (52 - lead)) & (((unsigned __int128)1 << 52) - 1);
+            }
+            packed = sign | ((unsigned __int128)(exponent - 1023 + 16383) << 112) | (fraction << 60);
+        }
+
+        Float128 value;
+
+        memcpy(&value, &packed, sizeof(value));
+
+        return value;
+    }
+
+    static double truncatedBinary128(Float128 from) {
+        unsigned __int128 bits;
+
+        memcpy(&bits, &from, sizeof(bits));
+
+        uint64_t sign = (uint64_t)(bits >> 127) << 63;
+        auto exponent = (int64_t)((bits >> 112) & 0x7fff);
+        auto fraction = bits & (((unsigned __int128)1 << 112) - 1);
+        uint64_t packed;
+
+        if (exponent == 0x7fff) {
+            packed = sign | (0x7ffull << 52) | (fraction ? 1ull << 51 : 0);
+        } else {
+            auto rebased = exponent - 16383 + 1023;
+            auto mantissa = fraction | ((unsigned __int128)(exponent != 0) << 112);
+            // Keep 53 bits: shift by 60 for normals, more into the double's
+            // subnormal range, rounding to nearest even.
+            auto shift = rebased > 0 ? 60 : 60 + 1 - rebased;
+
+            if (rebased >= 0x7ff) {
+                packed = sign | (0x7ffull << 52);
+            } else if (shift > 114) {
+                packed = sign;
+            } else {
+                auto kept = (uint64_t)(mantissa >> shift);
+                auto rest = mantissa & (((unsigned __int128)1 << shift) - 1);
+                auto half = (unsigned __int128)1 << (shift - 1);
+
+                if (rest > half || (rest == half && (kept & 1))) {
+                    ++kept;
+                }
+                if (rebased <= 0 && kept >> 53) {
+                    ++rebased;
+                    kept >>= 1;
+                }
+                if (kept >> 53) {
+                    ++rebased;
+                    kept >>= 1;
+                }
+                packed = sign | ((uint64_t)(rebased > 0 ? rebased : 0) << 52) | (kept & ((1ull << 52) - 1));
+            }
+        }
+
+        double value;
+
+        memcpy(&value, &packed, sizeof(value));
+
+        return value;
+    }
+#endif
+
+    static Float128 sh_strtof128(const char* text, char** end) {
+#if defined(__aarch64__)
+        return strtold(text, end);
+#else
+        return extendedDouble(strtod(text, end));
+#endif
+    }
+
+    static Float128 sh_logf128(Float128 value) {
+#if defined(__aarch64__)
+        return logl((long double)value);
+#else
+        return extendedDouble(log(truncatedBinary128(value)));
+#endif
+    }
+
+    static int sh_strfromf128(char* buffer, size_t size, const char* format, Float128 value) {
+        // The strfrom format is '%', optional precision, one conversion
+        // letter; reinsert it with the matching length modifier.
+        char shape[32];
+        auto length = strlen(format);
+
+        if (length < 2 || length > sizeof(shape) - 2 || format[0] != '%') {
+            errno = EINVAL;
+            return -1;
+        }
+#if defined(__aarch64__)
+        memcpy(shape, format, length - 1);
+        shape[length - 1] = 'L';
+        shape[length] = format[length - 1];
+        shape[length + 1] = 0;
+
+        return snprintf(buffer, size, shape, (long double)value);
+#else
+        memcpy(shape, format, length + 1);
+
+        return snprintf(buffer, size, shape, truncatedBinary128(value));
+#endif
+    }
+
+    // A per-caller-state generator behind glibc's random_r API: only these
+    // functions ever touch the caller's state buffer, so its contents are
+    // ours; splitmix over the buffer beats faking glibc's TYPE_x layouts.
+    struct GlibcRandomData {
+        uint64_t* state;
+    };
+
+    static int sh_initstate_r(unsigned seed, char* state, size_t size, GlibcRandomData* data) {
+        if (!state || size < sizeof(uint64_t) || !data) {
+            errno = EINVAL;
+            return -1;
+        }
+        data->state = reinterpret_cast<uint64_t*>(state);
+        *data->state = seed ? seed : 1;
+
+        return 0;
+    }
+
+    static int sh_random_r(GlibcRandomData* data, int32_t* result) {
+        if (!data || !data->state || !result) {
+            errno = EINVAL;
+            return -1;
+        }
+
+        auto value = *data->state;
+
+        value ^= value << 13;
+        value ^= value >> 7;
+        value ^= value << 17;
+        *data->state = value;
+        *result = (int32_t)(value >> 33);
+
+        return 0;
+    }
+
+    static int sh_srandom_r(unsigned seed, GlibcRandomData* data) {
+        if (!data || !data->state) {
+            errno = EINVAL;
+            return -1;
+        }
+        *data->state = seed ? seed : 1;
+
+        return 0;
+    }
+
+    // The _r database wrappers copy musl's static results into the caller's
+    // buffer, which is the whole of the _r contract.
+    static char* placeString(const char* text, char** cursor, char* end) {
+        auto length = strlen(text) + 1;
+
+        if (*cursor + length > end) {
+            return nullptr;
+        }
+
+        auto* placed = *cursor;
+
+        memcpy(placed, text, length);
+        *cursor += length;
+
+        return placed;
+    }
+
+    static char** placeStrings(char* const* list, char** cursor, char* end) {
+        size_t count = 0;
+
+        while (list[count]) {
+            ++count;
+        }
+
+        auto misalignment = reinterpret_cast<uintptr_t>(*cursor) % sizeof(char*);
+
+        if (misalignment) {
+            *cursor += sizeof(char*) - misalignment;
+        }
+
+        auto** placed = reinterpret_cast<char**>(*cursor);
+
+        *cursor += (count + 1) * sizeof(char*);
+        if (*cursor > end) {
+            return nullptr;
+        }
+        for (size_t index = 0; index < count; ++index) {
+            if (!(placed[index] = placeString(list[index], cursor, end))) {
+                return nullptr;
+            }
+        }
+        placed[count] = nullptr;
+
+        return placed;
+    }
+
+    static int placeProtoent(const struct protoent* source, struct protoent* destination, char* buffer, size_t size, struct protoent** result) {
+        *result = nullptr;
+        if (!source) {
+            return 0;
+        }
+
+        auto* cursor = buffer;
+        auto* end = buffer + size;
+
+        destination->p_proto = source->p_proto;
+        if (!(destination->p_name = placeString(source->p_name, &cursor, end)) || !(destination->p_aliases = placeStrings(source->p_aliases, &cursor, end))) {
+            return ERANGE;
+        }
+        *result = destination;
+
+        return 0;
+    }
+
+    static int sh_getprotobyname_r(const char* name, struct protoent* destination, char* buffer, size_t size, struct protoent** result) {
+        return placeProtoent(getprotobyname(name), destination, buffer, size, result);
+    }
+
+    static int sh_getprotobynumber_r(int number, struct protoent* destination, char* buffer, size_t size, struct protoent** result) {
+        return placeProtoent(getprotobynumber(number), destination, buffer, size, result);
+    }
+
+    static int sh_getprotoent_r(struct protoent* destination, char* buffer, size_t size, struct protoent** result) {
+        return placeProtoent(getprotoent(), destination, buffer, size, result);
+    }
+
+    static int sh_getservent_r(struct servent* destination, char* buffer, size_t size, struct servent** result) {
+        auto* source = getservent();
+
+        *result = nullptr;
+        if (!source) {
+            return 0;
+        }
+
+        auto* cursor = buffer;
+        auto* end = buffer + size;
+
+        destination->s_port = source->s_port;
+        if (!(destination->s_name = placeString(source->s_name, &cursor, end)) || !(destination->s_proto = placeString(source->s_proto, &cursor, end)) || !(destination->s_aliases = placeStrings(source->s_aliases, &cursor, end))) {
+            return ERANGE;
+        }
+        *result = destination;
+
+        return 0;
+    }
+
+    static int placeNetent(const struct netent* source, struct netent* destination, char* buffer, size_t size, struct netent** result, int* herror) {
+        *result = nullptr;
+        if (herror) {
+            *herror = HOST_NOT_FOUND;
+        }
+        if (!source) {
+            return 0;
+        }
+
+        auto* cursor = buffer;
+        auto* end = buffer + size;
+
+        destination->n_addrtype = source->n_addrtype;
+        destination->n_net = source->n_net;
+        if (!(destination->n_name = placeString(source->n_name, &cursor, end)) || !(destination->n_aliases = placeStrings(source->n_aliases, &cursor, end))) {
+            return ERANGE;
+        }
+        *result = destination;
+
+        return 0;
+    }
+
+    static int sh_getnetent_r(struct netent* destination, char* buffer, size_t size, struct netent** result, int* herror) {
+        return placeNetent(getnetent(), destination, buffer, size, result, herror);
+    }
+
+    static int sh_getnetbyname_r(const char* name, struct netent* destination, char* buffer, size_t size, struct netent** result, int* herror) {
+        return placeNetent(getnetbyname(name), destination, buffer, size, result, herror);
+    }
+
+    static int sh_getnetbyaddr_r(uint32_t net, int type, struct netent* destination, char* buffer, size_t size, struct netent** result, int* herror) {
+        return placeNetent(getnetbyaddr(net, type), destination, buffer, size, result, herror);
+    }
+
+    static int sh_gethostent_r(struct hostent* destination, char* buffer, size_t size, struct hostent** result, int* herror) {
+        auto* source = gethostent();
+
+        *result = nullptr;
+        if (herror) {
+            *herror = HOST_NOT_FOUND;
+        }
+        if (!source) {
+            return 0;
+        }
+
+        auto* cursor = buffer;
+        auto* end = buffer + size;
+
+        destination->h_addrtype = source->h_addrtype;
+        destination->h_length = source->h_length;
+        if (!(destination->h_name = placeString(source->h_name, &cursor, end)) || !(destination->h_aliases = placeStrings(source->h_aliases, &cursor, end))) {
+            return ERANGE;
+        }
+
+        size_t addresses = 0;
+
+        while (source->h_addr_list[addresses]) {
+            ++addresses;
+        }
+
+        auto misalignment = reinterpret_cast<uintptr_t>(cursor) % sizeof(char*);
+
+        cursor += misalignment ? sizeof(char*) - misalignment : 0;
+        destination->h_addr_list = reinterpret_cast<char**>(cursor);
+        cursor += (addresses + 1) * sizeof(char*);
+        if (cursor + addresses * source->h_length > end) {
+            return ERANGE;
+        }
+        for (size_t index = 0; index < addresses; ++index) {
+            destination->h_addr_list[index] = cursor;
+            memcpy(cursor, source->h_addr_list[index], source->h_length);
+            cursor += source->h_length;
+        }
+        destination->h_addr_list[addresses] = nullptr;
+        *result = destination;
+
+        return 0;
+    }
+
+    static int sh_getpwent_r(struct passwd* destination, char* buffer, size_t size, struct passwd** result) {
+        auto* source = getpwent();
+
+        *result = nullptr;
+        if (!source) {
+            return ENOENT;
+        }
+
+        auto* cursor = buffer;
+        auto* end = buffer + size;
+
+        destination->pw_uid = source->pw_uid;
+        destination->pw_gid = source->pw_gid;
+        if (!(destination->pw_name = placeString(source->pw_name, &cursor, end)) || !(destination->pw_passwd = placeString(source->pw_passwd ? source->pw_passwd : "", &cursor, end)) || !(destination->pw_gecos = placeString(source->pw_gecos ? source->pw_gecos : "", &cursor, end)) || !(destination->pw_dir = placeString(source->pw_dir, &cursor, end)) || !(destination->pw_shell = placeString(source->pw_shell, &cursor, end))) {
+            return ERANGE;
+        }
+        *result = destination;
+
+        return 0;
+    }
+
+    static int sh_getgrent_r(struct group* destination, char* buffer, size_t size, struct group** result) {
+        auto* source = getgrent();
+
+        *result = nullptr;
+        if (!source) {
+            return ENOENT;
+        }
+
+        auto* cursor = buffer;
+        auto* end = buffer + size;
+
+        destination->gr_gid = source->gr_gid;
+        if (!(destination->gr_name = placeString(source->gr_name, &cursor, end)) || !(destination->gr_passwd = placeString(source->gr_passwd ? source->gr_passwd : "", &cursor, end)) || !(destination->gr_mem = placeStrings(source->gr_mem, &cursor, end))) {
+            return ERANGE;
+        }
+        *result = destination;
+
+        return 0;
+    }
+
+    // The clock-parameterized waits over musl's CLOCK_REALTIME-based timed
+    // calls: the deadline converts through "remaining time", which admits a
+    // clock-jump race glibc's native versions do not have.
+    static struct timespec convertDeadline(clockid_t clock, const struct timespec* deadline) {
+        struct timespec source;
+        struct timespec real;
+
+        clock_gettime(clock, &source);
+        clock_gettime(CLOCK_REALTIME, &real);
+
+        auto nanoseconds = (deadline->tv_sec - source.tv_sec) * 1000000000ll + (deadline->tv_nsec - source.tv_nsec);
+        auto absolute = real.tv_sec * 1000000000ll + real.tv_nsec + (nanoseconds > 0 ? nanoseconds : 0);
+
+        return {absolute / 1000000000ll, absolute % 1000000000ll};
+    }
+
+    static int sh_pthread_cond_clockwait(pthread_cond_t* condition, pthread_mutex_t* mutex, clockid_t clock, const struct timespec* deadline) {
+        auto real = convertDeadline(clock, deadline);
+
+        return pthread_cond_timedwait(condition, mutex, &real);
+    }
+
+    static int sh_pthread_mutex_clocklock(pthread_mutex_t* mutex, clockid_t clock, const struct timespec* deadline) {
+        auto real = convertDeadline(clock, deadline);
+
+        return pthread_mutex_timedlock(mutex, &real);
+    }
+
+    static int sh_pthread_clockjoin_np(pthread_t thread, void** value, clockid_t clock, const struct timespec* deadline) {
+        auto real = convertDeadline(clock, deadline);
+
+        return pthread_timedjoin_np(thread, value, &real);
+    }
+
+    static int sh_sem_clockwait(sem_t* semaphore, clockid_t clock, const struct timespec* deadline) {
+        auto real = convertDeadline(clock, deadline);
+
+        return sem_timedwait(semaphore, &real);
+    }
+
+    static long long sh_isoc23_wcstoll(const wchar_t* text, wchar_t** end, int base) {
+        return wcstoll(text, end, base);
+    }
+
+    static unsigned long long sh_isoc23_wcstoull(const wchar_t* text, wchar_t** end, int base) {
+        return wcstoull(text, end, base);
+    }
+
+    static size_t sh_wcslcpy(wchar_t* destination, const wchar_t* source, size_t size) {
+        auto length = wcslen(source);
+
+        if (size) {
+            auto copied = length < size - 1 ? length : size - 1;
+
+            wmemcpy(destination, source, copied);
+            destination[copied] = 0;
+        }
+
+        return length;
+    }
+
+    static size_t sh_wcslcat(wchar_t* destination, const wchar_t* source, size_t size) {
+        auto used = wcsnlen(destination, size);
+
+        if (used == size) {
+            return size + wcslen(source);
+        }
+
+        return used + sh_wcslcpy(destination + used, source, size - used);
+    }
+
+    // Scheduling preferences musl does not model; accepting them changes
+    // fairness, never correctness.
+    static int sh_pthread_rwlockattr_setkind_np(void* attribute, int kind) {
+        (void)attribute;
+        if (kind < 0 || kind > 2) {
+            return EINVAL;
+        }
+
+        return 0;
+    }
+
+    static int sh_pthread_attr_setaffinity_np(void* attribute, size_t size, const void* set) {
+        (void)attribute;
+        (void)size;
+        (void)set;
+
+        return 0;
+    }
+
+    // The pre-2.34 glibc cleanup ABI: pthread_cleanup_push registered a
+    // longjmp buffer for the cancellation unwinder. Without glibc-style
+    // cancellation the registration chain is never walked, so registering is
+    // a no-op — but reaching the unwinder itself means a cancellation we
+    // cannot deliver, and that stays loud.
+    static void sh_pthread_register_cancel(void* buffer) {
+        (void)buffer;
+    }
+
+    static void sh_pthread_unregister_cancel(void* buffer) {
+        (void)buffer;
+    }
+
+    [[noreturn]] static void sh_pthread_unwind_next(void* buffer) {
+        (void)buffer;
+        fputs("glibc bridge: __pthread_unwind_next: glibc-style cancellation is not supported\n", stderr);
+        abort();
+    }
+
+    static void sh_error(int status, int number, const char* format, ...) {
+        fflush(stdout);
+        fprintf(stderr, "%s: ", program_invocation_short_name);
+
+        va_list arguments;
+
+        va_start(arguments, format);
+        vfprintf(stderr, format, arguments);
+        va_end(arguments);
+        if (number) {
+            fprintf(stderr, ": %s", strerror(number));
+        }
+        fputc('\n', stderr);
+        if (status) {
+            exit(status);
+        }
+    }
+
+    // The argz vectors: NUL-separated strings in one malloc'd block.
+    static int sh_argz_append(char** argz, size_t* length, const char* extra, size_t extraLength) {
+        auto* grown = static_cast<char*>(realloc(*argz, *length + extraLength));
+
+        if (!grown && *length + extraLength) {
+            return ENOMEM;
+        }
+        memcpy(grown + *length, extra, extraLength);
+        *argz = grown;
+        *length += extraLength;
+
+        return 0;
+    }
+
+    static int sh_argz_create_sep(const char* text, int separator, char** argz, size_t* length) {
+        *argz = nullptr;
+        *length = 0;
+
+        auto size = strlen(text);
+
+        if (!size) {
+            return 0;
+        }
+
+        auto* block = static_cast<char*>(malloc(size + 1));
+
+        if (!block) {
+            return ENOMEM;
+        }
+
+        size_t used = 0;
+        size_t start = 0;
+
+        for (size_t index = 0; index <= size; ++index) {
+            if (text[index] == separator || !text[index]) {
+                if (index > start) {
+                    memcpy(block + used, text + start, index - start);
+                    used += index - start;
+                    block[used++] = 0;
+                }
+                start = index + 1;
+            }
+        }
+        *argz = block;
+        *length = used;
+
+        return 0;
+    }
+
+    static int sh_argz_insert(char** argz, size_t* length, char* before, const char* entry) {
+        auto entryLength = strlen(entry) + 1;
+
+        if (!before) {
+            return sh_argz_append(argz, length, entry, entryLength);
+        }
+
+        auto offset = before - *argz;
+        auto* grown = static_cast<char*>(realloc(*argz, *length + entryLength));
+
+        if (!grown) {
+            return ENOMEM;
+        }
+        memmove(grown + offset + entryLength, grown + offset, *length - offset);
+        memcpy(grown + offset, entry, entryLength);
+        *argz = grown;
+        *length += entryLength;
+
+        return 0;
+    }
+
+    static void sh_argz_stringify(char* argz, size_t length, int separator) {
+        for (size_t index = 0; index + 1 < length; ++index) {
+            if (!argz[index]) {
+                argz[index] = (char)separator;
+            }
+        }
+    }
+
+    // argp's error reporting without argp's parser: the program name and the
+    // message are what callers rely on.
+    static void sh_argp_failure(void* state, int status, int number, const char* format, ...) {
+        (void)state;
+        fprintf(stderr, "%s: ", program_invocation_short_name);
+
+        va_list arguments;
+
+        va_start(arguments, format);
+        vfprintf(stderr, format, arguments);
+        va_end(arguments);
+        if (number) {
+            fprintf(stderr, ": %s", strerror(number));
+        }
+        fputc('\n', stderr);
+        if (status) {
+            exit(status);
+        }
+    }
+
+    [[noreturn]] static void sh_argp_error(void* state, const char* format, ...) {
+        (void)state;
+        fprintf(stderr, "%s: ", program_invocation_short_name);
+
+        va_list arguments;
+
+        va_start(arguments, format);
+        vfprintf(stderr, format, arguments);
+        va_end(arguments);
+        fputc('\n', stderr);
+        exit(64);
+    }
+
+    // GNU obstacks, by the book: the struct layout is public ABI, and gmp's
+    // formatted output grows through these two entry points.
+    struct GlibcObstackChunk {
+        char* limit;
+        GlibcObstackChunk* previous;
+    };
+
+    struct GlibcObstack {
+        long chunkSize;
+        GlibcObstackChunk* chunk;
+        char* objectBase;
+        char* nextFree;
+        char* chunkLimit;
+        union {
+            uintptr_t number;
+            void* pointer;
+        } temporary;
+        int alignmentMask;
+        void* (*allocate)(void*, long);
+        void (*release)(void*, void*);
+        void* extraArgument;
+        unsigned useExtraArgument : 1;
+        unsigned maybeEmptyObject : 1;
+        unsigned allocationFailed : 1;
+    };
+
+    static void* obstackAllocate(GlibcObstack* obstack, long size) {
+        if (obstack->useExtraArgument) {
+            return obstack->allocate(obstack->extraArgument, size);
+        }
+
+        return reinterpret_cast<void* (*)(long)>(reinterpret_cast<uintptr_t>(obstack->allocate))(size);
+    }
+
+    static int sh_obstack_begin(GlibcObstack* obstack, int size, int alignment, void* (*allocate)(long), void (*release)(void*)) {
+        if (!alignment) {
+            alignment = alignof(max_align_t);
+        }
+        if (!size) {
+            size = 4096;
+        }
+        obstack->chunkSize = size;
+        obstack->alignmentMask = alignment - 1;
+        obstack->allocate = reinterpret_cast<void* (*)(void*, long)>(reinterpret_cast<uintptr_t>(allocate));
+        obstack->release = reinterpret_cast<void (*)(void*, void*)>(reinterpret_cast<uintptr_t>(release));
+        obstack->useExtraArgument = 0;
+        obstack->maybeEmptyObject = 0;
+        obstack->allocationFailed = 0;
+
+        auto* chunk = static_cast<GlibcObstackChunk*>(obstackAllocate(obstack, size));
+
+        if (!chunk) {
+            fputs("glibc bridge: obstack allocation failed\n", stderr);
+            abort();
+        }
+        obstack->chunk = chunk;
+        obstack->chunkLimit = chunk->limit = reinterpret_cast<char*>(chunk) + size;
+        obstack->objectBase = obstack->nextFree = reinterpret_cast<char*>(chunk + 1);
+        chunk->previous = nullptr;
+
+        return 1;
+    }
+
+    static void sh_obstack_newchunk(GlibcObstack* obstack, int length) {
+        auto objectSize = obstack->nextFree - obstack->objectBase;
+        auto needed = objectSize + length + (objectSize >> 3) + obstack->alignmentMask + 100;
+        auto size = needed > obstack->chunkSize ? needed : obstack->chunkSize;
+        auto* fresh = static_cast<GlibcObstackChunk*>(obstackAllocate(obstack, size + (long)sizeof(GlibcObstackChunk)));
+
+        if (!fresh) {
+            fputs("glibc bridge: obstack allocation failed\n", stderr);
+            abort();
+        }
+        fresh->previous = obstack->chunk;
+        fresh->limit = reinterpret_cast<char*>(fresh) + size + sizeof(GlibcObstackChunk);
+
+        auto* base = reinterpret_cast<char*>(fresh + 1);
+
+        base += (reinterpret_cast<uintptr_t>(base) + obstack->alignmentMask & ~(uintptr_t)obstack->alignmentMask) - reinterpret_cast<uintptr_t>(base);
+        memcpy(base, obstack->objectBase, objectSize);
+        obstack->chunk = fresh;
+        obstack->chunkLimit = fresh->limit;
+        obstack->objectBase = base;
+        obstack->nextFree = base + objectSize;
+    }
+
+    static int sh_obstack_vprintf(GlibcObstack* obstack, const char* format, va_list arguments) {
+        char* text = nullptr;
+        auto length = vasprintf(&text, format, arguments);
+
+        if (length < 0) {
+            return -1;
+        }
+        if (obstack->nextFree + length > obstack->chunkLimit) {
+            sh_obstack_newchunk(obstack, length);
+        }
+        memcpy(obstack->nextFree, text, length);
+        obstack->nextFree += length;
+        free(text);
+
+        return length;
+    }
+
+    // A well-formed, honestly empty malloc_info document.
+    static int sh_malloc_info(int options, FILE* stream) {
+        (void)options;
+        fputs("<malloc version=\"1\"></malloc>\n", stream);
+
+        return 0;
+    }
+
+    static const char* sh_strerrordesc_np(int number) {
+        return strerror(number);
+    }
+
+    // Without NSS there are no netgroups: nothing is ever a member.
+    static int sh_innetgr(const char* group, const char* host, const char* user, const char* domain) {
+        (void)group;
+        (void)host;
+        (void)user;
+        (void)domain;
+
+        return 0;
+    }
+
+    // glibc's utmp and utmpx are the same 384-byte record on both supported
+    // architectures.
+    static void sh_getutmpx(const void* utmp, void* utmpx) {
+        memcpy(utmpx, utmp, 384);
+    }
+
+    static void sh_getutmp(const void* utmpx, void* utmp) {
+        memcpy(utmp, utmpx, 384);
+    }
+
+    static unsigned sh_gnu_dev_major(unsigned long long device) {
+        return ((device >> 31 >> 1) & 0xfffff000) | ((device >> 8) & 0xfff);
+    }
+
+    static unsigned sh_gnu_dev_minor(unsigned long long device) {
+        return ((device >> 12) & 0xffffff00) | (device & 0xff);
+    }
+
+    static uint32_t sh_arc4random_uniform(uint32_t bound) {
+        if (bound < 2) {
+            return 0;
+        }
+
+        // Rejection sampling over getrandom keeps the distribution exact.
+        auto limit = -bound % bound;
+
+        for (;;) {
+            uint32_t value;
+
+            if (getrandom(&value, sizeof(value), 0) != sizeof(value)) {
+                continue;
+            }
+            if (value >= limit) {
+                return value % bound;
+            }
+        }
+    }
+
     // The printf-hook registry has no musl counterpart, and the API allows
     // registration to fail; callers (libquadmath's constructor) must cope.
     static int sh_register_printf_failure(void) {
         errno = ENOSYS;
 
         return -1;
+    }
+
+    // The high end of the initial thread's stack, like ld.so publishes it;
+    // conservative stack scanners read this. Filled at adapter startup from
+    // the maps.
+    static void* sh_libc_stack_end = nullptr;
+
+    // The gettext catalog change counter; nothing invalidates.
+    static int sh_nl_msg_cat_cntr = 0;
+
+    static void* findStackEnd() {
+        auto* maps = fopen("/proc/self/maps", "r");
+        char line[256];
+        unsigned long end = 0;
+
+        while (maps && fgets(line, sizeof(line), maps)) {
+            unsigned long low = 0;
+            unsigned long high = 0;
+
+            if (strstr(line, "[stack]") && sscanf(line, "%lx-%lx", &low, &high) == 2) {
+                end = high;
+                break;
+            }
+        }
+        if (maps) {
+            fclose(maps);
+        }
+
+        return reinterpret_cast<void*>(end);
+    }
+
+    // makecontext against the same glibc ucontext_t the assembly reads: the
+    // caller has already run getcontext on it, per the contract, so only the
+    // stack, the entry point, the register arguments, and the trampoline's
+    // successor pointer are written here.
+    static void sh_makecontext(void* context, void (*function)(), int argc, ...) {
+        auto* bytes = static_cast<char*>(context);
+        auto* link = *reinterpret_cast<void**>(bytes + 8);
+        auto* stackBase = *reinterpret_cast<char**>(bytes + 16);
+        auto stackSize = *reinterpret_cast<size_t*>(bytes + 32);
+        auto top = (reinterpret_cast<uintptr_t>(stackBase) + stackSize) & ~uintptr_t(15);
+
+        uint64_t arguments[8] = {};
+        va_list list;
+
+        va_start(list, argc);
+        for (int index = 0; index < argc && index < 8; ++index) {
+            arguments[index] = va_arg(list, long);
+        }
+        va_end(list);
+
+#if defined(__x86_64__)
+        auto* gregs = reinterpret_cast<uint64_t*>(bytes + 40);
+
+        // The synthetic call frame: at entry the return slot holds the
+        // trampoline, and %rsp is 8 mod 16, like after a real call.
+        top -= 8;
+        *reinterpret_cast<uint64_t*>(top) = reinterpret_cast<uint64_t>(soloStartContext);
+        gregs[16] = reinterpret_cast<uint64_t>(function);
+        gregs[15] = top;
+        gregs[11] = reinterpret_cast<uint64_t>(link);
+        gregs[8] = arguments[0];
+        gregs[9] = arguments[1];
+        gregs[12] = arguments[2];
+        gregs[14] = arguments[3];
+        gregs[0] = arguments[4];
+        gregs[1] = arguments[5];
+#elif defined(__aarch64__)
+        auto* registers = reinterpret_cast<uint64_t*>(bytes + 184);
+
+        for (int index = 0; index < 8; ++index) {
+            registers[index] = arguments[index];
+        }
+        registers[19] = reinterpret_cast<uint64_t>(link);
+        registers[30] = reinterpret_cast<uint64_t>(soloStartContext);
+        *reinterpret_cast<uint64_t*>(bytes + 440) = reinterpret_cast<uint64_t>(function);
+        *reinterpret_cast<uint64_t*>(bytes + 432) = top;
+#endif
     }
 
     // The version of the glibc whose inventory the bridge was generated
@@ -733,6 +1946,102 @@ namespace {
     static int sh_res_nquery(void* state, const char* name, int record_class, int type, unsigned char* answer, int length) {
         (void)state;
         return res_query(name, record_class, type, answer, length);
+    }
+
+    static int sh_res_nsearch(void* state, const char* name, int record_class, int type, unsigned char* answer, int length) {
+        (void)state;
+        return res_search(name, record_class, type, answer, length);
+    }
+
+    static int sh_res_nsend(void* state, const unsigned char* message, int messageLength, unsigned char* answer, int length) {
+        (void)state;
+        return res_send(message, messageLength, answer, length);
+    }
+
+    static int sh_res_nmkquery(void* state, int operation, const char* name, int record_class, int type, const unsigned char* data, int dataLength, const unsigned char* record, unsigned char* buffer, int length) {
+        (void)state;
+        return res_mkquery(operation, name, record_class, type, data, dataLength, record, buffer, length);
+    }
+
+    // The gshadow records musl has no reader for: parse and print the
+    // colon-separated line format directly.
+    static struct {
+        char line[512];
+        char* administrators[33];
+        char* members[33];
+        void* record[4];
+    } sgentState;
+
+    static char** splitList(char* text, char** list, size_t limit) {
+        size_t count = 0;
+
+        while (text && *text && count < limit - 1) {
+            list[count++] = text;
+
+            auto* comma = strchr(text, ',');
+
+            if (comma) {
+                *comma = 0;
+            }
+            text = comma ? comma + 1 : nullptr;
+        }
+        list[count] = nullptr;
+
+        return list;
+    }
+
+    static void* sh_fgetsgent(FILE* stream) {
+        if (!stream || !fgets(sgentState.line, sizeof(sgentState.line), stream)) {
+            return nullptr;
+        }
+        sgentState.line[strcspn(sgentState.line, "\n")] = 0;
+
+        char* fields[4] = {};
+        char* cursor = sgentState.line;
+
+        for (int index = 0; index < 4 && cursor; ++index) {
+            fields[index] = cursor;
+
+            auto* colon = strchr(cursor, ':');
+
+            if (colon) {
+                *colon = 0;
+            }
+            cursor = colon ? colon + 1 : nullptr;
+        }
+        if (!fields[3]) {
+            return nullptr;
+        }
+        sgentState.record[0] = fields[0];
+        sgentState.record[1] = fields[1];
+        sgentState.record[2] = splitList(fields[2], sgentState.administrators, 33);
+        sgentState.record[3] = splitList(fields[3], sgentState.members, 33);
+
+        return sgentState.record;
+    }
+
+    static int sh_putsgent(const void* record, FILE* stream) {
+        auto* fields = static_cast<void* const*>(record);
+        auto* name = static_cast<const char*>(fields[0]);
+        auto* password = static_cast<const char*>(fields[1]);
+
+        if (fprintf(stream, "%s:%s:", name ? name : "", password ? password : "") < 0) {
+            return -1;
+        }
+        for (int field = 2; field < 4; ++field) {
+            auto* list = static_cast<char* const*>(fields[field]);
+
+            for (int index = 0; list && list[index]; ++index) {
+                if (fprintf(stream, "%s%s", index ? "," : "", list[index]) < 0) {
+                    return -1;
+                }
+            }
+            if (fputc(field == 2 ? ':' : '\n', stream) == EOF) {
+                return -1;
+            }
+        }
+
+        return 0;
     }
 
     static size_t sh_parse_printf_format(const char* format, size_t count, int* types) {
@@ -920,6 +2229,62 @@ namespace {
             free(compiled->shadow);
             compiled->shadow = nullptr;
         }
+    }
+
+    // The BSD re_* layer over the same shadow: glibc's re_pattern_buffer is
+    // its regex_t. Extended syntax is the pragmatic default; re_match is
+    // anchored, and leftmost-longest regexec answers anchoring exactly.
+    static const char* sh_re_compile_pattern(const char* pattern, size_t length, GlibcRegex* compiled) {
+        auto* copy = static_cast<char*>(malloc(length + 1));
+
+        if (!copy) {
+            return "out of memory";
+        }
+        memcpy(copy, pattern, length);
+        copy[length] = 0;
+
+        auto result = sh_regcomp(compiled, copy, REG_EXTENDED);
+
+        free(copy);
+
+        return result ? "invalid regular expression" : nullptr;
+    }
+
+    struct GlibcReRegisters {
+        unsigned count;
+        int* start;
+        int* end;
+    };
+
+    static int sh_re_match(GlibcRegex* compiled, const char* string, int size, int start, GlibcReRegisters* registers) {
+        if (!compiled || !compiled->shadow || start < 0 || start > size) {
+            return -2;
+        }
+
+        auto* copy = static_cast<char*>(malloc(size - start + 1));
+
+        if (!copy) {
+            return -2;
+        }
+        memcpy(copy, string + start, size - start);
+        copy[size - start] = 0;
+
+        regmatch_t matches[16] = {};
+        auto groups = compiled->re_nsub + 1 < 16 ? compiled->re_nsub + 1 : 16;
+        auto result = regexec(compiled->shadow, copy, groups, matches, 0);
+
+        free(copy);
+        if (result || matches[0].rm_so != 0) {
+            return -1;
+        }
+        if (registers && registers->count) {
+            for (unsigned index = 0; index < registers->count && index < groups; ++index) {
+                registers->start[index] = matches[index].rm_so < 0 ? -1 : (int)matches[index].rm_so + start;
+                registers->end[index] = matches[index].rm_eo < 0 ? -1 : (int)matches[index].rm_eo + start;
+            }
+        }
+
+        return matches[0].rm_eo;
     }
 
     // musl's FTW_* type codes are glibc's plus one (dev/abi-diff.txt), so the
@@ -1916,6 +3281,23 @@ namespace {
         return nullptr;
     }
 
+    static int sh_dladdr1(const void* address, Dl_info* information, void** extra, int flags) {
+        if (!stub_dladdr(address, information)) {
+            return 0;
+        }
+        // RTLD_DL_LINKMAP: the link_map facade of the containing image.
+        if (flags == 2 && extra) {
+            auto* handle = stub_dlopen(information->dli_fname, RTLD_NOLOAD | RTLD_LOCAL);
+
+            if (!handle) {
+                return 0;
+            }
+            *extra = GlibcAdapter::instance().handleFor(handle, false);
+        }
+
+        return 1;
+    }
+
     static void* sh_glibc_dlsym(void* handle, const char* name) {
         ThreadTls::current()->clearDlError();
 
@@ -2185,6 +3567,108 @@ namespace {
         SH_FUNCTION("mount_setattr", "GLIBC_2.36", sh_mount_setattr),
         SH_FUNCTION("pidfd_open", "GLIBC_2.36", sh_pidfd_open),
         SH_FUNCTION("gnu_get_libc_version", "GLIBC_2.2.5", sh_gnu_get_libc_version),
+        SH_FUNCTION("getcontext", "GLIBC_2.2.5", soloGetcontext),
+        SH_FUNCTION("setcontext", "GLIBC_2.2.5", soloSetcontext),
+        SH_FUNCTION("swapcontext", "GLIBC_2.2.5", soloSwapcontext),
+        SH_FUNCTION("makecontext", "GLIBC_2.2.5", sh_makecontext),
+        SH_FUNCTION("backtrace", "GLIBC_2.2.5", sh_backtrace),
+        SH_FUNCTION("backtrace_symbols", "GLIBC_2.2.5", sh_backtrace_symbols),
+        SH_FUNCTION("backtrace_symbols_fd", "GLIBC_2.2.5", sh_backtrace_symbols_fd),
+        SH_FUNCTION("__dprintf_chk", "GLIBC_2.8", sh_dprintf_chk),
+        SH_FUNCTION("__vdprintf_chk", "GLIBC_2.8", sh_vdprintf_chk),
+        SH_FUNCTION("__vprintf_chk", "GLIBC_2.3.4", sh_vprintf_chk),
+        SH_FUNCTION("__swprintf_chk", "GLIBC_2.4", sh_swprintf_chk),
+        SH_FUNCTION("__vswprintf_chk", "GLIBC_2.4", sh_vswprintf_chk),
+        SH_FUNCTION("__wctomb_chk", "GLIBC_2.4", sh_wctomb_chk),
+        SH_FUNCTION("__readlink_chk", "GLIBC_2.4", sh_readlink_chk),
+        SH_FUNCTION("__recv_chk", "GLIBC_2.4", sh_recv_chk),
+        SH_FUNCTION("__recvfrom_chk", "GLIBC_2.4", sh_recvfrom_chk),
+        SH_FUNCTION("__gethostname_chk", "GLIBC_2.4", sh_gethostname_chk),
+        SH_FUNCTION("__inet_ntop_chk", "GLIBC_2.42", sh_inet_ntop_chk),
+        SH_FUNCTION("sendfile64", "GLIBC_2.3", sh_sendfile64),
+        SH_FUNCTION("renameat2", "GLIBC_2.28", sh_renameat2),
+        SH_FUNCTION("prlimit64", "GLIBC_2.13", sh_prlimit64),
+        SH_FUNCTION("truncate64", "GLIBC_2.2.5", sh_truncate64),
+        SH_FUNCTION("tmpfile64", "GLIBC_2.2.5", sh_tmpfile64),
+        SH_FUNCTION("pwritev64", "GLIBC_2.10", sh_pwritev64),
+        SH_FUNCTION("readdir64_r", "GLIBC_2.2.5", sh_readdir64_r),
+        SH_FUNCTION("getdents64", "GLIBC_2.30", sh_getdents64),
+        SH_FUNCTION("canonicalize_file_name", "GLIBC_2.2.5", sh_canonicalize_file_name),
+        SH_FUNCTION("pidfd_getpid", "GLIBC_2.39", sh_pidfd_getpid),
+        SH_FUNCTION("pidfd_spawnp", "GLIBC_2.39", sh_pidfd_spawnp),
+        SH_FUNCTION("pkey_alloc", "GLIBC_2.27", sh_pkey_alloc),
+        SH_FUNCTION("pkey_free", "GLIBC_2.27", sh_pkey_free),
+        SH_FUNCTION("pkey_mprotect", "GLIBC_2.27", sh_pkey_mprotect),
+        SH_FUNCTION("pkey_set", "GLIBC_2.27", sh_pkey_set),
+        SH_FUNCTION("pkey_get", "GLIBC_2.27", sh_pkey_get),
+        SH_FUNCTION("glob64", "GLIBC_2.27", sh_glob64),
+        SH_FUNCTION("globfree64", "GLIBC_2.2.5", sh_globfree64),
+        SH_FUNCTION("glob_pattern_p", "GLIBC_2.2.5", sh_glob_pattern_p),
+        SH_FUNCTION("isnanf", "GLIBC_2.2.5", sh_isnanf),
+        SH_FUNCTION("isinff", "GLIBC_2.2.5", sh_isinff),
+        SH_FUNCTION("gamma", "GLIBC_2.2.5", sh_gamma),
+        SH_FUNCTION("strtof128", "GLIBC_2.26", sh_strtof128),
+        SH_FUNCTION("strfromf128", "GLIBC_2.26", sh_strfromf128),
+        SH_FUNCTION("logf128", "GLIBC_2.26", sh_logf128),
+        SH_FUNCTION("initstate_r", "GLIBC_2.2.5", sh_initstate_r),
+        SH_FUNCTION("random_r", "GLIBC_2.2.5", sh_random_r),
+        SH_FUNCTION("srandom_r", "GLIBC_2.2.5", sh_srandom_r),
+        SH_FUNCTION("getprotobyname_r", "GLIBC_2.2.5", sh_getprotobyname_r),
+        SH_FUNCTION("getprotobynumber_r", "GLIBC_2.2.5", sh_getprotobynumber_r),
+        SH_FUNCTION("getprotoent_r", "GLIBC_2.2.5", sh_getprotoent_r),
+        SH_FUNCTION("getservent_r", "GLIBC_2.2.5", sh_getservent_r),
+        SH_FUNCTION("getnetent_r", "GLIBC_2.2.5", sh_getnetent_r),
+        SH_FUNCTION("getnetbyname_r", "GLIBC_2.2.5", sh_getnetbyname_r),
+        SH_FUNCTION("getnetbyaddr_r", "GLIBC_2.2.5", sh_getnetbyaddr_r),
+        SH_FUNCTION("gethostent_r", "GLIBC_2.2.5", sh_gethostent_r),
+        SH_FUNCTION("getpwent_r", "GLIBC_2.2.5", sh_getpwent_r),
+        SH_FUNCTION("getgrent_r", "GLIBC_2.2.5", sh_getgrent_r),
+        SH_FUNCTION("sem_clockwait", "GLIBC_2.34", sh_sem_clockwait),
+        SH_FUNCTION("__isoc23_wcstoll", "GLIBC_2.38", sh_isoc23_wcstoll),
+        SH_FUNCTION("__isoc23_wcstoull", "GLIBC_2.38", sh_isoc23_wcstoull),
+        SH_FUNCTION("wcslcpy", "GLIBC_2.38", sh_wcslcpy),
+        SH_FUNCTION("wcslcat", "GLIBC_2.38", sh_wcslcat),
+        SH_FUNCTION("pthread_cond_clockwait", "GLIBC_2.34", sh_pthread_cond_clockwait),
+        SH_FUNCTION("pthread_mutex_clocklock", "GLIBC_2.34", sh_pthread_mutex_clocklock),
+        SH_FUNCTION("pthread_clockjoin_np", "GLIBC_2.34", sh_pthread_clockjoin_np),
+        SH_FUNCTION("pthread_rwlockattr_setkind_np", "GLIBC_2.34", sh_pthread_rwlockattr_setkind_np),
+        SH_FUNCTION("pthread_attr_setaffinity_np", "GLIBC_2.32", sh_pthread_attr_setaffinity_np),
+        SH_FUNCTION("__pthread_register_cancel", "GLIBC_2.34", sh_pthread_register_cancel),
+        SH_FUNCTION("__pthread_unregister_cancel", "GLIBC_2.34", sh_pthread_unregister_cancel),
+        SH_FUNCTION("__pthread_unwind_next", "GLIBC_2.34", sh_pthread_unwind_next),
+        SH_FUNCTION("error", "GLIBC_2.2.5", sh_error),
+        SH_FUNCTION("argz_append", "GLIBC_2.2.5", sh_argz_append),
+        SH_FUNCTION("argz_create_sep", "GLIBC_2.2.5", sh_argz_create_sep),
+        SH_FUNCTION("argz_insert", "GLIBC_2.2.5", sh_argz_insert),
+        SH_FUNCTION("argz_stringify", "GLIBC_2.2.5", sh_argz_stringify),
+        SH_FUNCTION("argp_failure", "GLIBC_2.2.5", sh_argp_failure),
+        SH_FUNCTION("argp_error", "GLIBC_2.2.5", sh_argp_error),
+        SH_FUNCTION("_obstack_begin", "GLIBC_2.2.5", sh_obstack_begin),
+        SH_FUNCTION("_obstack_newchunk", "GLIBC_2.2.5", sh_obstack_newchunk),
+        SH_FUNCTION("obstack_vprintf", "GLIBC_2.2.5", sh_obstack_vprintf),
+        SH_FUNCTION("malloc_info", "GLIBC_2.10", sh_malloc_info),
+        SH_FUNCTION("strerrordesc_np", "GLIBC_2.32", sh_strerrordesc_np),
+        SH_FUNCTION("innetgr", "GLIBC_2.2.5", sh_innetgr),
+        SH_FUNCTION("getutmpx", "GLIBC_2.2.5", sh_getutmpx),
+        SH_FUNCTION("getutmp", "GLIBC_2.2.5", sh_getutmp),
+        SH_FUNCTION("gnu_dev_major", "GLIBC_2.3.3", sh_gnu_dev_major),
+        SH_FUNCTION("gnu_dev_minor", "GLIBC_2.3.3", sh_gnu_dev_minor),
+        SH_FUNCTION("arc4random_uniform", "GLIBC_2.36", sh_arc4random_uniform),
+        SH_FUNCTION("fgetsgent", "GLIBC_2.10", sh_fgetsgent),
+        SH_FUNCTION("putsgent", "GLIBC_2.10", sh_putsgent),
+        SH_FUNCTION("re_compile_pattern", "GLIBC_2.2.5", sh_re_compile_pattern),
+        SH_FUNCTION("re_match", "GLIBC_2.2.5", sh_re_match),
+        SH_FUNCTION("res_nsearch", "GLIBC_2.34", sh_res_nsearch),
+        SH_FUNCTION("__res_nsearch", "GLIBC_2.2.5", sh_res_nsearch),
+        SH_FUNCTION("res_nsend", "GLIBC_2.34", sh_res_nsend),
+        SH_FUNCTION("__res_nsend", "GLIBC_2.2.5", sh_res_nsend),
+        SH_FUNCTION("res_nmkquery", "GLIBC_2.34", sh_res_nmkquery),
+        SH_FUNCTION("__res_nmkquery", "GLIBC_2.2.5", sh_res_nmkquery),
+        SH_FUNCTION("__res_init", "GLIBC_2.2.5", res_init),
+        SH_FUNCTION("dladdr1", "GLIBC_2.34", sh_dladdr1),
+        SH_FUNCTION("dladdr1", "GLIBC_2.3.3", sh_dladdr1),
+        SH_OBJECT("__libc_stack_end", "GLIBC_2.2.5", sh_libc_stack_end),
+        SH_OBJECT("_nl_msg_cat_cntr", "GLIBC_2.2.5", sh_nl_msg_cat_cntr),
         SH_FUNCTION("register_printf_function", "GLIBC_2.2.5", sh_register_printf_failure),
         SH_FUNCTION("register_printf_specifier", "GLIBC_2.10", sh_register_printf_failure),
         SH_FUNCTION("register_printf_modifier", "GLIBC_2.10", sh_register_printf_failure),
@@ -2460,6 +3944,8 @@ GlibcAdapter::GlibcAdapter()
         flags |= isalnum(value) ? 0x0008 : 0;
         ctypeTable_[index] = flags;
     }
+
+    sh_libc_stack_end = findStackEnd();
 
     providers_.byVersion.reserve(sizeof(sh_glibc_symbols) / sizeof(sh_glibc_symbols[0]));
     providers_.byName.reserve(sizeof(sh_glibc_symbols) / sizeof(sh_glibc_symbols[0]));

@@ -70,4 +70,13 @@ locale-archive (we stay in C/UTF-8, like musl).
   ranking into tst/corpus_<arch>.json — every popular package with a
   glibc-importing shared object becomes a load node, closures derived from
   the package index, GLIBC_PRIVATE importers ride along as dependencies only.
+- The demand queue is empty: every glibc symbol the top-1000 corpus
+  imports resolves natively — the backtrace pair over the vendored unwinder,
+  the ucontext trio in real assembly on both architectures (glibc mcontext
+  layouts, coroutine-tested), the fortified tail, the clock-parameterized
+  pthread and semaphore waits, the _r database copies, glob64, obstacks,
+  argz/argp, the printf-hook registry declining honestly, binary128 entry
+  points (exact on aarch64, hand-converted through double on x86-64), and
+  the rest of the long tail, each with a conformance-battery check.
+  dev/abi-demand.txt now reads zero stubbed, zero absent.
 - Deliberately deferred: 10 (`dlclose`).

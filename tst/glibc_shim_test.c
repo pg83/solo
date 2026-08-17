@@ -24,6 +24,7 @@
 #include <pthread.h>
 #include <regex.h>
 #include <sched.h>
+#include <semaphore.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -39,7 +40,24 @@
 #include <sys/statvfs.h>
 #include <sys/auxv.h>
 #include <sys/pidfd.h>
+#include <sys/sendfile.h>
+#include <sys/socket.h>
+#include <sys/sysmacros.h>
+#include <sys/wait.h>
+#include <argz.h>
+#include <error.h>
+#include <execinfo.h>
+#include <glob.h>
+#include <gshadow.h>
+#include <grp.h>
+#include <netdb.h>
+#include <pwd.h>
+#include <obstack.h>
+#include <spawn.h>
 #include <ttyent.h>
+#include <ucontext.h>
+#include <utmp.h>
+#include <utmpx.h>
 #include <time.h>
 #include <unistd.h>
 #include <wchar.h>
@@ -118,7 +136,6 @@ extern void __longjmp_chk(jmp_buf, int);
 extern size_t parse_printf_format(const char*, size_t, int*);
 extern int __res_ninit(void*);
 extern void __res_nclose(void*);
-extern int getsgnam_r(const char*, void*, char*, size_t, void**);
 extern const char* strerrorname_np(int);
 extern int rpmatch(const char*);
 extern void free_sized(void*, size_t);
@@ -857,6 +874,404 @@ static void dynamicLinking(void) {
     CHECK(dlclose(self) == 0);
 }
 
+/* The obstack macros want the allocator pair named at the call site. */
+#define obstack_chunk_alloc malloc
+#define obstack_chunk_free free
+
+static int obstackVprintf(struct obstack* stack, const char* format, ...) {
+    va_list arguments;
+    va_start(arguments, format);
+    int result = obstack_vprintf(stack, format, arguments);
+    va_end(arguments);
+    return result;
+}
+
+static int vdprintfChk(int descriptor, const char* format, ...) {
+    va_list arguments;
+    va_start(arguments, format);
+    int __vdprintf_chk(int, int, const char*, va_list);
+    int result = __vdprintf_chk(descriptor, 1, format, arguments);
+    va_end(arguments);
+    return result;
+}
+
+static void* sleepyThread(void* opaque) {
+    (void)opaque;
+    return (void*)41;
+}
+
+static ucontext_t coroutine_main;
+static ucontext_t coroutine_side;
+static int coroutine_trace[4];
+static int coroutine_steps;
+
+static void coroutineBody(int first, int second) {
+    coroutine_trace[coroutine_steps++] = first + second;
+    swapcontext(&coroutine_side, &coroutine_main);
+    coroutine_trace[coroutine_steps++] = 7;
+}
+
+static void contexts(void) {
+    /* A coroutine ping-pong through the whole trio, with the uc_link
+     * return at the end. */
+    static char coroutine_stack[64 * 1024];
+    CHECK(getcontext(&coroutine_side) == 0);
+    coroutine_side.uc_stack.ss_sp = coroutine_stack;
+    coroutine_side.uc_stack.ss_size = sizeof(coroutine_stack);
+    coroutine_side.uc_link = &coroutine_main;
+    makecontext(&coroutine_side, (void (*)(void))coroutineBody, 2, 30, 12);
+    CHECK(swapcontext(&coroutine_main, &coroutine_side) == 0);
+    CHECK(coroutine_steps == 1 && coroutine_trace[0] == 42);
+    CHECK(swapcontext(&coroutine_main, &coroutine_side) == 0);
+    CHECK(coroutine_steps == 2 && coroutine_trace[1] == 7);
+}
+
+static void popularCalls(void) {
+    int __dprintf_chk(int, int, const char*, ...);
+    int __swprintf_chk(wchar_t*, size_t, int, size_t, const wchar_t*, ...);
+    int __wctomb_chk(char*, wchar_t, size_t);
+    ssize_t __readlink_chk(const char*, char*, size_t, size_t);
+    ssize_t __recv_chk(int, void*, size_t, size_t, int);
+    ssize_t __recvfrom_chk(int, void*, size_t, size_t, int, struct sockaddr*, socklen_t*);
+    int __gethostname_chk(char*, size_t, size_t);
+
+    /* backtrace rides the static world's unwinder; symbols on the loader's
+     * dladdr. */
+    void* frames[16];
+    int depth = backtrace(frames, 16);
+    CHECK(depth >= 2);
+    char** lines = backtrace_symbols(frames, depth);
+    CHECK(lines != NULL && lines[0] != NULL && lines[0][0] != 0);
+    free(lines);
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    backtrace_symbols_fd(frames, 2, fds[1]);
+    close(fds[1]);
+    char sink[512];
+    CHECK(read(fds[0], sink, sizeof(sink)) > 0);
+    close(fds[0]);
+
+    /* The fortified tail. */
+    int null_fd = open("/dev/null", O_WRONLY);
+    CHECK(__dprintf_chk(null_fd, 1, "%d!", 42) == 3);
+    CHECK(vdprintfChk(null_fd, "%s", "ab") == 2);
+    int __vprintf_chk(int, const char*, __gnuc_va_list);
+    wchar_t wide[32];
+    CHECK(__swprintf_chk(wide, 8, 1, sizeof(wide), L"%d", 7) == 1 && wide[0] == L'7');
+    char multi[8];
+    CHECK(__wctomb_chk(multi, L'z', sizeof(multi)) == 1 && multi[0] == 'z');
+    char link_target[256];
+    CHECK(__readlink_chk("/proc/self/exe", link_target, sizeof(link_target) - 1, sizeof(link_target)) > 0);
+    int pair[2];
+    CHECK(socketpair(AF_UNIX, SOCK_DGRAM, 0, pair) == 0);
+    CHECK(send(pair[0], "hi", 2, 0) == 2);
+    char received[8];
+    CHECK(__recv_chk(pair[1], received, 2, sizeof(received), 0) == 2);
+    CHECK(send(pair[0], "yo", 2, 0) == 2);
+    CHECK(__recvfrom_chk(pair[1], received, 2, sizeof(received), 0, NULL, NULL) == 2);
+    close(pair[0]);
+    close(pair[1]);
+    char host[256];
+    CHECK(__gethostname_chk(host, sizeof(host) - 1, sizeof(host)) == 0);
+    const char* __inet_ntop_chk(int, const void*, char*, socklen_t, size_t);
+    unsigned char address4[4] = {127, 0, 0, 1};
+    char printed[64];
+    CHECK(__inet_ntop_chk(AF_INET, address4, printed, sizeof(printed), sizeof(printed)) != NULL);
+    CHECK(strcmp(printed, "127.0.0.1") == 0);
+
+    /* Files and processes. */
+    char tree[256];
+    snprintf(tree, sizeof(tree), "%s/solo-pop-XXXXXX", temporary_directory());
+    CHECK(mkdtemp(tree) != NULL);
+    char source_path[320];
+    snprintf(source_path, sizeof(source_path), "%s/source", tree);
+    int source_fd = creat64(source_path, 0600);
+    CHECK(source_fd >= 0 && write(source_fd, "payload", 7) == 7);
+    close(source_fd);
+    source_fd = open(source_path, O_RDONLY);
+    CHECK(pipe(fds) == 0);
+    CHECK(sendfile64(fds[1], source_fd, NULL, 7) == 7);
+    close(fds[0]);
+    close(fds[1]);
+    close(source_fd);
+    char renamed_path[320];
+    snprintf(renamed_path, sizeof(renamed_path), "%s/renamed", tree);
+    CHECK(renameat2(AT_FDCWD, source_path, AT_FDCWD, renamed_path, 0) == 0);
+    CHECK(creat64(source_path, 0600) >= 0);
+    CHECK(renameat2(AT_FDCWD, source_path, AT_FDCWD, renamed_path, RENAME_NOREPLACE) == -1 && errno == EEXIST);
+    struct rlimit64 limits;
+    CHECK(prlimit64(0, RLIMIT_NOFILE, NULL, &limits) == 0 && limits.rlim_cur > 0);
+    CHECK(truncate64(renamed_path, 3) == 0);
+    /* Hosts without a writable /tmp (this machine) get a pass, like the
+     * mremap quirk above. */
+    FILE* temporary = tmpfile64();
+    CHECK(temporary != NULL || errno == ENOENT || errno == EROFS || errno == EACCES);
+    if (temporary) {
+        fclose(temporary);
+    }
+    ssize_t pwritev64(int, const struct iovec*, int, off64_t);
+    int rewrite_fd = open(renamed_path, O_WRONLY);
+    struct iovec vector = {.iov_base = (void*)"xy", .iov_len = 2};
+    CHECK(pwritev64(rewrite_fd, &vector, 1, 1) == 2);
+    close(rewrite_fd);
+    DIR* directory = opendir(tree);
+    struct dirent64 entry_buffer;
+    struct dirent64* entry = NULL;
+    CHECK(readdir64_r(directory, &entry_buffer, &entry) == 0 && entry != NULL);
+    closedir(directory);
+    int tree_fd = open(tree, O_RDONLY | O_DIRECTORY);
+    char dents[1024];
+    CHECK(getdents64(tree_fd, dents, sizeof(dents)) > 0);
+    close(tree_fd);
+    char* canonical = canonicalize_file_name("/proc/self");
+    CHECK(canonical != NULL && canonical[0] == '/');
+    free(canonical);
+    int self_pidfd = pidfd_open(getpid(), 0);
+    if (self_pidfd >= 0) {
+        CHECK(pidfd_getpid(self_pidfd) == getpid());
+        close(self_pidfd);
+    }
+    int spawned_pidfd = -1;
+    char* spawn_argv[] = {"sh", "-c", "exit 0", NULL};
+    if (pidfd_spawnp(&spawned_pidfd, "/bin/sh", NULL, NULL, spawn_argv, NULL) == 0) {
+        pid_t spawned = pidfd_getpid(spawned_pidfd);
+        CHECK(spawned > 0);
+        CHECK(waitpid(spawned, NULL, 0) == spawned);
+        close(spawned_pidfd);
+    }
+    int key = pkey_alloc(0, 0);
+    if (key >= 0) {
+        CHECK(pkey_get(key) >= 0);
+        CHECK(pkey_set(key, 0) == 0);
+        CHECK(pkey_free(key) == 0);
+    }
+
+    /* Globbing and small math. */
+    glob64_t matches;
+    CHECK(glob64("/proc/self/stat*", 0, NULL, &matches) == 0 && matches.gl_pathc >= 1);
+    globfree64(&matches);
+    int glob_pattern_p(const char*, int);
+    CHECK(glob_pattern_p("a*b", 1) == 1 && glob_pattern_p("plain", 1) == 0);
+    int isnanf(float);
+    int isinff(float);
+    CHECK(isnanf(__builtin_nanf("")) && isinff(__builtin_inff()));
+    double gamma(double);
+    CHECK(gamma(3.0) > 0.69 && gamma(3.0) < 0.70);
+    /* No _Float128 arithmetic here: that would pull libgcc helpers this
+     * -nostdlib image does not link. strfromf128 inspects the values. */
+    _Float128 parsed = strtof128("2.0", NULL);
+    char formatted[64];
+    CHECK(strfromf128(formatted, sizeof(formatted), "%.3f", parsed) == 5);
+    CHECK(strcmp(formatted, "2.000") == 0);
+    _Float128 logf128(_Float128);
+    _Float128 logged = logf128(parsed);
+    CHECK(strfromf128(formatted, sizeof(formatted), "%.3f", logged) == 5);
+    CHECK(strncmp(formatted, "0.693", 5) == 0);
+
+    /* The caller-state random generator: deterministic per seed. */
+    struct random_data generator;
+    char generator_state[64];
+    memset(&generator, 0, sizeof(generator));
+    CHECK(initstate_r(7, generator_state, sizeof(generator_state), &generator) == 0);
+    int32_t first = 0;
+    int32_t second = 0;
+    CHECK(random_r(&generator, &first) == 0 && random_r(&generator, &second) == 0);
+    CHECK(first != second && first >= 0 && second >= 0);
+    CHECK(srandom_r(7, &generator) == 0);
+    int32_t replay = 0;
+    CHECK(random_r(&generator, &replay) == 0 && replay == first);
+
+    /* The _r database copies. */
+    struct protoent proto_record;
+    struct protoent* proto = NULL;
+    char database_buffer[1024];
+    CHECK(getprotobyname_r("tcp", &proto_record, database_buffer, sizeof(database_buffer), &proto) == 0);
+    CHECK(proto != NULL && proto->p_proto == 6);
+    CHECK(getprotobynumber_r(17, &proto_record, database_buffer, sizeof(database_buffer), &proto) == 0);
+    CHECK(proto != NULL && strcmp(proto->p_name, "udp") == 0);
+    setprotoent(0);
+    CHECK(getprotoent_r(&proto_record, database_buffer, sizeof(database_buffer), &proto) == 0);
+    endprotoent();
+    struct servent service_record;
+    struct servent* service = NULL;
+    setservent(0);
+    CHECK(getservent_r(&service_record, database_buffer, sizeof(database_buffer), &service) == 0 || service == NULL);
+    endservent();
+    struct netent net_record;
+    struct netent* net = NULL;
+    int net_error = 0;
+    CHECK(getnetbyname_r("nosuchnet", &net_record, database_buffer, sizeof(database_buffer), &net, &net_error) == 0 && net == NULL);
+    CHECK(getnetbyaddr_r(0, AF_INET, &net_record, database_buffer, sizeof(database_buffer), &net, &net_error) == 0 && net == NULL);
+    setnetent(0);
+    CHECK(getnetent_r(&net_record, database_buffer, sizeof(database_buffer), &net, &net_error) == 0 || net == NULL);
+    endnetent();
+    struct hostent host_record;
+    struct hostent* host_entry = NULL;
+    int host_errno = 0;
+    sethostent(0);
+    CHECK(gethostent_r(&host_record, database_buffer, sizeof(database_buffer), &host_entry, &host_errno) == 0 || host_entry == NULL);
+    endhostent();
+    struct passwd password_record;
+    struct passwd* password = NULL;
+    setpwent();
+    int password_result = getpwent_r(&password_record, database_buffer, sizeof(database_buffer), &password);
+    CHECK(password_result == 0 ? password != NULL && password->pw_name[0] != 0 : password_result == ENOENT);
+    endpwent();
+    struct group group_record;
+    struct group* group_entry = NULL;
+    setgrent();
+    int group_result = getgrent_r(&group_record, database_buffer, sizeof(database_buffer), &group_entry);
+    CHECK(group_result == 0 ? group_entry != NULL : group_result == ENOENT);
+    endgrent();
+}
+
+static void popularData(void) {
+    /* Clock-parameterized waiting. */
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t condition = PTHREAD_COND_INITIALIZER;
+    struct timespec past;
+    clock_gettime(CLOCK_MONOTONIC, &past);
+    pthread_mutex_lock(&mutex);
+    CHECK(pthread_cond_clockwait(&condition, &mutex, CLOCK_MONOTONIC, &past) == ETIMEDOUT);
+    pthread_mutex_unlock(&mutex);
+    pthread_mutex_t fresh = PTHREAD_MUTEX_INITIALIZER;
+    struct timespec soon;
+    clock_gettime(CLOCK_MONOTONIC, &soon);
+    soon.tv_sec += 1;
+    CHECK(pthread_mutex_clocklock(&fresh, CLOCK_MONOTONIC, &soon) == 0);
+    pthread_mutex_unlock(&fresh);
+    pthread_t sleeper;
+    CHECK(pthread_create(&sleeper, NULL, sleepyThread, NULL) == 0);
+    void* joined = NULL;
+    struct timespec deadline;
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    deadline.tv_sec += 5;
+    CHECK(pthread_clockjoin_np(sleeper, &joined, CLOCK_MONOTONIC, &deadline) == 0);
+    CHECK(joined == (void*)41);
+    pthread_rwlockattr_t rwlock_attribute;
+    pthread_rwlockattr_init(&rwlock_attribute);
+    CHECK(pthread_rwlockattr_setkind_np(&rwlock_attribute, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP) == 0);
+    CHECK(pthread_rwlockattr_setkind_np(&rwlock_attribute, 7) == EINVAL);
+    pthread_attr_t thread_attribute;
+    pthread_attr_init(&thread_attribute);
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    CPU_SET(0, &affinity);
+    CHECK(pthread_attr_setaffinity_np(&thread_attribute, sizeof(affinity), &affinity) == 0);
+    pthread_attr_destroy(&thread_attribute);
+    __pthread_unwind_buf_t unwind_buffer;
+    void __pthread_register_cancel(__pthread_unwind_buf_t*);
+    void __pthread_unregister_cancel(__pthread_unwind_buf_t*);
+    __pthread_register_cancel(&unwind_buffer);
+    __pthread_unregister_cancel(&unwind_buffer);
+
+    /* The 2.38 tail of the wide-string family, and clocked semaphores. */
+    long long __isoc23_wcstoll(const wchar_t*, wchar_t**, int);
+    unsigned long long __isoc23_wcstoull(const wchar_t*, wchar_t**, int);
+    CHECK(__isoc23_wcstoll(L"-42", NULL, 10) == -42);
+    CHECK(__isoc23_wcstoull(L"42", NULL, 10) == 42);
+    wchar_t wide_buffer[8];
+    CHECK(wcslcpy(wide_buffer, L"abcdef", 4) == 6 && wcscmp(wide_buffer, L"abc") == 0);
+    CHECK(wcslcat(wide_buffer, L"z", 8) == 4 && wcscmp(wide_buffer, L"abcz") == 0);
+    sem_t semaphore;
+    sem_init(&semaphore, 0, 1);
+    struct timespec sem_deadline;
+    clock_gettime(CLOCK_MONOTONIC, &sem_deadline);
+    sem_deadline.tv_sec += 1;
+    CHECK(sem_clockwait(&semaphore, CLOCK_MONOTONIC, &sem_deadline) == 0);
+    clock_gettime(CLOCK_MONOTONIC, &sem_deadline);
+    CHECK(sem_clockwait(&semaphore, CLOCK_MONOTONIC, &sem_deadline) == -1 && errno == ETIMEDOUT);
+    sem_destroy(&semaphore);
+
+    /* Reporting helpers; status 0 must return. */
+    error(0, ENOENT, "shim battery probe");
+    void argp_failure(const void*, int, int, const char*, ...);
+    argp_failure(NULL, 0, 0, "shim battery probe");
+
+    /* argz vectors. */
+    char* argz = NULL;
+    size_t argz_length = 0;
+    CHECK(argz_create_sep("a,b,c", ',', &argz, &argz_length) == 0 && argz_length == 6);
+    CHECK(argz_append(&argz, &argz_length, "dd\0", 3) == 0 && argz_length == 9);
+    CHECK(argz_insert(&argz, &argz_length, argz, "zz") == 0 && argz_length == 12);
+    CHECK(memcmp(argz, "zz\0a\0b\0c\0dd\0", 12) == 0);
+    argz_stringify(argz, argz_length, ',');
+    CHECK(strcmp(argz, "zz,a,b,c,dd") == 0);
+    free(argz);
+
+    /* Obstacks by the book, big enough to force a fresh chunk. */
+    struct obstack stack;
+    obstack_init(&stack);
+    CHECK(obstackVprintf(&stack, "%s-%d", "text", 5) == 6);
+    for (int index = 0; index < 5000; ++index) {
+        obstack_1grow(&stack, 'x');
+    }
+    obstack_1grow(&stack, 0);
+    char* object = obstack_finish(&stack);
+    CHECK(strncmp(object, "text-5", 6) == 0 && strlen(object) == 5006);
+
+    /* Introspection odds and ends. */
+    char* info_text = NULL;
+    size_t info_size = 0;
+    FILE* info = open_memstream(&info_text, &info_size);
+    CHECK(malloc_info(0, info) == 0);
+    fclose(info);
+    CHECK(info_text != NULL && strstr(info_text, "<malloc") != NULL);
+    free(info_text);
+    CHECK(strerrordesc_np(ENOENT) != NULL);
+    CHECK(innetgr("group", "host", "user", "domain") == 0);
+    struct utmp from = {0};
+    struct utmpx to = {0};
+    strcpy(from.ut_user, "solo");
+    getutmpx(&from, &to);
+    CHECK(strcmp(to.ut_user, "solo") == 0);
+    dev_t device = makedev(8, 17);
+    CHECK(gnu_dev_major(device) == 8 && gnu_dev_minor(device) == 17);
+    CHECK(arc4random_uniform(7) < 7 && arc4random_uniform(1) == 0);
+
+    /* gshadow line parsing, both directions. */
+    FILE* shadow = fmemopen((void*)"wheel:!:root,admin:alice,bob\n", 29, "r");
+    struct sgrp* shadow_group = fgetsgent(shadow);
+    CHECK(shadow_group != NULL && strcmp(shadow_group->sg_namp, "wheel") == 0);
+    CHECK(shadow_group->sg_adm[1] != NULL && strcmp(shadow_group->sg_adm[1], "admin") == 0);
+    CHECK(shadow_group->sg_mem[0] != NULL && strcmp(shadow_group->sg_mem[0], "alice") == 0);
+    char* written = NULL;
+    size_t written_size = 0;
+    FILE* out = open_memstream(&written, &written_size);
+    CHECK(putsgent(shadow_group, out) == 0);
+    fclose(out);
+    fclose(shadow);
+    CHECK(written != NULL && strcmp(written, "wheel:!:root,admin:alice,bob\n") == 0);
+    free(written);
+
+    /* The BSD regex layer: re_match is anchored. */
+    struct re_pattern_buffer pattern;
+    memset(&pattern, 0, sizeof(pattern));
+    CHECK(re_compile_pattern("ab+c", 4, &pattern) == NULL);
+    CHECK(re_match(&pattern, "abbc", 4, 0, NULL) == 4);
+    CHECK(re_match(&pattern, "xabbc", 5, 0, NULL) == -1);
+    CHECK(re_match(&pattern, "xabbc", 5, 1, NULL) == 4);
+    regfree((regex_t*)&pattern);
+
+    /* Offline resolver entry points. */
+    int __res_init(void);
+    CHECK(__res_init() == 0);
+    unsigned char query[512];
+    int res_nmkquery(void*, int, const char*, int, int, const unsigned char*, int, const unsigned char*, unsigned char*, int);
+    CHECK(res_nmkquery(NULL, 0, "example.com", 1, 1, NULL, 0, NULL, query, sizeof(query)) > 0);
+
+    /* dladdr1 and the published data objects. */
+    Dl_info symbol_info;
+    void* map = NULL;
+    int glibc_shim_test(void);
+    CHECK(dladdr1((void*)&glibc_shim_test, &symbol_info, &map, RTLD_DL_LINKMAP) != 0);
+    CHECK(map != NULL);
+    extern void* __libc_stack_end;
+    CHECK((uintptr_t)__libc_stack_end > (uintptr_t)&symbol_info);
+    extern int _nl_msg_cat_cntr;
+    CHECK(_nl_msg_cat_cntr == 0);
+}
+
 int glibc_shim_test(void) {
     failures = 0;
 
@@ -869,6 +1284,9 @@ int glibc_shim_test(void) {
     walks();
     treeWalks();
     processors();
+    popularCalls();
+    popularData();
+    contexts();
     expressions();
     descriptorsAndLimits();
     localesAndWide();
