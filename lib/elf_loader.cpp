@@ -248,7 +248,7 @@ namespace {
         LinkMap* load(const std::string_view& requestedPath, int flags);
         void runPendingInitializers();
 
-        void* lookup(LinkMap& image, std::string_view name);
+        void* lookup(LinkMap& image, std::string_view name, std::string_view version);
         void* lookupGlobal(std::string_view name);
         void* lookupNext(const void* caller, std::string_view name, std::string_view version);
         void makeGlobal(LinkMap& image);
@@ -300,6 +300,7 @@ namespace {
         explicit LoadedElf(LinkMap& image);
 
         void* lookup(std::string_view symbol) const override;
+        void* lookupVersion(std::string_view symbol, std::string_view version) const override;
         std::string_view path() const override;
         uintptr_t base() const override;
         const void* dynamicSection() const override;
@@ -615,10 +616,10 @@ void* Loader::lookupNext(const void* caller, std::string_view name, std::string_
     return nullptr;
 }
 
-void* Loader::lookup(LinkMap& image, std::string_view name) {
+void* Loader::lookup(LinkMap& image, std::string_view name, std::string_view version) {
     std::lock_guard lock(mutex_);
 
-    return materialize(searchScope(image, name, {}));
+    return materialize(searchScope(image, name, version));
 }
 
 // Breadth-first over the image and its dependency closure, in load order at
@@ -1596,7 +1597,11 @@ LoadedElf::LoadedElf(LinkMap& image)
 }
 
 void* LoadedElf::lookup(std::string_view symbol) const {
-    return Loader::instance().lookup(image_, symbol);
+    return Loader::instance().lookup(image_, symbol, {});
+}
+
+void* LoadedElf::lookupVersion(std::string_view symbol, std::string_view version) const {
+    return Loader::instance().lookup(image_, symbol, version);
 }
 
 std::string_view LoadedElf::path() const {

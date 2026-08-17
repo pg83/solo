@@ -1736,6 +1736,12 @@ void* GlibcHandle::lookup(std::string_view name, std::string_view version) const
             return address;
         }
     }
+    if (!runtime && !version.empty()) {
+        // dlvsym over a loaded image wants the exact version, no fallbacks.
+        if (auto* image = dynamic_cast<ElfImage*>(static_cast<IfaceHandle*>(stubHandle))) {
+            return image->lookupVersion(name, version);
+        }
+    }
     if (auto* address = lookupStub(stubHandle, name); address) {
         return address;
     }
