@@ -601,6 +601,7 @@ def muslCrt(name, source):
 vulkan_crt1 = muslCrt("crt1", f"{musl_root}/crt/crt1.c")
 vulkan_crti = muslCrt("crti", f"{musl_root}/crt/{machine}/crti.s")
 vulkan_crtn = muslCrt("crtn", f"{musl_root}/crt/{machine}/crtn.s")
+vulkan_crtend = muslCrt("crtend", "$(S)/lib/crtend.s")
 
 vulkan_archives = [
     vulkan_app,
@@ -620,10 +621,11 @@ vulkan = command(
         vulkan_crt1.output,
         vulkan_crti.output,
         vulkan_crtn.output,
+        vulkan_crtend.output,
         *[archive.output for archive in vulkan_archives],
     ],
     outputs=["$(B)/bin/vulkan/vulkan"],
-    deps=[vulkan_crt1, vulkan_crti, vulkan_crtn, *vulkan_archives],
+    deps=[vulkan_crt1, vulkan_crti, vulkan_crtn, vulkan_crtend, *vulkan_archives],
     cmd=[
         cc,
         *linker_flags,
@@ -648,6 +650,7 @@ vulkan = command(
         "-Wl,--end-group",
         "-Wl,--whole-archive",
         vulkan_crtn.output,
+        vulkan_crtend.output,
         "-Wl,--no-whole-archive",
     ],
     descr="LD",
@@ -681,10 +684,11 @@ def vendoredTest(name, source):
             vulkan_crt1.output,
             vulkan_crti.output,
             vulkan_crtn.output,
+            vulkan_crtend.output,
             *[archive.output for archive in archives],
         ],
         outputs=[f"$(B)/tst/{name}"],
-        deps=[vulkan_crt1, vulkan_crti, vulkan_crtn, *archives],
+        deps=[vulkan_crt1, vulkan_crti, vulkan_crtn, vulkan_crtend, *archives],
         cmd=[
             cc,
             *linker_flags,
@@ -709,6 +713,7 @@ def vendoredTest(name, source):
             "-Wl,--end-group",
             "-Wl,--whole-archive",
             vulkan_crtn.output,
+            vulkan_crtend.output,
             "-Wl,--no-whole-archive",
         ],
         descr="LD",

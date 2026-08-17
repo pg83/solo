@@ -358,6 +358,34 @@ namespace {
         return 0;
     }
 
+    __attribute__((noinline)) static size_t stackEater(int depth) {
+        volatile char buffer[16 * 1024];
+
+        buffer[0] = (char)depth;
+        buffer[sizeof(buffer) - 1] = (char)depth;
+        if (depth <= 0) {
+            return 1;
+        }
+        return stackEater(depth - 1) + (size_t)buffer[sizeof(buffer) - 1];
+    }
+
+    static void* deepStackThread(void*) {
+        // A glibc-sized default stack carries a megabyte of frames; musl's
+        // 128 KiB default would fault here.
+        return reinterpret_cast<void*>(stackEater(64));
+    }
+
+    static int testDefaultStackSize() {
+        uintptr_t thread = 0;
+        void* result = nullptr;
+
+        DLFCN_CHECK(BRIDGE.create(&thread, nullptr, deepStackThread, nullptr) == 0);
+        DLFCN_CHECK(BRIDGE.join(thread, &result) == 0);
+        DLFCN_CHECK(result != nullptr);
+
+        return 0;
+    }
+
     struct Test {
         const char* name;
         int (*run)();
@@ -374,6 +402,7 @@ namespace {
         {"rwlock shared with both worlds", testRwlock},
         {"condition variable handoff", testCondition},
         {"thread attributes and create/join", testThreadAttributes},
+        {"default thread stack is glibc-sized", testDefaultStackSize},
     };
 }
 

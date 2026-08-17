@@ -201,18 +201,26 @@ def rerun_under_gdb(command, environment):
     gdb = shutil.which("gdb")
     if not gdb:
         return
+    # The debugger itself must not resolve its libraries against the test's
+    # LD_LIBRARY_PATH (glibc sysroots poison a dynamically linked gdb); only
+    # the inferior gets it, through the debugger.
+    launch_environment = {
+        key: value for key, value in environment.items() if key != "LD_LIBRARY_PATH"
+    }
+    setup = []
+    if "LD_LIBRARY_PATH" in environment:
+        setup = ["-ex", "set environment LD_LIBRARY_PATH " + environment["LD_LIBRARY_PATH"]]
     replay = subprocess.run(
-        [
-            gdb,
-            "--batch",
-            "-quiet",
+        [gdb, "--batch", "-quiet"]
+        + setup
+        + [
             "-ex", "run",
             "-ex", "info registers",
             "-ex", "thread apply all bt",
         ]
         + ["--args"]
         + command,
-        env=environment,
+        env=launch_environment,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

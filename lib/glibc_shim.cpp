@@ -2855,13 +2855,45 @@ namespace {
         return pthread_attr_setstacksize(static_cast<pthread_attr_t*>(foreign), size);
     }
 
+    // glibc sizes a thread's default stack from the soft RLIMIT_STACK
+    // (8 MiB when unlimited); guest code is written against that, and
+    // musl's 128 KiB default overflows under it (lttng-ust's listener
+    // thread, for one).
+    static size_t sh_default_thread_stack(void) {
+        rlimit limit;
+
+        if (getrlimit(RLIMIT_STACK, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY && limit.rlim_cur >= PTHREAD_STACK_MIN) {
+            return limit.rlim_cur;
+        }
+
+        return 8 << 20;
+    }
+
     static int sh_pthread_create(uintptr_t* foreign_thread, const void* foreign_attributes, void* (*start)(void*), void* argument) {
         if (sh_trace_enabled()) {
             fprintf(stderr, "glibc bridge: pthread_create(start=%p, argument=%p)\n", (void*)(uintptr_t)start, argument);
         }
 
+        // The guest's attribute object was built through the bridged attr
+        // calls, so it is a musl attribute; only a stack size the guest never
+        // chose (musl's own default, from the bridged pthread_attr_init) is
+        // replaced with the glibc-sized one.
+        pthread_attr_t attributes;
+        size_t musl_default = 0;
+        size_t stack_size = 0;
+
+        pthread_attr_init(&attributes);
+        pthread_attr_getstacksize(&attributes, &musl_default);
+        if (foreign_attributes) {
+            attributes = *static_cast<const pthread_attr_t*>(foreign_attributes);
+        }
+        pthread_attr_getstacksize(&attributes, &stack_size);
+        if (stack_size == musl_default) {
+            pthread_attr_setstacksize(&attributes, sh_default_thread_stack());
+        }
+
         pthread_t thread;
-        const int result = pthread_create(&thread, static_cast<const pthread_attr_t*>(foreign_attributes), start, argument);
+        const int result = pthread_create(&thread, &attributes, start, argument);
 
         if (result == 0) {
             *foreign_thread = (uintptr_t)thread;
