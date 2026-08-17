@@ -12,17 +12,23 @@
 #include "hash.h"
 #include "thread_tls.h"
 
+#include <arpa/inet.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
+#include <inttypes.h>
 #include <langinfo.h>
 #include <libgen.h>
 #include <limits.h>
 #include <locale.h>
 #include <malloc.h>
+#include <poll.h>
 #include <pthread.h>
 #include <pwd.h>
+#include <regex.h>
+#include <resolv.h>
 #include <sched.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -34,8 +40,10 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/random.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <sys/auxv.h>
 #include <syslog.h>
@@ -412,6 +420,435 @@ namespace {
 
     static int* sh_errno_location(void) {
         return &errno;
+    }
+
+    static long sh_fdelt_chk(long descriptor) {
+        if (descriptor < 0 || descriptor >= FD_SETSIZE) {
+            sh_fortify_fail();
+        }
+        return descriptor / (8 * (long)sizeof(long));
+    }
+
+    static char* sh_fgets_chk(char* destination, size_t destination_size, int count, FILE* stream) {
+        if (count > 0 && (size_t)count > destination_size) {
+            sh_fortify_fail();
+        }
+        return fgets(destination, count, stream);
+    }
+
+    static char* sh_getcwd_chk(char* destination, size_t size, size_t destination_size) {
+        if (size > destination_size) {
+            sh_fortify_fail();
+        }
+        return getcwd(destination, size);
+    }
+
+    static int sh_getgroups_chk(int count, gid_t* groups, size_t destination_size) {
+        if (count > 0 && (size_t)count * sizeof(gid_t) > destination_size) {
+            sh_fortify_fail();
+        }
+        return getgroups(count, groups);
+    }
+
+    static int sh_inet_pton_chk(int family, const char* source, void* destination, size_t destination_size) {
+        if ((family == AF_INET ? sizeof(struct in_addr) : sizeof(struct in6_addr)) > destination_size) {
+            sh_fortify_fail();
+        }
+        return inet_pton(family, source, destination);
+    }
+
+    static void* sh_mempcpy_chk(void* destination, const void* source, size_t count, size_t destination_size) {
+        if (count > destination_size) {
+            sh_fortify_fail();
+        }
+        return mempcpy(destination, source, count);
+    }
+
+    static int sh_poll_chk(struct pollfd* descriptors, nfds_t count, int timeout, size_t destination_size) {
+        if (count * sizeof(struct pollfd) > destination_size) {
+            sh_fortify_fail();
+        }
+        return poll(descriptors, count, timeout);
+    }
+
+    static char* sh_stpcpy_chk(char* destination, const char* source, size_t destination_size) {
+        if (strlen(source) + 1 > destination_size) {
+            sh_fortify_fail();
+        }
+        return stpcpy(destination, source);
+    }
+
+    static void sh_vsyslog_chk(int priority, int flag, const char* format, va_list arguments) {
+        (void)flag;
+        vsyslog(priority, format, arguments);
+    }
+
+    static intmax_t sh_isoc23_strtoimax(const char* text, char** end, int base) {
+        return strtoimax(text, end, base);
+    }
+
+    static uintmax_t sh_isoc23_strtoumax(const char* text, char** end, int base) {
+        return strtoumax(text, end, base);
+    }
+
+    static long long sh_isoc23_strtoll_l(const char* text, char** end, int base, void* locale) {
+        (void)locale;
+        return strtoll(text, end, base);
+    }
+
+    static unsigned long long sh_isoc23_strtoull_l(const char* text, char** end, int base, void* locale) {
+        (void)locale;
+        return strtoull(text, end, base);
+    }
+
+    static int sh_isoc23_vfscanf(FILE* stream, const char* format, va_list arguments) {
+        return vfscanf(stream, format, arguments);
+    }
+
+    // The vendored musl predates close_range(); raw syscalls, like the new
+    // mount API below.
+    static int sh_close_range(unsigned first, unsigned last, int flags) {
+        return (int)syscall(436, first, last, flags);
+    }
+
+    static void sh_closefrom(int first) {
+        syscall(436, first < 0 ? 0u : (unsigned)first, ~0u, 0);
+    }
+
+    static int sh_open_tree(int directory, const char* path, unsigned flags) {
+        return (int)syscall(428, directory, path, flags);
+    }
+
+    static int sh_move_mount(int from_directory, const char* from_path, int to_directory, const char* to_path, unsigned flags) {
+        return (int)syscall(429, from_directory, from_path, to_directory, to_path, flags);
+    }
+
+    static int sh_fsopen(const char* filesystem, unsigned flags) {
+        return (int)syscall(430, filesystem, flags);
+    }
+
+    static int sh_fsconfig(int descriptor, unsigned command, const char* key, const void* value, int auxiliary) {
+        return (int)syscall(431, descriptor, command, key, value, auxiliary);
+    }
+
+    static int sh_fsmount(int descriptor, unsigned flags, unsigned attributes) {
+        return (int)syscall(432, descriptor, flags, attributes);
+    }
+
+    static int sh_fspick(int directory, const char* path, unsigned flags) {
+        return (int)syscall(433, directory, path, flags);
+    }
+
+    static int sh_mount_setattr(int directory, const char* path, unsigned flags, void* attributes, size_t size) {
+        return (int)syscall(442, directory, path, flags, attributes, size);
+    }
+
+    static int sh_creat64(const char* path, mode_t mode) {
+        return creat(path, mode);
+    }
+
+    static int sh_fallocate64(int descriptor, int mode, off_t offset, off_t size) {
+        return fallocate(descriptor, mode, offset, size);
+    }
+
+    static FILE* sh_freopen64(const char* path, const char* mode, FILE* stream) {
+        return freopen(path, mode, stream);
+    }
+
+    static int sh_statvfs64(const char* path, struct statvfs* status) {
+        return statvfs(path, status);
+    }
+
+    static int sh_fstatvfs64(int descriptor, struct statvfs* status) {
+        return fstatvfs(descriptor, status);
+    }
+
+    static int sh_getrlimit64(int resource, struct rlimit* limit) {
+        return getrlimit(resource, limit);
+    }
+
+    static int sh_setrlimit64(int resource, const struct rlimit* limit) {
+        return setrlimit(resource, limit);
+    }
+
+    static int sh_posix_fadvise64(int descriptor, off_t offset, off_t size, int advice) {
+        return posix_fadvise(descriptor, offset, size, advice);
+    }
+
+    static int sh_versionsort64(const struct dirent** left, const struct dirent** right) {
+        return versionsort(left, right);
+    }
+
+    static int sh_scandirat64(int directory, const char* path, struct dirent*** entries, int (*filter)(const struct dirent*), int (*compare)(const struct dirent**, const struct dirent**)) {
+        if (!path || path[0] == '/' || directory == AT_FDCWD) {
+            return scandir(path, entries, filter, compare);
+        }
+
+        char resolved[PATH_MAX];
+
+        snprintf(resolved, sizeof(resolved), "/proc/self/fd/%d/%s", directory, path);
+        return scandir(resolved, entries, filter, compare);
+    }
+
+    static int sh_malloc_trim(size_t pad) {
+        (void)pad;
+        return 0;
+    }
+
+    struct ShMallinfo2 {
+        size_t values[10];
+    };
+
+    static ShMallinfo2 sh_mallinfo2(void) {
+        return {};
+    }
+
+    static const char* sh_strerrorname_np(int error) {
+        (void)error;
+        return nullptr;
+    }
+
+    static int sh_rpmatch(const char* response) {
+        if (response && (*response == 'y' || *response == 'Y')) {
+            return 1;
+        }
+        if (response && (*response == 'n' || *response == 'N')) {
+            return 0;
+        }
+        return -1;
+    }
+
+    static int sh_getsgnam_r(const char* name, void* record, char* buffer, size_t size, void** result) {
+        (void)name;
+        (void)record;
+        (void)buffer;
+        (void)size;
+        if (result) {
+            *result = nullptr;
+        }
+        return 0;
+    }
+
+    // The res_n* API over musl's stateless resolver: the glibc res_state is
+    // opaque to us and stays untouched.
+    static int sh_res_ninit(void* state) {
+        (void)state;
+        return 0;
+    }
+
+    static void sh_res_nclose(void* state) {
+        (void)state;
+    }
+
+    static int sh_res_nquery(void* state, const char* name, int record_class, int type, unsigned char* answer, int length) {
+        (void)state;
+        return res_query(name, record_class, type, answer, length);
+    }
+
+    static size_t sh_parse_printf_format(const char* format, size_t count, int* types) {
+        enum {
+            PaInt,
+            PaChar,
+            PaWchar,
+            PaString,
+            PaWstring,
+            PaPointer,
+            PaFloat,
+            PaDouble,
+            PaFlagLongLong = 0x100,
+            PaFlagLong = 0x200,
+            PaFlagShort = 0x400,
+            PaFlagPtr = 0x800,
+        };
+        size_t used = 0;
+        auto emit = [&](int type) {
+            if (used < count) {
+                types[used] = type;
+            }
+            ++used;
+        };
+
+        for (const char* cursor = format; *cursor; ++cursor) {
+            if (*cursor != '%') {
+                continue;
+            }
+            ++cursor;
+            if (*cursor == '%') {
+                continue;
+            }
+            while (*cursor == '-' || *cursor == '+' || *cursor == ' ' || *cursor == '#' || *cursor == '0' || *cursor == '\'' || *cursor == 'I') {
+                ++cursor;
+            }
+            if (*cursor == '*') {
+                emit(PaInt);
+                ++cursor;
+            } else {
+                while (isdigit((unsigned char)*cursor)) {
+                    ++cursor;
+                }
+            }
+            if (*cursor == '.') {
+                ++cursor;
+                if (*cursor == '*') {
+                    emit(PaInt);
+                    ++cursor;
+                } else {
+                    while (isdigit((unsigned char)*cursor)) {
+                        ++cursor;
+                    }
+                }
+            }
+            int flags = 0;
+            for (;;) {
+                if (*cursor == 'h') {
+                    flags = PaFlagShort;
+                    ++cursor;
+                    if (*cursor == 'h') {
+                        ++cursor;
+                    }
+                } else if (*cursor == 'l') {
+                    flags = PaFlagLong;
+                    ++cursor;
+                    if (*cursor == 'l') {
+                        flags = PaFlagLongLong;
+                        ++cursor;
+                    }
+                } else if (*cursor == 'j' || *cursor == 'z' || *cursor == 't' || *cursor == 'q' || *cursor == 'L') {
+                    flags = PaFlagLongLong;
+                    ++cursor;
+                } else {
+                    break;
+                }
+            }
+            if (!*cursor) {
+                break;
+            }
+            switch (*cursor) {
+                case 'd':
+                case 'i':
+                case 'u':
+                case 'o':
+                case 'x':
+                case 'X':
+                    emit(PaInt | flags);
+                    break;
+                case 'c':
+                    emit(flags & PaFlagLong ? PaWchar : PaChar);
+                    break;
+                case 's':
+                    emit(flags & PaFlagLong ? PaWstring : PaString);
+                    break;
+                case 'p':
+                    emit(PaPointer);
+                    break;
+                case 'f':
+                case 'F':
+                case 'e':
+                case 'E':
+                case 'g':
+                case 'G':
+                case 'a':
+                case 'A':
+                    emit(PaDouble | flags);
+                    break;
+                case 'n':
+                    emit(PaInt | PaFlagPtr);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        return used;
+    }
+
+    // glibc regmatch_t holds int offsets while musl's are 64-bit
+    // (dev/abi-diff.txt), so the regex family cannot pass through: the musl
+    // object lives behind the buffer field of the caller's glibc regex_t, and
+    // matches are converted.
+    struct GlibcRegex {
+        regex_t* shadow;
+        unsigned long reserved[5];
+        size_t re_nsub;
+        unsigned long flags;
+    };
+
+    struct GlibcRegmatch {
+        int rm_so;
+        int rm_eo;
+    };
+
+    static_assert(sizeof(GlibcRegex) == sizeof(regex_t));
+
+    static int sh_regcomp(GlibcRegex* compiled, const char* pattern, int cflags) {
+        auto* shadow = static_cast<regex_t*>(calloc(1, sizeof(regex_t)));
+
+        if (!shadow) {
+            return REG_ESPACE;
+        }
+        if (int result = regcomp(shadow, pattern, cflags)) {
+            free(shadow);
+            return result;
+        }
+
+        compiled->shadow = shadow;
+        compiled->re_nsub = shadow->re_nsub;
+        return 0;
+    }
+
+    static int sh_regexec(const GlibcRegex* compiled, const char* string, size_t nmatch, GlibcRegmatch* pmatch, int eflags) {
+        regmatch_t buffer[16];
+        regmatch_t* matches = buffer;
+
+        if (nmatch > 16) {
+            matches = static_cast<regmatch_t*>(calloc(nmatch, sizeof(regmatch_t)));
+            if (!matches) {
+                return REG_ESPACE;
+            }
+        }
+
+        int result = regexec(compiled->shadow, string, nmatch, matches, eflags);
+
+        if (result == 0) {
+            for (size_t index = 0; index < nmatch; ++index) {
+                pmatch[index] = {(int)matches[index].rm_so, (int)matches[index].rm_eo};
+            }
+        }
+        if (matches != buffer) {
+            free(matches);
+        }
+        return result;
+    }
+
+    static size_t sh_regerror(int code, const GlibcRegex* compiled, char* buffer, size_t size) {
+        return regerror(code, compiled && compiled->shadow ? compiled->shadow : nullptr, buffer, size);
+    }
+
+    static void sh_regfree(GlibcRegex* compiled) {
+        if (compiled && compiled->shadow) {
+            regfree(compiled->shadow);
+            free(compiled->shadow);
+            compiled->shadow = nullptr;
+        }
+    }
+
+    // musl's FTW_* type codes are glibc's plus one (dev/abi-diff.txt), so the
+    // callback sees translated codes; the flags match.
+    using NftwCallback = int (*)(const char*, const struct stat*, int, struct FTW*);
+
+    static thread_local NftwCallback nftwUserCallback;
+
+    static int sh_nftw_trampoline(const char* path, const struct stat* status, int type, struct FTW* info) {
+        return nftwUserCallback(path, status, type - 1, info);
+    }
+
+    static int sh_nftw(const char* path, NftwCallback callback, int descriptors, int flags) {
+        auto* previous = nftwUserCallback;
+
+        nftwUserCallback = callback;
+        int result = nftw(path, sh_nftw_trampoline, descriptors, flags);
+        nftwUserCallback = previous;
+        return result;
     }
 
     // C23 sized deallocation: the sizes are advisory.
@@ -1006,6 +1443,36 @@ namespace {
         return pthread_setschedparam((pthread_t)thread, policy, parameters);
     }
 
+    // The glibc sched_param is a bare int while musl pads its own to 48 bytes
+    // (dev/abi-diff.txt); whenever musl copies the whole struct, go through a
+    // local one and move only the priority.
+    static int sh_pthread_getschedparam(uintptr_t thread, int* policy, int* priority) {
+        struct sched_param parameters = {};
+        int result = pthread_getschedparam((pthread_t)thread, policy, &parameters);
+
+        if (result == 0) {
+            *priority = parameters.sched_priority;
+        }
+        return result;
+    }
+
+    static int sh_pthread_attr_setschedparam(void* attributes, const int* priority) {
+        struct sched_param parameters = {};
+
+        parameters.sched_priority = *priority;
+        return pthread_attr_setschedparam(static_cast<pthread_attr_t*>(attributes), &parameters);
+    }
+
+    static int sh_pthread_attr_getschedparam(const void* attributes, int* priority) {
+        struct sched_param parameters = {};
+        int result = pthread_attr_getschedparam(static_cast<const pthread_attr_t*>(attributes), &parameters);
+
+        if (result == 0) {
+            *priority = parameters.sched_priority;
+        }
+        return result;
+    }
+
     static int sh_cxa_thread_atexit_impl(void (*function)(void*), void* argument, void* dso_handle) {
         (void)dso_handle;
         ThreadTls::current()->registerDtor(function, argument);
@@ -1556,6 +2023,64 @@ namespace {
         SH_FUNCTION("free", "GLIBC_2.2.5", free),
         SH_FUNCTION("free_sized", "GLIBC_2.43", sh_free_sized),
         SH_FUNCTION("free_aligned_sized", "GLIBC_2.43", sh_free_aligned_sized),
+        SH_FUNCTION("__fdelt_chk", "GLIBC_2.15", sh_fdelt_chk),
+        SH_FUNCTION("__fgets_chk", "GLIBC_2.4", sh_fgets_chk),
+        SH_FUNCTION("__getcwd_chk", "GLIBC_2.4", sh_getcwd_chk),
+        SH_FUNCTION("__getgroups_chk", "GLIBC_2.4", sh_getgroups_chk),
+        SH_FUNCTION("__inet_pton_chk", "GLIBC_2.42", sh_inet_pton_chk),
+        SH_FUNCTION("__mempcpy_chk", "GLIBC_2.3.4", sh_mempcpy_chk),
+        SH_FUNCTION("__open_2", "GLIBC_2.7", sh_open64_2),
+        SH_FUNCTION("__poll_chk", "GLIBC_2.16", sh_poll_chk),
+        SH_FUNCTION("__stpcpy_chk", "GLIBC_2.3.4", sh_stpcpy_chk),
+        SH_FUNCTION("__vsyslog_chk", "GLIBC_2.4", sh_vsyslog_chk),
+        SH_FUNCTION("__mbrlen", "GLIBC_2.2.5", mbrlen),
+        SH_FUNCTION("__sysconf", "GLIBC_2.2.5", sysconf),
+        SH_FUNCTION("__isoc23_strtoimax", "GLIBC_2.38", sh_isoc23_strtoimax),
+        SH_FUNCTION("__isoc23_strtoumax", "GLIBC_2.38", sh_isoc23_strtoumax),
+        SH_FUNCTION("__isoc23_strtoll_l", "GLIBC_2.38", sh_isoc23_strtoll_l),
+        SH_FUNCTION("__isoc23_strtoull_l", "GLIBC_2.38", sh_isoc23_strtoull_l),
+        SH_FUNCTION("__isoc23_vfscanf", "GLIBC_2.38", sh_isoc23_vfscanf),
+        SH_FUNCTION("close_range", "GLIBC_2.34", sh_close_range),
+        SH_FUNCTION("closefrom", "GLIBC_2.34", sh_closefrom),
+        SH_FUNCTION("open_tree", "GLIBC_2.36", sh_open_tree),
+        SH_FUNCTION("move_mount", "GLIBC_2.36", sh_move_mount),
+        SH_FUNCTION("fsopen", "GLIBC_2.36", sh_fsopen),
+        SH_FUNCTION("fsconfig", "GLIBC_2.36", sh_fsconfig),
+        SH_FUNCTION("fsmount", "GLIBC_2.36", sh_fsmount),
+        SH_FUNCTION("fspick", "GLIBC_2.36", sh_fspick),
+        SH_FUNCTION("mount_setattr", "GLIBC_2.36", sh_mount_setattr),
+        SH_FUNCTION("creat64", "GLIBC_2.2.5", sh_creat64),
+        SH_FUNCTION("fallocate64", "GLIBC_2.10", sh_fallocate64),
+        SH_FUNCTION("freopen64", "GLIBC_2.2.5", sh_freopen64),
+        SH_FUNCTION("statvfs64", "GLIBC_2.2.5", sh_statvfs64),
+        SH_FUNCTION("fstatvfs64", "GLIBC_2.2.5", sh_fstatvfs64),
+        SH_FUNCTION("getrlimit64", "GLIBC_2.2.5", sh_getrlimit64),
+        SH_FUNCTION("setrlimit64", "GLIBC_2.2.5", sh_setrlimit64),
+        SH_FUNCTION("posix_fadvise64", "GLIBC_2.2.5", sh_posix_fadvise64),
+        SH_FUNCTION("versionsort64", "GLIBC_2.2.5", sh_versionsort64),
+        SH_FUNCTION("scandirat64", "GLIBC_2.15", sh_scandirat64),
+        SH_FUNCTION("scandirat", "GLIBC_2.15", sh_scandirat64),
+        SH_FUNCTION("malloc_trim", "GLIBC_2.2.5", sh_malloc_trim),
+        SH_FUNCTION("mallinfo2", "GLIBC_2.33", sh_mallinfo2),
+        SH_FUNCTION("strerrorname_np", "GLIBC_2.32", sh_strerrorname_np),
+        SH_FUNCTION("rpmatch", "GLIBC_2.2.5", sh_rpmatch),
+        SH_FUNCTION("getsgnam_r", "GLIBC_2.10", sh_getsgnam_r),
+        SH_FUNCTION("__res_ninit", "GLIBC_2.2.5", sh_res_ninit),
+        SH_FUNCTION("__res_nclose", "GLIBC_2.2.5", sh_res_nclose),
+        SH_FUNCTION("res_nquery", "GLIBC_2.34", sh_res_nquery),
+        SH_FUNCTION("parse_printf_format", "GLIBC_2.2.5", sh_parse_printf_format),
+        SH_FUNCTION("regcomp", "GLIBC_2.2.5", sh_regcomp),
+        SH_FUNCTION("regexec", "GLIBC_2.2.5", sh_regexec),
+        SH_FUNCTION("regexec", "GLIBC_2.3.4", sh_regexec),
+        SH_FUNCTION("regerror", "GLIBC_2.2.5", sh_regerror),
+        SH_FUNCTION("regfree", "GLIBC_2.2.5", sh_regfree),
+        SH_FUNCTION("nftw", "GLIBC_2.2.5", sh_nftw),
+        SH_FUNCTION("nftw", "GLIBC_2.3.3", sh_nftw),
+        SH_FUNCTION("nftw64", "GLIBC_2.2.5", sh_nftw),
+        SH_FUNCTION("nftw64", "GLIBC_2.3.3", sh_nftw),
+        SH_FUNCTION("pthread_getschedparam", "GLIBC_2.2.5", sh_pthread_getschedparam),
+        SH_FUNCTION("pthread_attr_setschedparam", "GLIBC_2.2.5", sh_pthread_attr_setschedparam),
+        SH_FUNCTION("pthread_attr_getschedparam", "GLIBC_2.2.5", sh_pthread_attr_getschedparam),
         SH_FUNCTION("abort", "GLIBC_2.2.5", abort),
         SH_FUNCTION("__errno_location", "GLIBC_2.2.5", sh_errno_location),
         SH_FUNCTION("strncpy", "GLIBC_2.2.5", strncpy),
@@ -1798,8 +2323,12 @@ GlibcAdapter::GlibcAdapter()
         "fstatat64",
         "fstatfs64",
         "lstat64",
+        "nftw",
+        "nftw64",
         "pthread_attr_destroy",
+        "pthread_attr_getschedparam",
         "pthread_attr_init",
+        "pthread_attr_setschedparam",
         "pthread_attr_setstacksize",
         "pthread_barrier_destroy",
         "pthread_barrier_init",
@@ -1818,6 +2347,7 @@ GlibcAdapter::GlibcAdapter()
         "pthread_detach",
         "pthread_getaffinity_np",
         "pthread_getname_np",
+        "pthread_getschedparam",
         "pthread_join",
         "pthread_mutex_destroy",
         "pthread_mutex_init",
@@ -1839,6 +2369,10 @@ GlibcAdapter::GlibcAdapter()
         "pthread_setname_np",
         "pthread_setschedparam",
         "readdir64",
+        "regcomp",
+        "regerror",
+        "regexec",
+        "regfree",
         "scandir64",
         "stat64",
         "statfs64",
