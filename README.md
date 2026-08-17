@@ -22,7 +22,7 @@ driver already installed on the machine.
 
 The repository includes an end-to-end Vulkan proof: a fully static executable
 loads the host's unmodified Vulkan driver, runs a compute shader, and writes
-the result to a PNG. Tested on radv, radeonsi, Intel, and NVIDIA GPUs under
+the result to a PNG. Tested on AMD radv, radeonsi, Intel, and NVIDIA GPUs under
 Linux, and on Apple M1 under Asahi Linux.
 
 **The host keeps the hardware-specific code. You ship everything else.**
