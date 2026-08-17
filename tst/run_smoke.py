@@ -73,6 +73,9 @@ def main():
                     "-shared",
                     "-nostdlib",
                     "-Wl,--no-as-needed",
+                    # Hardened toolchains default to -z now; the test is about
+                    # lazy slots, so ask for them explicitly.
+                    "-Wl,-z,lazy",
                     str(root / "usr" / "lib" / "libc.so.6"),
                     f"-Wl,-soname,{lazy_name}",
                     os.environ["DLFCN_GLIBC_LAZY_TEST_SOURCE"],
