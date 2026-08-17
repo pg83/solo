@@ -2,6 +2,10 @@
     #define _GNU_SOURCE
 #endif
 
+// The bridge defines _dl_find_object itself, with its own result type; hide the
+// declaration a host <dlfcn.h> makes so the two cannot collide.
+#define _dl_find_object sh_host_dl_find_object
+
 #include "glibc_shim.h"
 
 #include <link.h>
@@ -49,6 +53,8 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+
+#undef _dl_find_object
 
 extern "C" int __cxa_atexit(void (*function)(void*), void* argument, void* dso);
 extern "C" void _Unwind_DeleteException();
@@ -702,6 +708,17 @@ namespace {
 
         return context->call(image);
     }
+
+    static int shFindObject(void* address, GlibcDlFindObject* result) {
+        if (!result) {
+            return -1;
+        }
+
+        ShDlFindObjectContext context(address, result);
+        dl_iterate_phdr(findObjectProgramHeaders, &context);
+
+        return context.found ? 0 : -1;
+    }
 }
 
 extern "C" int dl_iterate_phdr(int (*callback)(dl_phdr_info*, size_t, void*), void* data) {
@@ -714,14 +731,12 @@ extern "C" int dl_iterate_phdr(int (*callback)(dl_phdr_info*, size_t, void*), vo
     return ElfImage::iterateProgramHeaders(context);
 }
 
+// The unwinder linked into the static executable calls _dl_find_object through
+// the linker rather than through the bridge table, so this definition stays
+// global and interposes the one in the process libc: that is what lets an
+// exception unwind through an image SoLo mapped.
 extern "C" int _dl_find_object(void* address, GlibcDlFindObject* result) {
-    if (!result) {
-        return -1;
-    }
-
-    ShDlFindObjectContext context(address, result);
-    dl_iterate_phdr(findObjectProgramHeaders, &context);
-    return context.found ? 0 : -1;
+    return shFindObject(address, result);
 }
 
 namespace {
