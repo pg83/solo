@@ -47,6 +47,8 @@ extern "C" {
     void* stub_dlopen(const char* filename, int flags);
     int stub_dlclose(void* handle);
     char* stub_dlerror(void);
+    // Startup wiring: the registry is unsynchronized, so finish every
+    // registration before creating threads and before the first dlopen.
     void stub_dlregister(const char* lib, const char* symbol, void* ptr);
     int stub_dladdr(const void* addr, Dl_info* info);
 
