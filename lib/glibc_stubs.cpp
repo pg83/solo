@@ -9,44 +9,19 @@
 #include <unordered_map>
 
 namespace {
-    [[noreturn]] static void abortStub(const char* name, const char* version) noexcept {
-        fprintf(stderr, "glibc bridge: called unimplemented ABI %s@%s\n", name, version);
-        abort();
-    }
-
-#define GLIBC_JOIN_(LEFT, RIGHT) LEFT##RIGHT
-#define GLIBC_JOIN(LEFT, RIGHT) GLIBC_JOIN_(LEFT, RIGHT)
-#define GLIBC_FUNCTION_STUB(ID, NAME, VERSION, SIZE)                        \
-    [[noreturn]] static void GLIBC_JOIN(glibcFunctionStub, ID)() noexcept { \
-        abortStub(NAME, VERSION);                                           \
-    }
-#define GLIBC_OBJECT_STUB(ID, NAME, VERSION, SIZE) alignas(max_align_t) static unsigned char GLIBC_JOIN(glibcObjectStub, ID)[SIZE ? SIZE : 1] = {};
-#define GLIBC_TLS_STUB(ID, NAME, VERSION, SIZE)                                                                \
-    alignas(max_align_t) static thread_local unsigned char GLIBC_JOIN(glibcTlsStub, ID)[SIZE ? SIZE : 1] = {}; \
-    static void* GLIBC_JOIN(glibcTlsStubAddress, ID)() noexcept {                                              \
-        return GLIBC_JOIN(glibcTlsStub, ID);                                                                   \
-    }
-#include "glibc_stubs.inc"
-#undef GLIBC_FUNCTION_STUB
-#undef GLIBC_OBJECT_STUB
-#undef GLIBC_TLS_STUB
-
-    struct Stub {
+    struct GlibcStub {
         const char* name;
         const char* version;
         void* address;
         void* (*addressFunction)() noexcept;
     };
 
-    static const Stub STUBS[] = {
-#define GLIBC_FUNCTION_STUB(ID, NAME, VERSION, SIZE) {NAME, VERSION, reinterpret_cast<void*>(GLIBC_JOIN(glibcFunctionStub, ID)), nullptr},
-#define GLIBC_OBJECT_STUB(ID, NAME, VERSION, SIZE) {NAME, VERSION, GLIBC_JOIN(glibcObjectStub, ID), nullptr},
-#define GLIBC_TLS_STUB(ID, NAME, VERSION, SIZE) {NAME, VERSION, nullptr, GLIBC_JOIN(glibcTlsStubAddress, ID)},
-#include "glibc_stubs.inc"
-#undef GLIBC_FUNCTION_STUB
-#undef GLIBC_OBJECT_STUB
-#undef GLIBC_TLS_STUB
-    };
+    [[noreturn]] static void abortStub(const char* name, const char* version) noexcept {
+        fprintf(stderr, "glibc bridge: called unimplemented ABI %s@%s\n", name, version);
+        abort();
+    }
+
+#include "glibc_symbols.json.h"
 
     struct Key {
         std::string_view name;
@@ -81,8 +56,8 @@ namespace {
         static const auto* result = [] {
             auto* value = new Providers();
 
-            value->reserve(sizeof(STUBS) / sizeof(STUBS[0]));
-            for (const auto& stub : STUBS) {
+            value->reserve(sizeof(glibcStubTable) / sizeof(glibcStubTable[0]));
+            for (const auto& stub : glibcStubTable) {
                 value->emplace(Key{stub.name, stub.version}, Provider{stub.address, stub.addressFunction});
             }
 

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Generate the hard-coded identity providers for the embedded musl."""
+"""Collect the identity providers for the embedded musl into the symbol table."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
 
+
+MUSL_SOURCE = "musl 1.2.5"
 
 NON_DIRECT_SYMBOLS = {
     "__tls_get_addr",
@@ -54,7 +57,7 @@ def defined_symbols(path: Path, dynamic: bool = False) -> set[str]:
 def main() -> None:
     if len(sys.argv) != 4:
         raise SystemExit(
-            "usage: generate_host_symbols.py MUSL_LIBC_A MUSL_LIBC_SO OUTPUT_CPP"
+            "usage: generate_host_symbols.py MUSL_LIBC_A MUSL_LIBC_SO OUTPUT_JSON"
         )
 
     available = defined_symbols(Path(sys.argv[1]))
@@ -62,44 +65,19 @@ def main() -> None:
     direct = sorted((available & public) - NON_DIRECT_SYMBOLS - PROCESS_SYMBOLS)
 
     lines = [
-        "// Generated from musl 1.2.5 by generate_host_symbols.py.",
-        '#include "musl_symbols.h"',
+        "{",
+        f'    "source": {json.dumps(MUSL_SOURCE)},',
+        '    "symbols": [',
+        ",\n".join(f"        {json.dumps(symbol)}" for symbol in direct),
+        "    ]",
+        "}",
         "",
-        'extern "C" {',
     ]
-    for symbol in direct:
-        escaped = symbol.replace("\\", "\\\\").replace('"', '\\"')
-        lines.append(
-            f"    extern void* {escaped};"
-        )
-    lines.extend([
-        "}",
-        "",
-        "namespace {",
-        "    static const MuslSymbol muslSymbolTable[] = {",
-    ])
-    for symbol in direct:
-        escaped = symbol.replace("\\", "\\\\").replace('"', '\\"')
-        lines.append(
-            f'        {{"{escaped}", &{escaped}}},'
-        )
-    lines.extend([
-        "    };",
-        "}",
-        "",
-        "MuslSymbols muslSymbols() {",
-        "    return {",
-        "        muslSymbolTable,",
-        "        sizeof(muslSymbolTable) / sizeof(muslSymbolTable[0]),",
-        "    };",
-        "}",
-        "",
-    ])
 
     output = Path(sys.argv[3])
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines))
-    print(f"generated {len(direct)} musl identity providers in {output}")
+    print(f"collected {len(direct)} musl identity providers in {output}")
 
 
 if __name__ == "__main__":

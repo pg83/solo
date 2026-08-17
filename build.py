@@ -27,17 +27,46 @@ if shutil.which("ld") is None and (lld := shutil.which("ld.lld")):
 
 vulkanBuild = any(argument in ("vulkan", "vulkan_test") for argument in sys.argv[1:])
 
+
+def symbolHeader(kind):
+    output = f"$(B)/lib/{kind}_symbols.json.h"
+
+    return command(
+        name=f"{kind}_symbols_header",
+        inputs=[
+            "$(S)/dev/generate_symbol_headers.py",
+            f"$(S)/lib/{kind}_symbols.json",
+        ],
+        outputs=[output],
+        cmd=[
+            "python3",
+            "$(S)/dev/generate_symbol_headers.py",
+            kind,
+            f"$(S)/lib/{kind}_symbols.json",
+            output,
+        ],
+    )
+
+
+musl_symbols_header = symbolHeader("musl")
+glibc_symbols_header = symbolHeader("glibc")
+symbol_headers = [musl_symbols_header, glibc_symbols_header]
+
+dlfcn_srcs = [
+    "$(S)/lib/dlfcn.cpp",
+    "$(S)/lib/elf_loader.cpp",
+    "$(S)/lib/glibc_shim.cpp",
+    "$(S)/lib/glibc_stubs.cpp",
+    "$(S)/lib/hash.cpp",
+    "$(S)/lib/musl_provider.cpp",
+    "$(S)/lib/musl_symbols.cpp",
+    "$(S)/lib/tlsdesc.S",
+]
+
 dlfcn = library(
-    srcs=[
-        "$(S)/lib/dlfcn.cpp",
-        "$(S)/lib/elf_loader.cpp",
-        "$(S)/lib/glibc_shim.cpp",
-        "$(S)/lib/glibc_stubs.cpp",
-        "$(S)/lib/hash.cpp",
-        "$(S)/lib/musl_provider.cpp",
-        "$(S)/lib/musl_symbols.cpp",
-        "$(S)/lib/tlsdesc.S",
-    ],
+    srcs=dlfcn_srcs,
+    deps=symbol_headers,
+    includes=["$(B)/lib"],
     cppflags=["-DCOMPILE_DLOPEN"],
     public_cppflags=["-I$(S)/lib"],
     output="$(B)/libdlfcn.a",
@@ -364,17 +393,9 @@ libcxx = library(
 
 dlfcn_static = library(
     name="vulkan_dlfcn",
-    srcs=[
-        "$(S)/lib/dlfcn.cpp",
-        "$(S)/lib/elf_loader.cpp",
-        "$(S)/lib/glibc_shim.cpp",
-        "$(S)/lib/glibc_stubs.cpp",
-        "$(S)/lib/hash.cpp",
-        "$(S)/lib/musl_provider.cpp",
-        "$(S)/lib/musl_symbols.cpp",
-        "$(S)/lib/tlsdesc.S",
-    ],
-    deps=runtime_generated,
+    srcs=dlfcn_srcs,
+    deps=[*runtime_generated, *symbol_headers],
+    includes=["$(B)/lib"],
     cflags=c_runtime_flags,
     cxxflags=[
         *cxx_runtime_flags,
