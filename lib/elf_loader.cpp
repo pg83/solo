@@ -51,6 +51,10 @@ using namespace dyn;
     #define DF_BIND_NOW 0x8
 #endif
 
+#ifndef DF_SYMBOLIC
+    #define DF_SYMBOLIC 0x2
+#endif
+
 #ifndef DT_FLAGS_1
     #define DT_FLAGS_1 0x6ffffffb
 #endif
@@ -259,6 +263,12 @@ namespace {
         size_t relativeRelocationCount = 0;
         uintptr_t pltGot = 0;
         bool bindNow = false;
+        // DT_SYMBOLIC / -Bsymbolic: the image's own definitions win for its
+        // own references.
+        bool symbolic = false;
+        // RTLD_DEEPBIND: the local dependency closure is searched before the
+        // global scope instead of after it.
+        bool deepBind = false;
 
         uintptr_t initializer = 0;
         uintptr_t initializerArray = 0;
@@ -650,6 +660,8 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
         imagesByName_.emplace(image.soname, &image);
     }
     loadDependencies(image);
+
+    image.deepBind = (flags & RTLD_DEEPBIND) != 0;
 
     std::vector<DeferredRelocation> deferred;
     auto lazy = !(flags & RTLD_NOW) && !image.bindNow && !bindNow_;
@@ -1272,8 +1284,12 @@ void LinkMap::parseDynamic() {
             case DT_BIND_NOW:
                 bindNow = true;
                 break;
+            case DT_SYMBOLIC:
+                symbolic = true;
+                break;
             case DT_FLAGS:
                 bindNow |= (entry->d_un.d_val & DF_BIND_NOW) != 0;
+                symbolic |= (entry->d_un.d_val & DF_SYMBOLIC) != 0;
                 break;
             case DT_FLAGS_1:
                 bindNow |= (entry->d_un.d_val & DF_1_NOW) != 0;
@@ -1482,7 +1498,10 @@ Definition LinkMap::findSymbol(const std::string_view& name, const std::string_v
 Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
     auto* symbol = &image.symbols[symbolIndex];
 
-    if (symbol->st_shndx != SHN_UNDEF) {
+    // A defined symbol still goes through the scopes — that is what makes an
+    // image's own globals interposable, and why its calls use a PLT at all.
+    // Only local binding and non-default visibility pin the definition here.
+    if (symbol->st_shndx != SHN_UNDEF && (ELF64_ST_BIND(symbol->st_info) == STB_LOCAL || ELF64_ST_VISIBILITY(symbol->st_other) != STV_DEFAULT)) {
         return {image.base + symbol->st_value, &image, symbol};
     }
     if (symbol->st_name >= image.stringsSize) {
@@ -1500,15 +1519,38 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
         }
     }
 
-    if (auto definition = searchScope(image, name, version); definition) {
-        debugBinding(image, name, definition.image ? definition.image->path.c_str() : "static provider");
-        return definition;
-    }
-    for (auto* global : globalImages_) {
-        if (auto definition = global->findSymbol(name, version); definition) {
-            debugBinding(image, name, global->path.c_str());
+    // ld.so's order: a DT_SYMBOLIC image binds its own definitions first;
+    // then the global scope in load order, then the image's own dependency
+    // closure — with RTLD_DEEPBIND swapping those two, so interposers in the
+    // global scope cannot reach inside the image's closure.
+    if (image.symbolic) {
+        if (auto definition = image.findSymbol(name, version); definition) {
+            debugBinding(image, name, image.path.c_str());
             return definition;
         }
+    }
+
+    auto globally = [&]() -> Definition {
+        for (auto* global : globalImages_) {
+            if (auto definition = global->findSymbol(name, version); definition) {
+                return definition;
+            }
+        }
+
+        return {};
+    };
+    auto locally = [&]() {
+        return searchScope(image, name, version);
+    };
+
+    auto definition = image.deepBind ? locally() : globally();
+
+    if (!definition) {
+        definition = image.deepBind ? globally() : locally();
+    }
+    if (definition) {
+        debugBinding(image, name, definition.image ? definition.image->path.c_str() : "static provider");
+        return definition;
     }
 
     auto* address = image.glibcAbi ? resolveGlibcSymbol(name, version, weak) : nullptr;

@@ -421,6 +421,58 @@ int main() {
         return 1;
     }
 
+    // ld.so scope order: the global interposer beats a definition inside a
+    // later image's own closure, RTLD_DEEPBIND flips that, and -Bsymbolic
+    // pins an image's internal calls to its own definition.
+    auto* interposer = stub_dlopen("libdlfcn-test-interpose.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!interposer) {
+        fprintf(stderr, "interposer load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto interposerTag = reinterpret_cast<GlibcTest>(requiredSymbol(interposer, "dlfcn_interposer_tag"));
+    if (!interposerTag || interposerTag() != 42) {
+        fprintf(stderr, "interposer sanity check failed\n");
+        return 1;
+    }
+    auto* caller = stub_dlopen("libdlfcn-test-caller.so", RTLD_NOW | RTLD_LOCAL);
+    if (!caller) {
+        fprintf(stderr, "caller load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto callOverridable = reinterpret_cast<GlibcTest>(requiredSymbol(caller, "dlfcn_call_overridable"));
+    if (!callOverridable || callOverridable() != 2) {
+        fprintf(stderr, "global scope did not interpose the closure definition\n");
+        return 1;
+    }
+    auto* deepCaller = stub_dlopen("libdlfcn-test-callerdeep.so", RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
+    if (!deepCaller) {
+        fprintf(stderr, "deepbind caller load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto deepCall = reinterpret_cast<GlibcTest>(requiredSymbol(deepCaller, "dlfcn_call_overridable"));
+    if (!deepCall || deepCall() != 1) {
+        fprintf(stderr, "RTLD_DEEPBIND did not prefer the closure definition\n");
+        return 1;
+    }
+    // The plain definition was relocated with the interposer global, so its
+    // internal call is interposed; the -Bsymbolic build is pinned to itself.
+    auto* plainDefinition = stub_dlopen("libdlfcn-test-overridable.so", RTLD_NOW | RTLD_LOCAL);
+    auto* symbolicDefinition = stub_dlopen("libdlfcn-test-symbolic.so", RTLD_NOW | RTLD_LOCAL);
+    if (!plainDefinition || !symbolicDefinition) {
+        fprintf(stderr, "overridable definitions load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto plainViaSelf = reinterpret_cast<GlibcTest>(requiredSymbol(plainDefinition, "dlfcn_overridable_via_self"));
+    auto symbolicViaSelf = reinterpret_cast<GlibcTest>(requiredSymbol(symbolicDefinition, "dlfcn_overridable_via_self"));
+    if (!plainViaSelf || plainViaSelf() != 2) {
+        fprintf(stderr, "plain image dodged the global interposer\n");
+        return 1;
+    }
+    if (!symbolicViaSelf || symbolicViaSelf() != 1) {
+        fprintf(stderr, "-Bsymbolic image did not bind to itself\n");
+        return 1;
+    }
+
     // The conformance battery: one check per implemented bridge adapter.
     auto* shim = stub_dlopen("libdlfcn-test-shim.so", RTLD_NOW | RTLD_LOCAL);
     if (!shim) {
@@ -535,6 +587,7 @@ int main() {
         "RTLD_GLOBAL and RTLD_NEXT: ok\n"
         "lazy PLT binding: ok\n"
         "initial-exec TLS: arena placement, both models, fresh and parked threads: ok\n"
+        "scope order: global interposition, RTLD_DEEPBIND, -Bsymbolic: ok\n"
         "glibc shim conformance battery: ok\n"
         "ELF TLS: per-thread blocks and thread-exit destructors: ok\n"
         "glibc C++ throw, unwind, destructor, catch: ok\n"

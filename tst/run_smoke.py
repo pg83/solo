@@ -182,6 +182,36 @@ def main():
                 ],
                 check=True,
             )
+        # The scope-order family: a global interposer, the interposable
+        # definition (plain and -Bsymbolic), and a caller built twice, loaded
+        # once normally and once with RTLD_DEEPBIND.
+        overridable = str(library_path / "libdlfcn-test-overridable.so")
+        interpose = os.environ["DLFCN_GLIBC_INTERPOSE_TEST_SOURCE"]
+        definition = os.environ["DLFCN_GLIBC_OVERRIDABLE_TEST_SOURCE"]
+        caller = os.environ["DLFCN_GLIBC_CALLER_TEST_SOURCE"]
+        for name, extras in (
+            ("libdlfcn-test-interpose.so", [interpose]),
+            ("libdlfcn-test-overridable.so", [definition]),
+            ("libdlfcn-test-symbolic.so", [definition, "-Wl,-Bsymbolic"]),
+            ("libdlfcn-test-caller.so", [caller, overridable]),
+            ("libdlfcn-test-callerdeep.so", [caller, overridable]),
+        ):
+            subprocess.run(
+                [
+                    *shlex.split(os.environ["DLFCN_CC"]),
+                    "-fPIC",
+                    "-fno-stack-protector",
+                    "-shared",
+                    "-nostdlib",
+                    "-Wl,--no-as-needed",
+                    str(root / sysroot_lib / "libc.so.6"),
+                    f"-Wl,-soname,{name}",
+                    *extras,
+                    "-o",
+                    str(library_path / name),
+                ],
+                check=True,
+            )
         # Two builds of the same source: eager binding of the undefined symbol
         # must fail on one image without poisoning the lazily loadable other.
         for lazy_name in ("libdlfcn-test-lazy.so", "libdlfcn-test-lazynow.so"):

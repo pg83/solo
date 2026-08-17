@@ -907,7 +907,7 @@ downloads = list(downloadTargets.values())
 
 arch_smoke = command(
     name="arch_smoke",
-    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/glibc_exception_test.cpp", "$(S)/tst/glibc_lazy_test.c", "$(S)/tst/glibc_shim_test.c", "$(S)/tst/glibc_ie_test.c", "$(S)/tst/glibc_ie_gd_test.c", "$(S)/tst/glibc_ie_ref_test.c", "$(S)/tst/glibc_big_tls_test.c", "$(S)/tst/run_smoke.py", *archives],
+    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/glibc_exception_test.cpp", "$(S)/tst/glibc_lazy_test.c", "$(S)/tst/glibc_shim_test.c", "$(S)/tst/glibc_ie_test.c", "$(S)/tst/glibc_interpose_test.c", "$(S)/tst/glibc_overridable_test.c", "$(S)/tst/glibc_caller_test.c", "$(S)/tst/glibc_ie_gd_test.c", "$(S)/tst/glibc_ie_ref_test.c", "$(S)/tst/glibc_big_tls_test.c", "$(S)/tst/run_smoke.py", *archives],
     outputs=["$(B)/tst/arch-smoke.log"],
     deps=[smoke, *downloads],
     cmd=[
@@ -923,6 +923,9 @@ arch_smoke = command(
         "DLFCN_GLIBC_LAZY_TEST_SOURCE": "$(S)/tst/glibc_lazy_test.c",
         "DLFCN_GLIBC_SHIM_TEST_SOURCE": "$(S)/tst/glibc_shim_test.c",
         "DLFCN_GLIBC_IE_TEST_SOURCE": "$(S)/tst/glibc_ie_test.c",
+        "DLFCN_GLIBC_INTERPOSE_TEST_SOURCE": "$(S)/tst/glibc_interpose_test.c",
+        "DLFCN_GLIBC_OVERRIDABLE_TEST_SOURCE": "$(S)/tst/glibc_overridable_test.c",
+        "DLFCN_GLIBC_CALLER_TEST_SOURCE": "$(S)/tst/glibc_caller_test.c",
         "DLFCN_GLIBC_IE_GD_TEST_SOURCE": "$(S)/tst/glibc_ie_gd_test.c",
         "DLFCN_GLIBC_IE_REF_TEST_SOURCE": "$(S)/tst/glibc_ie_ref_test.c",
         "DLFCN_GLIBC_BIG_TLS_TEST_SOURCE": "$(S)/tst/glibc_big_tls_test.c",
