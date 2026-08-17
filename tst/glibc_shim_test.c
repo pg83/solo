@@ -606,9 +606,10 @@ static void descriptorsAndLimits(void) {
 
     CHECK(__res_ninit(NULL) == 0);
     __res_nclose(NULL);
-    void* record = NULL;
+    struct sgrp sgrecord;
+    struct sgrp* record = NULL;
     char sgbuffer[64];
-    CHECK(getsgnam_r("nosuchgroup", NULL, sgbuffer, sizeof(sgbuffer), &record) == 0 && record == NULL);
+    CHECK(getsgnam_r("nosuchgroup", &sgrecord, sgbuffer, sizeof(sgbuffer), &record) == 0 && record == NULL);
     CHECK(rpmatch("yes") == 1 && rpmatch("NO") == 0 && rpmatch("?") == -1);
 }
 

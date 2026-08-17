@@ -165,6 +165,42 @@ linked into my executable." This lets the application embed the newest
 `libwayland` instead of targeting the oldest version available on every
 supported system.
 
+And the boundary between the two worlds is not a thin dlsym shim — it carries
+the parts that make foreign code actually behave:
+
+- **C++ exceptions cross it in both directions.** A throw in the static world
+  unwinds through glibc-compiled frames into a glibc `catch`, and the other
+  way around, destructors running on both sides: the guests' `_Unwind_*`
+  imports are bound to the one unwinder in the executable, so there is a
+  single exception machinery in the process instead of two fighting ones.
+- **All four TLS models, without wrappers or code patching.** General- and
+  local-dynamic through `__tls_get_addr`, TLSDESC through its custom-ABI
+  resolver, and initial-exec — whose GOT slots are plain
+  thread-pointer-relative offsets no loader can intercept — served from a
+  surplus arena that rides in the executable's own static TLS, so one
+  process-wide offset is valid in every thread and unmodified musl does the
+  per-thread layout.
+- **`ld.so`'s binding semantics, not an approximation.** Global-scope
+  interposition, `RTLD_DEEPBIND`, `DT_SYMBOLIC`, symbol versioning with the
+  unversioned-provider compatibility rule, lazy PLT binding with the
+  argument registers preserved through the resolver, GNU and SysV hash
+  lookups, ifunc resolvers handed their hwcaps, `/etc/ld.so.cache`.
+- **Cross-world introspection.** `backtrace()` walks static and glibc frames
+  alike and names both through one `dladdr`; `dl_iterate_phdr`, `dladdr1`,
+  and the `link_map` facade let unwinders and profilers see every image; the
+  file-backed mappings keep real paths in `/proc/self/maps` for debuggers.
+- **The stateful corners of glibc, for real.** `getcontext` /
+  `makecontext` / `swapcontext` in assembly against glibc's `mcontext`
+  layouts on both architectures, the pre-2.34 pthread ABIs, GNU obstacks,
+  the fortified `_chk` family, and the inline-stdio ABI — musl's `FILE` is
+  deliberately laid out so glibc's inlined `putc_unlocked` compiles against
+  it — down to `_IO_2_1_stdout_` resolving to musl's own stream.
+
+Every one of these is exercised by a conformance battery compiled against
+real glibc headers at `-O2`, and by loading every shared object of the
+thousand most-installed Debian library packages in CI, on x86-64 and
+aarch64.
+
 - [gcompat](https://github.com/Stantheman/gcompat) is a distribution-level
   glibc API shim for running prebuilt glibc binaries on musl. Its loader stub
   re-executes the program through musl's dynamic linker with `libgcompat.so`

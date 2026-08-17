@@ -183,6 +183,9 @@ def run_driver(driver, library, search_path):
             stubs.add(line[len(OBJECT_LINE) :].split(" at ")[0].strip())
         elif error is None and line.strip():
             error = line.strip()
+    if result.returncode and error is None:
+        signal = -result.returncode
+        error = f"killed by signal {signal}" if signal > 0 else f"exited {result.returncode} silently"
     return result.returncode == 0, stubs, error
 
 
