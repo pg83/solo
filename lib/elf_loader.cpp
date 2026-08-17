@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -198,7 +199,6 @@ namespace {
         LinkMap* load(const std::string_view& requestedPath, int flags);
 
         void* lookup(LinkMap& image, std::string_view name);
-        void* lookup(LinkMap& image, std::string_view name, std::unordered_set<LinkMap*>& visited);
         static void* tlsAddress(const LinkMap& image, size_t offset);
 
         bool findAddress(const void* address, ElfAddress* res);
@@ -222,7 +222,7 @@ namespace {
         static std::string_view symbolVersion(const LinkMap& image, size_t symbolIndex) noexcept;
         static uint32_t gnuHash(const std::string_view& name) noexcept;
         static Definition findSymbol(LinkMap& image, const std::string_view& name, const std::string_view& version) noexcept;
-        static Definition findDefinition(LinkMap& image, const std::string_view& name, const std::string_view& version, std::unordered_set<LinkMap*>& visited);
+        static Definition searchScope(LinkMap& image, const std::string_view& name, const std::string_view& version);
         Definition resolveSymbol(LinkMap& image, size_t symbolIndex);
         static void* materialize(Definition definition);
 
@@ -449,35 +449,48 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
 
 void* Loader::lookup(LinkMap& image, std::string_view name) {
     std::lock_guard lock(mutex_);
-    std::unordered_set<LinkMap*> visited;
 
-    return lookup(image, name, visited);
+    return materialize(searchScope(image, name, {}));
 }
 
-void* Loader::lookup(LinkMap& image, std::string_view name, std::unordered_set<LinkMap*>& visited) {
-    if (!visited.insert(&image).second) {
-        return nullptr;
+// Breadth-first over the image and its dependency closure, in load order at
+// each depth, matching the search order of ld.so. A dependency backed by a
+// static provider is probed at its depth through its handle.
+Definition Loader::searchScope(LinkMap& image, const std::string_view& name, const std::string_view& version) {
+    if (auto definition = findSymbol(image, name, version); definition) {
+        return definition;
     }
 
-    if (auto definition = findSymbol(image, name, {}); definition) {
-        return materialize(definition);
-    }
-
-    std::string symbol(name);
-    for (const auto& dependency : image.dependencies) {
-        if (dependency.image) {
-            if (auto* address = lookup(*dependency.image, name, visited); address) {
-                return address;
+    std::unordered_set<LinkMap*> visited({&image});
+    std::deque<const Dependency*> queue;
+    auto enqueue = [&](const LinkMap& parent) {
+        for (const auto& dependency : parent.dependencies) {
+            if (!dependency.image || visited.insert(dependency.image).second) {
+                queue.push_back(&dependency);
             }
+        }
+    };
+    std::string symbol(name);
+
+    enqueue(image);
+    while (!queue.empty()) {
+        const auto* dependency = queue.front();
+
+        queue.pop_front();
+        if (!dependency->image) {
+            if (auto* address = stub_dlsym(dependency->handle, symbol.c_str()); address) {
+                return {reinterpret_cast<uintptr_t>(address), nullptr, nullptr};
+            }
+            stub_dlerror();
             continue;
         }
-        if (auto* address = stub_dlsym(dependency.handle, symbol.c_str()); address) {
-            return address;
+        if (auto definition = findSymbol(*dependency->image, name, version); definition) {
+            return definition;
         }
-        stub_dlerror();
+        enqueue(*dependency->image);
     }
 
-    return nullptr;
+    return {};
 }
 
 // Touches only the caller's ThreadTls and the image's immutable TLS metadata,
@@ -992,26 +1005,6 @@ Definition Loader::findSymbol(LinkMap& image, const std::string_view& name, cons
     return {};
 }
 
-Definition Loader::findDefinition(LinkMap& image, const std::string_view& name, const std::string_view& version, std::unordered_set<LinkMap*>& visited) {
-    if (!visited.insert(&image).second) {
-        return {};
-    }
-
-    if (auto definition = findSymbol(image, name, version); definition) {
-        return definition;
-    }
-    for (const auto& dependency : image.dependencies) {
-        if (!dependency.image) {
-            continue;
-        }
-        if (auto definition = findDefinition(*dependency.image, name, version, visited); definition) {
-            return definition;
-        }
-    }
-
-    return {};
-}
-
 Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
     auto* symbol = &image.symbols[symbolIndex];
 
@@ -1024,8 +1017,6 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
 
     std::string_view name(image.strings + symbol->st_name);
     auto version = symbolVersion(image, symbolIndex);
-    std::string nameString(name);
-    std::unordered_set<LinkMap*> visited;
     auto weak = ELF64_ST_BIND(symbol->st_info) == STB_WEAK;
 
     if (image.glibcAbi) {
@@ -1034,18 +1025,8 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
         }
     }
 
-    for (const auto& dependency : image.dependencies) {
-        if (dependency.image) {
-            if (auto definition = findDefinition(*dependency.image, name, version, visited); definition) {
-                return definition;
-            }
-            continue;
-        }
-
-        if (auto* provider = stub_dlsym(dependency.handle, nameString.c_str()); provider) {
-            return {reinterpret_cast<uintptr_t>(provider), nullptr, nullptr};
-        }
-        stub_dlerror();
+    if (auto definition = searchScope(image, name, version); definition) {
+        return definition;
     }
 
     auto* address = image.glibcAbi ? resolveGlibcSymbol(name, version, weak) : nullptr;
