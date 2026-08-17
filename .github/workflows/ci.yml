@@ -26,19 +26,19 @@ jobs:
         env:
           CC: gcc
           CXX: g++
-        run: ./build
+        run: ./build -j12
 
       - name: Test
         env:
           CC: gcc
           CXX: g++
-        run: ./build test
+        run: ./build -j12 test
 
       - name: Vulkan
         env:
           CC: gcc
           CXX: g++
-        run: ./build vulkan_test
+        run: ./build -j12 vulkan_test
 
   fedora-gcc:
     name: Fedora / GCC
@@ -58,13 +58,13 @@ jobs:
         env:
           CC: gcc
           CXX: g++
-        run: ./build pthread_test
+        run: ./build -j12 pthread_test
 
       - name: Vulkan
         env:
           CC: gcc
           CXX: g++
-        run: ./build vulkan_test
+        run: ./build -j12 vulkan_test
 
   ubuntu-arm:
     name: Ubuntu / arm64
@@ -85,25 +85,25 @@ jobs:
         env:
           CC: clang
           CXX: clang++
-        run: ./build pthread_test
+        run: ./build -j12 pthread_test
 
       - name: Test
         env:
           CC: clang
           CXX: clang++
-        run: ./build test
+        run: ./build -j12 test
 
       - name: Corpus
         env:
           CC: clang
           CXX: clang++
-        run: ./build corpus
+        run: ./build -j12 corpus
 
       - name: Vulkan
         env:
           CC: clang
           CXX: clang++
-        run: ./build vulkan_test
+        run: ./build -j12 vulkan_test
 
   ubuntu-clang:
     name: Ubuntu / Clang
@@ -127,25 +127,25 @@ jobs:
         env:
           CC: clang
           CXX: clang++
-        run: ./build pthread_test
+        run: ./build -j12 pthread_test
 
       - name: Vulkan
         env:
           CC: clang
           CXX: clang++
-        run: ./build vulkan_test
+        run: ./build -j12 vulkan_test
 
       - name: Corpus
         env:
           CC: clang
           CXX: clang++
-        run: ./build corpus
+        run: ./build -j12 corpus
 
       - name: ABI diff
         env:
           CC: clang
           CXX: clang++
-        run: ./build abi_diff
+        run: ./build -j12 abi_diff
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0

@@ -40,14 +40,14 @@ jobs:
         env:
           CC: clang
           CXX: clang++
-        run: ./build vulkan_test
+        run: ./build -j12 vulkan_test
 
       - name: Stage
         env:
           CC: clang
           CXX: clang++
         run: |
-          ./build vulkan
+          ./build -j12 vulkan
           cp -L vulkan "vulkan-${{ matrix.machine }}"
           strip "vulkan-${{ matrix.machine }}"
 
