@@ -1667,6 +1667,25 @@ namespace {
         return length;
     }
 
+    // The fortified spellings glibc's obstack.h emits under _FORTIFY_SOURCE;
+    // the flag only selects the checking mode, the growth is the same.
+    static int sh_obstack_vprintf_chk(GlibcObstack* obstack, int flag, const char* format, va_list arguments) {
+        (void)flag;
+
+        return sh_obstack_vprintf(obstack, format, arguments);
+    }
+
+    static int sh_obstack_printf_chk(GlibcObstack* obstack, int flag, const char* format, ...) {
+        (void)flag;
+
+        va_list arguments;
+        va_start(arguments, format);
+        auto length = sh_obstack_vprintf(obstack, format, arguments);
+        va_end(arguments);
+
+        return length;
+    }
+
     // A well-formed, honestly empty malloc_info document.
     static int sh_malloc_info(int options, FILE* stream) {
         (void)options;
@@ -3678,6 +3697,8 @@ namespace {
         SH_FUNCTION("_obstack_begin", "GLIBC_2.2.5", sh_obstack_begin),
         SH_FUNCTION("_obstack_newchunk", "GLIBC_2.2.5", sh_obstack_newchunk),
         SH_FUNCTION("obstack_vprintf", "GLIBC_2.2.5", sh_obstack_vprintf),
+        SH_FUNCTION("__obstack_vprintf_chk", "GLIBC_2.8", sh_obstack_vprintf_chk),
+        SH_FUNCTION("__obstack_printf_chk", "GLIBC_2.8", sh_obstack_printf_chk),
         SH_FUNCTION("malloc_info", "GLIBC_2.10", sh_malloc_info),
         SH_FUNCTION("strerrordesc_np", "GLIBC_2.32", sh_strerrordesc_np),
         SH_FUNCTION("innetgr", "GLIBC_2.2.5", sh_innetgr),

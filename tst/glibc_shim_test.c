@@ -887,6 +887,15 @@ static int obstackVprintf(struct obstack* stack, const char* format, ...) {
     return result;
 }
 
+static int obstackVprintfChk(struct obstack* stack, const char* format, ...) {
+    va_list arguments;
+    va_start(arguments, format);
+    int __obstack_vprintf_chk(struct obstack*, int, const char*, va_list);
+    int result = __obstack_vprintf_chk(stack, 1, format, arguments);
+    va_end(arguments);
+    return result;
+}
+
 static int vdprintfChk(int descriptor, const char* format, ...) {
     va_list arguments;
     va_start(arguments, format);
@@ -1200,16 +1209,21 @@ static void popularData(void) {
     CHECK(strcmp(argz, "zz,a,b,c,dd") == 0);
     free(argz);
 
-    /* Obstacks by the book, big enough to force a fresh chunk. */
+    /* Obstacks by the book, big enough to force a fresh chunk. The chk
+     * spellings are what the header emits under _FORTIFY_SOURCE, so drive
+     * them directly too. */
     struct obstack stack;
     obstack_init(&stack);
     CHECK(obstackVprintf(&stack, "%s-%d", "text", 5) == 6);
+    int __obstack_printf_chk(struct obstack*, int, const char*, ...);
+    CHECK(__obstack_printf_chk(&stack, 1, "%s", "+chk") == 4);
+    CHECK(obstackVprintfChk(&stack, "-%c", 'v') == 2);
     for (int index = 0; index < 5000; ++index) {
         obstack_1grow(&stack, 'x');
     }
     obstack_1grow(&stack, 0);
     char* object = obstack_finish(&stack);
-    CHECK(strncmp(object, "text-5", 6) == 0 && strlen(object) == 5006);
+    CHECK(strncmp(object, "text-5+chk-v", 12) == 0 && strlen(object) == 5012);
 
     /* Introspection odds and ends. */
     char* info_text = NULL;
