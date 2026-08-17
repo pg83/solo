@@ -20,6 +20,8 @@ namespace {
     using GlibcThrow = void (*)();
     using GlibcCall = void (*)(void (*callback)());
     using GlibcCatch = int (*)(void (*callback)());
+    using LazyValue = int (*)(int);
+    using LazyMix = double (*)(int, double, long, double);
 
     static GlibcThrow foreignThrow;
     static bool callbackCaught;
@@ -207,6 +209,43 @@ int main() {
         return 1;
     }
 
+    // Eager binding must reject the unresolvable PLT entry and name it.
+    if (stub_dlopen("libdlfcn-test-lazynow.so", RTLD_NOW | RTLD_LOCAL)) {
+        fprintf(stderr, "eager load of an unresolvable PLT entry succeeded\n");
+        return 1;
+    }
+    auto* eagerError = stub_dlerror();
+    if (!eagerError || !strstr(eagerError, "dlfcn_lazy_undefined_function")) {
+        fprintf(stderr, "eager failure did not name the symbol: %s\n", eagerError ? eagerError : "(null)");
+        return 1;
+    }
+
+    // Lazily the same image loads, and calls resolve on first use with the
+    // argument registers intact.
+    auto* lazy = stub_dlopen("libdlfcn-test-lazy.so", RTLD_LAZY | RTLD_LOCAL);
+    if (!lazy) {
+        fprintf(stderr, "lazy load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto lazyValue = reinterpret_cast<LazyValue>(requiredSymbol(lazy, "glibc_lazy_value"));
+    auto lazyMix = reinterpret_cast<LazyMix>(requiredSymbol(lazy, "glibc_lazy_mix"));
+    auto lazyPid = reinterpret_cast<GlibcTest>(requiredSymbol(lazy, "glibc_lazy_pid"));
+    if (!lazyValue || !lazyMix || !lazyPid || !requiredSymbol(lazy, "glibc_lazy_missing_caller")) {
+        return 1;
+    }
+    if (lazyValue(12) != 42) {
+        fprintf(stderr, "lazy PLT call through the resolver failed\n");
+        return 1;
+    }
+    if (lazyMix(2, 0.5, 8, 1.5) != 36.5) {
+        fprintf(stderr, "lazy resolver clobbered argument registers\n");
+        return 1;
+    }
+    if (lazyPid() <= 0) {
+        fprintf(stderr, "lazy cross-library call failed\n");
+        return 1;
+    }
+
     auto* glibcException = stub_dlopen("libdlfcn-test-exception.so", RTLD_NOW | RTLD_LOCAL);
 
     if (!glibcException) {
@@ -303,6 +342,7 @@ int main() {
         "static libc provider: %zu symbols\n"
         "glibc dlopen/dlsym bridge: libc, libdl, pthread, factory, ELF, versions: ok\n"
         "RTLD_GLOBAL and RTLD_NEXT: ok\n"
+        "lazy PLT binding: ok\n"
         "ELF TLS: per-thread blocks and thread-exit destructors: ok\n"
         "glibc C++ throw, unwind, destructor, catch: ok\n"
         "C++ exceptions across static/glibc boundaries in both directions: ok\n"

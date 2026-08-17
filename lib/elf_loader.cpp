@@ -42,6 +42,22 @@ using namespace dyn;
     #define DT_RUNPATH 29
 #endif
 
+#ifndef DT_FLAGS
+    #define DT_FLAGS 30
+#endif
+
+#ifndef DF_BIND_NOW
+    #define DF_BIND_NOW 0x8
+#endif
+
+#ifndef DT_FLAGS_1
+    #define DT_FLAGS_1 0x6ffffffb
+#endif
+
+#ifndef DF_1_NOW
+    #define DF_1_NOW 0x1
+#endif
+
 #ifndef R_X86_64_IRELATIVE
     #define R_X86_64_IRELATIVE 37
 #endif
@@ -156,6 +172,8 @@ namespace {
         size_t pltRelocationCount = 0;
         Elf64_Addr* relativeRelocations = nullptr;
         size_t relativeRelocationCount = 0;
+        uintptr_t pltGot = 0;
+        bool bindNow = false;
 
         uintptr_t initializer = 0;
         uintptr_t initializerArray = 0;
@@ -220,6 +238,7 @@ namespace {
     };
 
     extern "C" uintptr_t elfTlsDescEntry();
+    extern "C" uintptr_t elfPltResolveEntry();
 
     struct Loader {
         Loader();
@@ -256,7 +275,8 @@ namespace {
         static void* materialize(Definition definition);
 
         bool applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool allowIfunc);
-        void applyRelocations(LinkMap& image, std::vector<DeferredRelocation>& deferred);
+        void applyRelocations(LinkMap& image, std::vector<DeferredRelocation>& deferred, bool lazy);
+        void* pltResolve(LinkMap& image, size_t index);
         static void runAllFinalizers();
 
         std::recursive_mutex mutex_;
@@ -266,6 +286,7 @@ namespace {
         size_t tlsModuleCount_ = 0;
         std::string libraryDirectory_;
         LinkMap* requester_ = nullptr;
+        bool bindNow_ = false;
         // Images whose symbols every later relocation may use, in load order.
         std::vector<LinkMap*> globalImages_;
     };
@@ -345,6 +366,7 @@ ScopedRequester::~ScopedRequester() {
 // Registered before any loaded DSO can register its own atexit handlers, so
 // like glibc's _dl_fini it runs after them.
 Loader::Loader() {
+    bindNow_ = getenv("LD_BIND_NOW") != nullptr;
     atexit(runAllFinalizers);
 }
 
@@ -483,8 +505,9 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
     loadDependencies(image);
 
     std::vector<DeferredRelocation> deferred;
+    auto lazy = !(flags & RTLD_NOW) && !image.bindNow && !bindNow_;
 
-    applyRelocations(image, deferred);
+    applyRelocations(image, deferred, lazy);
     image.protect();
 
     for (const auto& item : deferred) {
@@ -977,6 +1000,18 @@ void LinkMap::parseDynamic() {
             case DT_PLTRELSZ:
                 pltRelocationSize = entry->d_un.d_val;
                 break;
+            case DT_PLTGOT:
+                pltGot = base + entry->d_un.d_ptr;
+                break;
+            case DT_BIND_NOW:
+                bindNow = true;
+                break;
+            case DT_FLAGS:
+                bindNow |= (entry->d_un.d_val & DF_BIND_NOW) != 0;
+                break;
+            case DT_FLAGS_1:
+                bindNow |= (entry->d_un.d_val & DF_1_NOW) != 0;
+                break;
             case DT_RELR:
                 relativeRelocations = reinterpret_cast<Elf64_Addr*>(base + entry->d_un.d_ptr);
                 break;
@@ -1381,21 +1416,51 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
     }
 }
 
-void Loader::applyRelocations(LinkMap& image, std::vector<DeferredRelocation>& deferred) {
+void Loader::applyRelocations(LinkMap& image, std::vector<DeferredRelocation>& deferred, bool lazy) {
     image.applyRelativeRelocations();
 
-    const std::array tables = {
-        std::pair(image.relocations, image.relocationCount),
-        std::pair(image.pltRelocations, image.pltRelocationCount),
-    };
-
-    for (const auto& [relocations, count] : tables) {
-        for (size_t index = 0; index < count; ++index) {
-            if (applyRelocation(image, relocations[index], false)) {
-                deferred.push_back({&image, &relocations[index]});
-            }
+    for (size_t index = 0; index < image.relocationCount; ++index) {
+        if (applyRelocation(image, image.relocations[index], false)) {
+            deferred.push_back({&image, &image.relocations[index]});
         }
     }
+
+    lazy = lazy && image.pltGot;
+
+    for (size_t index = 0; index < image.pltRelocationCount; ++index) {
+        const auto& relocation = image.pltRelocations[index];
+
+        // A lazy JUMP_SLOT keeps pointing at its PLT push, rebased; the first
+        // call enters elfPltResolveEntry through PLT0.
+        if (lazy && ELF64_R_TYPE(relocation.r_info) == R_X86_64_JUMP_SLOT) {
+            *reinterpret_cast<uintptr_t*>(image.base + relocation.r_offset) += image.base;
+            continue;
+        }
+        if (applyRelocation(image, relocation, false)) {
+            deferred.push_back({&image, &relocation});
+        }
+    }
+
+    if (lazy) {
+        auto* got = reinterpret_cast<uintptr_t*>(image.pltGot);
+
+        got[1] = reinterpret_cast<uintptr_t>(&image);
+        got[2] = reinterpret_cast<uintptr_t>(elfPltResolveEntry);
+    }
+}
+
+void* Loader::pltResolve(LinkMap& image, size_t index) {
+    std::lock_guard lock(mutex_);
+
+    if (index >= image.pltRelocationCount) {
+        throwError("%s: PLT relocation %zu out of range", image.path.c_str(), index);
+    }
+
+    const auto& relocation = image.pltRelocations[index];
+
+    applyRelocation(image, relocation, true);
+
+    return *reinterpret_cast<void**>(image.base + relocation.r_offset);
 }
 
 void LinkMap::protect() {
@@ -1511,6 +1576,20 @@ void* ElfImage::lookupGlobal(std::string_view symbol) {
 
 void* ElfImage::lookupNext(const void* caller, std::string_view symbol, std::string_view version) {
     return Loader::instance().lookupNext(caller, symbol, version);
+}
+
+// The C half of the lazy binder: called from elfPltResolveEntry with the
+// caller's registers saved. A resolution failure cannot unwind through the
+// PLT frames, so it aborts with the loader's error instead.
+extern "C" void* elfPltResolve(void* image, uint64_t index) {
+    try {
+        return Loader::instance().pltResolve(*static_cast<LinkMap*>(image), index);
+    } catch (const std::exception& error) {
+        fprintf(stderr, "solo: lazy binding failed: %s\n", error.what());
+    } catch (...) {
+        fprintf(stderr, "solo: lazy binding failed\n");
+    }
+    abort();
 }
 
 extern "C" void* elfTlsAddress(const uintptr_t index[2]) {

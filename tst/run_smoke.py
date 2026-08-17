@@ -62,6 +62,25 @@ def main():
             ],
             check=True,
         )
+        # Two builds of the same source: eager binding of the undefined symbol
+        # must fail on one image without poisoning the lazily loadable other.
+        for lazy_name in ("libdlfcn-test-lazy.so", "libdlfcn-test-lazynow.so"):
+            subprocess.run(
+                [
+                    *shlex.split(os.environ["DLFCN_CC"]),
+                    "-fPIC",
+                    "-fno-stack-protector",
+                    "-shared",
+                    "-nostdlib",
+                    "-Wl,--no-as-needed",
+                    str(root / "usr" / "lib" / "libc.so.6"),
+                    f"-Wl,-soname,{lazy_name}",
+                    os.environ["DLFCN_GLIBC_LAZY_TEST_SOURCE"],
+                    "-o",
+                    str(library_path / lazy_name),
+                ],
+                check=True,
+            )
         (library_path / "libdlfcn-test-pci.so").symlink_to(
             root / "usr" / "lib" / "libpciaccess.so.0"
         )

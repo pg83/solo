@@ -64,6 +64,7 @@ dlfcn_srcs = [
     "$(S)/lib/iface_handle.cpp",
     "$(S)/lib/musl_provider.cpp",
     "$(S)/lib/musl_symbols.cpp",
+    "$(S)/lib/pltresolve.S",
     "$(S)/lib/thread_tls.cpp",
     "$(S)/lib/tlsdesc.S",
 ]
@@ -808,7 +809,7 @@ downloads = list(downloadTargets.values())
 
 arch_smoke = command(
     name="arch_smoke",
-    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/glibc_exception_test.cpp", "$(S)/tst/run_smoke.py", *archives],
+    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/glibc_exception_test.cpp", "$(S)/tst/glibc_lazy_test.c", "$(S)/tst/run_smoke.py", *archives],
     outputs=["$(B)/tst/arch-smoke.log"],
     deps=[smoke, *downloads],
     cmd=[
@@ -821,6 +822,7 @@ arch_smoke = command(
         "DLFCN_CC": glibc_test_cc,
         "DLFCN_CXX": glibc_test_cxx,
         "DLFCN_GLIBC_EXCEPTION_TEST_SOURCE": "$(S)/tst/glibc_exception_test.cpp",
+        "DLFCN_GLIBC_LAZY_TEST_SOURCE": "$(S)/tst/glibc_lazy_test.c",
         "DLFCN_GLIBC_TEST_SOURCE": "$(S)/tst/glibc_test.c",
         "DLFCN_SMOKE": "$(B)/tst/smoke",
     },
