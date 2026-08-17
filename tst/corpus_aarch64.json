@@ -4408,6 +4408,15 @@
    "load": true,
    "sha256": "dcab31c81fcc018eb583137ed2b3346712fb71b94e4066a994fa180ec8688ca4"
   },
+  "libcuda1": {
+   "dependencies": [
+    "libnvidia-ptxjitcompiler1",
+    "nvidia-alternative"
+   ],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libcuda1_550.163.01-5.1_arm64.deb",
+   "load": true,
+   "sha256": "c51fb31b15479d1c7ccff40fcd691f0104e7c11032e82e7f2d1e7dea6cd8933f"
+  },
   "libcups2t64": {
    "dependencies": [
     "libavahi-client3",
@@ -8226,6 +8235,61 @@
    "filename": "pool/main/m/mesa/libglx-mesa0_26.1.5-1_arm64.deb",
    "load": true,
    "sha256": "013c08aae961f357075eaa6eeb612e864b5cb8d28cd718cd09f94fa9620809e2"
+  },
+  "libglx-nvidia0": {
+   "dependencies": [
+    "gcc-16-base",
+    "libbsd0",
+    "libdrm-amdgpu1",
+    "libdrm-common",
+    "libdrm-intel1",
+    "libdrm2",
+    "libedit2",
+    "libelf1t64",
+    "libexpat1",
+    "libffi8",
+    "libgbm1",
+    "libgcc-s1",
+    "libgl1-mesa-dri",
+    "libglvnd0",
+    "libglx-mesa0",
+    "libglx0",
+    "libllvm21",
+    "libmd0",
+    "libnvidia-eglcore",
+    "libnvidia-glcore",
+    "libnvidia-glvkspirv",
+    "libnvidia-gpucomp",
+    "libpciaccess0",
+    "libsensors5",
+    "libstdc++6",
+    "libtinfo6",
+    "libvulkan1",
+    "libx11-6",
+    "libx11-xcb1",
+    "libxau6",
+    "libxcb-dri3-0",
+    "libxcb-glx0",
+    "libxcb-present0",
+    "libxcb-randr0",
+    "libxcb-shm0",
+    "libxcb-sync1",
+    "libxcb-xfixes0",
+    "libxcb1",
+    "libxdmcp6",
+    "libxext6",
+    "libxml2-16",
+    "libxshmfence1",
+    "libxxf86vm1",
+    "libz3-4",
+    "libzstd1",
+    "mesa-libgallium",
+    "nvidia-alternative",
+    "zlib1g"
+   ],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libglx-nvidia0_550.163.01-5.1_arm64.deb",
+   "load": true,
+   "sha256": "299abf1ee36135100ca27a6ff23a6a8400b7c53042170053df624eaf55fca1f1"
   },
   "libglx0": {
    "dependencies": [
@@ -35086,6 +35150,50 @@
    "load": true,
    "sha256": "26eaf285d4031512e1698e4ec198dd7012845a560c28460cd81145a95f5e67ce"
   },
+  "libnvidia-eglcore": {
+   "dependencies": [
+    "libnvidia-glvkspirv",
+    "libnvidia-gpucomp"
+   ],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libnvidia-eglcore_550.163.01-5.1_arm64.deb",
+   "load": true,
+   "sha256": "9f838ac290cdfdc34e76cba689367a1817d07d75c76d6a0b16a699b961b595c3"
+  },
+  "libnvidia-glcore": {
+   "dependencies": [
+    "libnvidia-glvkspirv",
+    "libnvidia-gpucomp"
+   ],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libnvidia-glcore_550.163.01-5.1_arm64.deb",
+   "load": true,
+   "sha256": "2804dda970656a52e719ec81a5a32d62472773c3011f9775b795d3ffb3a3a5bc"
+  },
+  "libnvidia-glvkspirv": {
+   "dependencies": [],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libnvidia-glvkspirv_550.163.01-5.1_arm64.deb",
+   "load": false,
+   "sha256": "febae054fad99709177ed1cb11ffdbda80ca27cb025cda5a32ccabcaedcd7ed3"
+  },
+  "libnvidia-gpucomp": {
+   "dependencies": [],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libnvidia-gpucomp_550.163.01-5.1_arm64.deb",
+   "load": true,
+   "sha256": "5bac4e5d4573a3705253f1593dc6cbacde7914c3e37ae332966fc8ec34dd2ca5"
+  },
+  "libnvidia-ml1": {
+   "dependencies": [
+    "nvidia-alternative"
+   ],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libnvidia-ml1_550.163.01-5.1_arm64.deb",
+   "load": true,
+   "sha256": "d522840f42be653423595f8acdfce32e3b269a6eee54ce932e8cf3896e20b8b1"
+  },
+  "libnvidia-ptxjitcompiler1": {
+   "dependencies": [],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libnvidia-ptxjitcompiler1_550.163.01-5.1_arm64.deb",
+   "load": false,
+   "sha256": "5756332e92f461b52bf71914c8e73373abd3550aad9e33ff34dd2c7ebb0fbfb4"
+  },
   "libnvme1t64": {
    "dependencies": [
     "libjson-c5",
@@ -48192,6 +48300,12 @@
    "filename": "pool/main/m/messagelib/messagelib-data_25.12.3-1_all.deb",
    "load": false,
    "sha256": "bccabdc67636861cf5cb1495a742026077bf5496afe837c89f1f91a082451340"
+  },
+  "nvidia-alternative": {
+   "dependencies": [],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/nvidia-alternative_550.163.01-5.1_arm64.deb",
+   "load": false,
+   "sha256": "8c4cca50a8ef67bcfa010e5d63140bf68557e0c7c0093a9568359b4c7bf62b5e"
   },
   "ocl-icd-libopencl1": {
    "dependencies": [],

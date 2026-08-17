@@ -48,10 +48,16 @@ def parse_packages(path):
 
 
 def parse_votes(path):
+    """Votes from popcon.debian.org's by_vote listing (rank name inst vote)
+    or from the committed distillation (vote name)."""
     votes = {}
     for line in Path(path).read_text(errors="replace").splitlines():
         parts = line.split()
-        if not line.startswith("#") and len(parts) >= 4 and parts[3].isdigit():
+        if line.startswith("#"):
+            continue
+        if len(parts) == 2 and parts[0].isdigit():
+            votes[parts[1]] = int(parts[0])
+        elif len(parts) >= 4 and parts[3].isdigit():
             votes[parts[1]] = int(parts[3])
     return votes
 

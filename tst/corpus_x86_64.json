@@ -4422,6 +4422,20 @@
    "load": true,
    "sha256": "a48ff1468f7c24b23ce571fcaddfea5a2e7a7d1c58e7521b96bfe72692277b29"
   },
+  "libcuda1": {
+   "dependencies": [
+    "libnvidia-pkcs11-openssl3",
+    "libnvidia-ptxjitcompiler1",
+    "libssl3t64",
+    "libzstd1",
+    "nvidia-alternative",
+    "openssl-provider-legacy",
+    "zlib1g"
+   ],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libcuda1_550.163.01-5.1_amd64.deb",
+   "load": true,
+   "sha256": "61d8c600721ee886aed7d7dd325c717a703447729d4ff422ea4e107ffea58463"
+  },
   "libcups2t64": {
    "dependencies": [
     "libavahi-client3",
@@ -8243,6 +8257,61 @@
    "filename": "pool/main/m/mesa/libglx-mesa0_26.1.5-1_amd64.deb",
    "load": true,
    "sha256": "a42b5c62feb2d36d41cd9625da3624c31384c4b45ae0ea842138d73ab0035836"
+  },
+  "libglx-nvidia0": {
+   "dependencies": [
+    "gcc-16-base",
+    "libbsd0",
+    "libdrm-amdgpu1",
+    "libdrm-common",
+    "libdrm-intel1",
+    "libdrm2",
+    "libedit2",
+    "libelf1t64",
+    "libexpat1",
+    "libffi8",
+    "libgbm1",
+    "libgcc-s1",
+    "libgl1-mesa-dri",
+    "libglvnd0",
+    "libglx-mesa0",
+    "libglx0",
+    "libllvm21",
+    "libmd0",
+    "libnvidia-eglcore",
+    "libnvidia-glcore",
+    "libnvidia-glvkspirv",
+    "libnvidia-gpucomp",
+    "libpciaccess0",
+    "libsensors5",
+    "libstdc++6",
+    "libtinfo6",
+    "libvulkan1",
+    "libx11-6",
+    "libx11-xcb1",
+    "libxau6",
+    "libxcb-dri3-0",
+    "libxcb-glx0",
+    "libxcb-present0",
+    "libxcb-randr0",
+    "libxcb-shm0",
+    "libxcb-sync1",
+    "libxcb-xfixes0",
+    "libxcb1",
+    "libxdmcp6",
+    "libxext6",
+    "libxml2-16",
+    "libxshmfence1",
+    "libxxf86vm1",
+    "libz3-4",
+    "libzstd1",
+    "mesa-libgallium",
+    "nvidia-alternative",
+    "zlib1g"
+   ],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libglx-nvidia0_550.163.01-5.1_amd64.deb",
+   "load": true,
+   "sha256": "486960496adf2e0242252c4f6dfee6a28c96e3da22b4f7c9cd926d4e7d389d28"
   },
   "libglx0": {
    "dependencies": [
@@ -35130,6 +35199,62 @@
    "load": true,
    "sha256": "c4175eb2a991806b5f683f7b2a6a9e444f310058763070b30417e1f1021cf04c"
   },
+  "libnvidia-eglcore": {
+   "dependencies": [
+    "libnvidia-glvkspirv",
+    "libnvidia-gpucomp"
+   ],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libnvidia-eglcore_550.163.01-5.1_amd64.deb",
+   "load": true,
+   "sha256": "aee0b8547c1d6d90782d1be5ff19b4ad0150c199e636117391fd36d232b83ffc"
+  },
+  "libnvidia-glcore": {
+   "dependencies": [
+    "libnvidia-glvkspirv",
+    "libnvidia-gpucomp"
+   ],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libnvidia-glcore_550.163.01-5.1_amd64.deb",
+   "load": true,
+   "sha256": "dfac5890a69d885cfe160bf0258b2470ae1168868c6320aabf979d96f97c703b"
+  },
+  "libnvidia-glvkspirv": {
+   "dependencies": [],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libnvidia-glvkspirv_550.163.01-5.1_amd64.deb",
+   "load": false,
+   "sha256": "7ffbd78fc037924d226420445aaf8b236449b379fba3537e084f794e5003371e"
+  },
+  "libnvidia-gpucomp": {
+   "dependencies": [],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libnvidia-gpucomp_550.163.01-5.1_amd64.deb",
+   "load": true,
+   "sha256": "b7fd926dd08243d3a101e1a048ae7b5ff1a7300d961a34cc60ac09ca9f779dcc"
+  },
+  "libnvidia-ml1": {
+   "dependencies": [
+    "nvidia-alternative"
+   ],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libnvidia-ml1_550.163.01-5.1_amd64.deb",
+   "load": true,
+   "sha256": "db41bb5cd1c58b93fa542d9201af1d711add00ee7c35668ac3cb748b160db64f"
+  },
+  "libnvidia-pkcs11-openssl3": {
+   "dependencies": [
+    "libssl3t64",
+    "libzstd1",
+    "nvidia-alternative",
+    "openssl-provider-legacy",
+    "zlib1g"
+   ],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libnvidia-pkcs11-openssl3_550.163.01-5.1_amd64.deb",
+   "load": false,
+   "sha256": "3c787e06a0674d9f8cf526b116c3c3babdb1205c901725e37c93f4934f9c9f3b"
+  },
+  "libnvidia-ptxjitcompiler1": {
+   "dependencies": [],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/libnvidia-ptxjitcompiler1_550.163.01-5.1_amd64.deb",
+   "load": false,
+   "sha256": "433aee1c400761eb0c8fbcf2ab8441116619ab39c5d11d9deefb7d620a9d334d"
+  },
   "libnvme1t64": {
    "dependencies": [
     "libjson-c5",
@@ -48263,6 +48388,12 @@
    "filename": "pool/main/m/messagelib/messagelib-data_25.12.3-1_all.deb",
    "load": false,
    "sha256": "bccabdc67636861cf5cb1495a742026077bf5496afe837c89f1f91a082451340"
+  },
+  "nvidia-alternative": {
+   "dependencies": [],
+   "filename": "pool/non-free/n/nvidia-graphics-drivers/nvidia-alternative_550.163.01-5.1_amd64.deb",
+   "load": false,
+   "sha256": "0c12f92a069498110f797aebb0cb86f7cc82af36e71f7d526073e041dc78610d"
   },
   "ocl-icd-libopencl1": {
    "dependencies": [],
