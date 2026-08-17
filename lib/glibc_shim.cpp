@@ -3067,6 +3067,48 @@ namespace {
         return fstatat(directory, path, status, flags);
     }
 
+    // The pre-2.33 stat ABI: glibc inlined stat() into __xstat(_STAT_VER, ...)
+    // until 2.32, so binaries built against an older glibc — NVIDIA's driver
+    // blobs among them — import these. On both supported architectures the
+    // glibc layouts are the kernel's, same as musl's, so the version argument
+    // selects nothing and is ignored, like glibc's own compat entries do.
+    static int sh_xstat(int version, const char* path, struct stat* status) {
+        (void)version;
+
+        return stat(path, status);
+    }
+
+    static int sh_lxstat(int version, const char* path, struct stat* status) {
+        (void)version;
+
+        return lstat(path, status);
+    }
+
+    static int sh_fxstat(int version, int descriptor, struct stat* status) {
+        (void)version;
+
+        return fstat(descriptor, status);
+    }
+
+    static int sh_fxstatat(int version, int directory, const char* path, struct stat* status, int flags) {
+        (void)version;
+
+        return fstatat(directory, path, status, flags);
+    }
+
+    // The mknod pair of the same era passes the device by pointer.
+    static int sh_xmknod(int version, const char* path, mode_t mode, dev_t* device) {
+        (void)version;
+
+        return mknod(path, mode, device ? *device : 0);
+    }
+
+    static int sh_xmknodat(int version, int directory, const char* path, mode_t mode, dev_t* device) {
+        (void)version;
+
+        return mknodat(directory, path, mode, device ? *device : 0);
+    }
+
     static int sh_statfs64(const char* path, struct statfs* status) {
         return statfs(path, status);
     }
@@ -3913,6 +3955,16 @@ namespace {
         SH_FUNCTION("lstat64", "GLIBC_2.33", sh_lstat64),
         SH_FUNCTION("fstat64", "GLIBC_2.33", sh_fstat64),
         SH_FUNCTION("fstatat64", "GLIBC_2.33", sh_fstatat64),
+        SH_FUNCTION("__xstat", "GLIBC_2.2.5", sh_xstat),
+        SH_FUNCTION("__xstat64", "GLIBC_2.2.5", sh_xstat),
+        SH_FUNCTION("__lxstat", "GLIBC_2.2.5", sh_lxstat),
+        SH_FUNCTION("__lxstat64", "GLIBC_2.2.5", sh_lxstat),
+        SH_FUNCTION("__fxstat", "GLIBC_2.2.5", sh_fxstat),
+        SH_FUNCTION("__fxstat64", "GLIBC_2.2.5", sh_fxstat),
+        SH_FUNCTION("__fxstatat", "GLIBC_2.4", sh_fxstatat),
+        SH_FUNCTION("__fxstatat64", "GLIBC_2.4", sh_fxstatat),
+        SH_FUNCTION("__xmknod", "GLIBC_2.2.5", sh_xmknod),
+        SH_FUNCTION("__xmknodat", "GLIBC_2.4", sh_xmknodat),
         SH_FUNCTION("statfs64", "GLIBC_2.2.5", sh_statfs64),
         SH_FUNCTION("fstatfs64", "GLIBC_2.2.5", sh_fstatfs64),
         SH_FUNCTION("lseek64", "GLIBC_2.2.5", sh_lseek64),

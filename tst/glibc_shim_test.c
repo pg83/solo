@@ -282,6 +282,34 @@ static void stdio_files(void) {
     CHECK(fstat(descriptor, &plain_status) == 0);
     CHECK(fstatat64(AT_FDCWD, path, &status, 0) == 0);
     CHECK(statx(AT_FDCWD, path, 0, 0x7ff, &(struct statx){0}) == 0);
+    /* The pre-2.33 stat spellings, gone from modern headers but imported by
+     * binaries built against an older glibc (NVIDIA's driver blobs). */
+    int __xstat64(int, const char*, struct stat64*);
+    int __lxstat64(int, const char*, struct stat64*);
+    int __fxstat64(int, int, struct stat64*);
+    int __fxstatat64(int, int, const char*, struct stat64*, int);
+    int __xstat(int, const char*, struct stat*);
+    int __lxstat(int, const char*, struct stat*);
+    int __fxstat(int, int, struct stat*);
+    int __fxstatat(int, int, const char*, struct stat*, int);
+    CHECK(__xstat64(1, path, &status) == 0 && status.st_size > 0);
+    CHECK(__lxstat64(1, path, &status) == 0);
+    CHECK(__fxstat64(1, descriptor, &status) == 0);
+    CHECK(__fxstatat64(1, AT_FDCWD, path, &status, 0) == 0);
+    CHECK(__xstat(1, path, &plain_status) == 0 && plain_status.st_size > 0);
+    CHECK(__lxstat(1, path, &plain_status) == 0);
+    CHECK(__fxstat(1, descriptor, &plain_status) == 0);
+    CHECK(__fxstatat(1, AT_FDCWD, path, &plain_status, 0) == 0);
+    int __xmknod(int, const char*, mode_t, dev_t*);
+    int __xmknodat(int, int, const char*, mode_t, dev_t*);
+    char fifo_path[280];
+    dev_t no_device = 0;
+    snprintf(fifo_path, sizeof(fifo_path), "%s.fifo", path);
+    CHECK(__xmknod(0, fifo_path, S_IFIFO | 0600, &no_device) == 0);
+    CHECK(__xstat(1, fifo_path, &plain_status) == 0 && S_ISFIFO(plain_status.st_mode));
+    CHECK(unlink(fifo_path) == 0);
+    CHECK(__xmknodat(0, AT_FDCWD, fifo_path, S_IFIFO | 0600, &no_device) == 0);
+    CHECK(unlink(fifo_path) == 0);
     CHECK(lseek64(descriptor, 1, SEEK_SET) == 1);
     CHECK(lseek(descriptor, 0, SEEK_SET) == 0);
     CHECK(__pread_chk(descriptor, buffer, 4, 0, sizeof(buffer)) == 4);
