@@ -183,6 +183,14 @@ namespace {
         void setVersionName(size_t index, size_t nameOffset);
         size_t countSymbols() const noexcept;
         std::string substituteOrigin(std::string_view directories) const;
+        std::string_view symbolVersion(size_t symbolIndex) const noexcept;
+        Definition findSymbol(const std::string_view& name, const std::string_view& version) noexcept;
+        void* tlsAddress(size_t offset) const;
+        void applyRelativeRelocations();
+        void protect();
+        void applyRelro();
+        void runInitializers();
+        void runFinalizers();
     };
 
     struct DeferredRelocation {
@@ -223,7 +231,6 @@ namespace {
         LinkMap* load(const std::string_view& requestedPath, int flags);
 
         void* lookup(LinkMap& image, std::string_view name);
-        static void* tlsAddress(const LinkMap& image, size_t offset);
 
         bool findAddress(const void* address, ElfAddress* res);
         int iterateProgramHeaders(ElfProgramHeaderCallback& callback);
@@ -243,20 +250,12 @@ namespace {
         static bool isGlibcDependency(const std::string_view& name) noexcept;
         void loadDependencies(LinkMap& image);
 
-        static std::string_view symbolVersion(const LinkMap& image, size_t symbolIndex) noexcept;
-        static uint32_t gnuHash(const std::string_view& name) noexcept;
-        static Definition findSymbol(LinkMap& image, const std::string_view& name, const std::string_view& version) noexcept;
         static Definition searchScope(LinkMap& image, const std::string_view& name, const std::string_view& version);
         Definition resolveSymbol(LinkMap& image, size_t symbolIndex);
         static void* materialize(Definition definition);
 
-        void applyRelativeRelocations(LinkMap& image);
         bool applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool allowIfunc);
         void applyRelocations(LinkMap& image, std::vector<DeferredRelocation>& deferred);
-        static void protect(LinkMap& image);
-        static void applyRelro(LinkMap& image);
-        static void runInitializers(LinkMap& image);
-        static void runFinalizers(LinkMap& image);
         static void runAllFinalizers();
 
         std::recursive_mutex mutex_;
@@ -477,16 +476,16 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
     std::vector<DeferredRelocation> deferred;
 
     applyRelocations(image, deferred);
-    protect(image);
+    image.protect();
 
     for (const auto& item : deferred) {
         applyRelocation(*item.image, *item.relocation, true);
     }
-    applyRelro(image);
+    image.applyRelro();
 
     image.wrapper.reset(new LoadedElf(image));
     image.state = LinkMap::State::Ready;
-    runInitializers(image);
+    image.runInitializers();
 
     return imagePointer;
 }
@@ -501,7 +500,7 @@ void* Loader::lookup(LinkMap& image, std::string_view name) {
 // each depth, matching the search order of ld.so. A dependency backed by a
 // static provider is probed at its depth through its handle.
 Definition Loader::searchScope(LinkMap& image, const std::string_view& name, const std::string_view& version) {
-    if (auto definition = findSymbol(image, name, version); definition) {
+    if (auto definition = image.findSymbol(name, version); definition) {
         return definition;
     }
 
@@ -528,7 +527,7 @@ Definition Loader::searchScope(LinkMap& image, const std::string_view& name, con
             stub_dlerror();
             continue;
         }
-        if (auto definition = findSymbol(*dependency->image, name, version); definition) {
+        if (auto definition = dependency->image->findSymbol(name, version); definition) {
             return definition;
         }
         enqueue(*dependency->image);
@@ -540,23 +539,23 @@ Definition Loader::searchScope(LinkMap& image, const std::string_view& name, con
 // Touches only the caller's ThreadTls and the image's immutable TLS metadata,
 // so a thread spawned by an initializer can reach its TLS while the loader
 // mutex is still held.
-void* Loader::tlsAddress(const LinkMap& image, size_t offset) {
-    if (offset >= image.tlsMemorySize) {
-        throwError("%s: TLS offset %zu exceeds size %zu", image.path.c_str(), offset, image.tlsMemorySize);
+void* LinkMap::tlsAddress(size_t offset) const {
+    if (offset >= tlsMemorySize) {
+        throwError("%s: TLS offset %zu exceeds size %zu", path.c_str(), offset, tlsMemorySize);
     }
 
-    auto* slot = ThreadTls::current()->tlsBlock(image.tlsModule);
+    auto* slot = ThreadTls::current()->tlsBlock(tlsModule);
 
     if (!*slot) {
-        auto alignment = std::max(image.tlsAlignment, sizeof(void*));
+        auto alignment = std::max(tlsAlignment, sizeof(void*));
         void* block = nullptr;
 
-        if (posix_memalign(&block, alignment, image.tlsMemorySize)) {
-            throwError("%s: cannot allocate TLS block", image.path.c_str());
+        if (posix_memalign(&block, alignment, tlsMemorySize)) {
+            throwError("%s: cannot allocate TLS block", path.c_str());
         }
 
-        memset(block, 0, image.tlsMemorySize);
-        memcpy(block, reinterpret_cast<const void*>(image.tlsTemplate), image.tlsFileSize);
+        memset(block, 0, tlsMemorySize);
+        memcpy(block, reinterpret_cast<const void*>(tlsTemplate), tlsFileSize);
         *slot = block;
     }
 
@@ -1034,21 +1033,21 @@ size_t LinkMap::countSymbols() const noexcept {
     return count;
 }
 
-std::string_view Loader::symbolVersion(const LinkMap& image, size_t symbolIndex) noexcept {
-    if (!image.symbolVersions) {
+std::string_view LinkMap::symbolVersion(size_t symbolIndex) const noexcept {
+    if (!symbolVersions) {
         return {};
     }
 
-    auto versionIndex = static_cast<size_t>(image.symbolVersions[symbolIndex] & 0x7fff);
+    auto versionIndex = static_cast<size_t>(symbolVersions[symbolIndex] & 0x7fff);
 
-    if (versionIndex < 2 || versionIndex >= image.versionNames.size()) {
+    if (versionIndex < 2 || versionIndex >= versionNames.size()) {
         return {};
     }
 
-    return image.versionNames[versionIndex];
+    return versionNames[versionIndex];
 }
 
-uint32_t Loader::gnuHash(const std::string_view& name) noexcept {
+static uint32_t gnuSymbolHash(const std::string_view& name) noexcept {
     uint32_t hash = 5381;
 
     for (auto character : name) {
@@ -1058,24 +1057,24 @@ uint32_t Loader::gnuHash(const std::string_view& name) noexcept {
     return hash;
 }
 
-Definition Loader::findSymbol(LinkMap& image, const std::string_view& name, const std::string_view& version) noexcept {
-    if (!image.gnuHash) {
+Definition LinkMap::findSymbol(const std::string_view& name, const std::string_view& version) noexcept {
+    if (!gnuHash) {
         return {};
     }
 
-    auto bucketCount = image.gnuHash[0];
-    auto symbolOffset = image.gnuHash[1];
-    auto bloomSize = image.gnuHash[2];
-    auto bloomShift = image.gnuHash[3];
+    auto bucketCount = gnuHash[0];
+    auto symbolOffset = gnuHash[1];
+    auto bloomSize = gnuHash[2];
+    auto bloomShift = gnuHash[3];
 
     if (!bucketCount || !bloomSize) {
         return {};
     }
 
-    auto* bloom = reinterpret_cast<Elf64_Xword*>(image.gnuHash + 4);
+    auto* bloom = reinterpret_cast<Elf64_Xword*>(gnuHash + 4);
     auto* buckets = reinterpret_cast<uint32_t*>(bloom + bloomSize);
     auto* chains = buckets + bucketCount;
-    auto hash = gnuHash(name);
+    auto hash = gnuSymbolHash(name);
     constexpr unsigned WORD_BITS = 8 * sizeof(Elf64_Xword);
     auto word = bloom[(hash / WORD_BITS) % bloomSize];
     auto mask = (Elf64_Xword(1) << (hash % WORD_BITS)) | (Elf64_Xword(1) << ((hash >> bloomShift) % WORD_BITS));
@@ -1094,14 +1093,14 @@ Definition Loader::findSymbol(LinkMap& image, const std::string_view& name, cons
         auto chain = chains[index - symbolOffset];
 
         if ((chain | 1) == (hash | 1)) {
-            auto* symbol = &image.symbols[index];
-            auto foundVersion = symbolVersion(image, index);
-            auto hidden = image.symbolVersions && (image.symbolVersions[index] & 0x8000);
+            auto* symbol = &symbols[index];
+            auto foundVersion = symbolVersion(index);
+            auto hidden = symbolVersions && (symbolVersions[index] & 0x8000);
             auto versionMatches = version.empty() ? !hidden : foundVersion == version;
             auto visibility = ELF64_ST_VISIBILITY(symbol->st_other);
 
-            if (symbol->st_name < image.stringsSize && std::string_view(image.strings + symbol->st_name) == name && symbol->st_shndx != SHN_UNDEF && versionMatches && visibility != STV_HIDDEN && visibility != STV_INTERNAL) {
-                return {image.base + symbol->st_value, &image, symbol};
+            if (symbol->st_name < stringsSize && std::string_view(strings + symbol->st_name) == name && symbol->st_shndx != SHN_UNDEF && versionMatches && visibility != STV_HIDDEN && visibility != STV_INTERNAL) {
+                return {base + symbol->st_value, this, symbol};
             }
         }
         if (chain & 1) {
@@ -1124,7 +1123,7 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
     }
 
     std::string_view name(image.strings + symbol->st_name);
-    auto version = symbolVersion(image, symbolIndex);
+    auto version = image.symbolVersion(symbolIndex);
     auto weak = ELF64_ST_BIND(symbol->st_info) == STB_WEAK;
 
     if (image.glibcAbi) {
@@ -1173,25 +1172,25 @@ void* Loader::materialize(Definition definition) {
     return reinterpret_cast<void*>(definition.address);
 }
 
-void Loader::applyRelativeRelocations(LinkMap& image) {
+void LinkMap::applyRelativeRelocations() {
     uintptr_t* where = nullptr;
 
-    for (size_t index = 0; index < image.relativeRelocationCount; ++index) {
-        auto entry = image.relativeRelocations[index];
+    for (size_t index = 0; index < relativeRelocationCount; ++index) {
+        auto entry = relativeRelocations[index];
 
         if (!(entry & 1)) {
-            where = reinterpret_cast<uintptr_t*>(image.base + entry);
-            *where += image.base;
+            where = reinterpret_cast<uintptr_t*>(base + entry);
+            *where += base;
             ++where;
             continue;
         }
         if (!where) {
-            throwError("%s: RELR bitmap appears before an address", image.path.c_str());
+            throwError("%s: RELR bitmap appears before an address", path.c_str());
         }
 
         for (unsigned bit = 1; bit < 8 * sizeof(entry); ++bit) {
             if (entry & (uintptr_t(1) << bit)) {
-                where[bit - 1] += image.base;
+                where[bit - 1] += base;
             }
         }
         where += 8 * sizeof(entry) - 1;
@@ -1312,7 +1311,7 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
 }
 
 void Loader::applyRelocations(LinkMap& image, std::vector<DeferredRelocation>& deferred) {
-    applyRelativeRelocations(image);
+    image.applyRelativeRelocations();
 
     const std::array tables = {
         std::pair(image.relocations, image.relocationCount),
@@ -1328,65 +1327,65 @@ void Loader::applyRelocations(LinkMap& image, std::vector<DeferredRelocation>& d
     }
 }
 
-void Loader::protect(LinkMap& image) {
+void LinkMap::protect() {
     auto pageSize = sysconf(_SC_PAGESIZE);
 
-    if (pageSize <= 0 || mprotect(reinterpret_cast<void*>(image.mapStart), image.mapSize, PROT_NONE)) {
-        throwError("%s: mprotect(PROT_NONE): %s", image.path.c_str(), strerror(errno));
+    if (pageSize <= 0 || mprotect(reinterpret_cast<void*>(mapStart), mapSize, PROT_NONE)) {
+        throwError("%s: mprotect(PROT_NONE): %s", path.c_str(), strerror(errno));
     }
 
-    for (const auto& programHeader : image.programHeaders) {
+    for (const auto& programHeader : programHeaders) {
         if (programHeader.p_type != PT_LOAD) {
             continue;
         }
 
-        auto start = alignDown(image.base + programHeader.p_vaddr, pageSize);
-        auto end = alignUp(image.base + programHeader.p_vaddr + programHeader.p_memsz, pageSize);
+        auto start = alignDown(base + programHeader.p_vaddr, pageSize);
+        auto end = alignUp(base + programHeader.p_vaddr + programHeader.p_memsz, pageSize);
 
         if (mprotect(reinterpret_cast<void*>(start), end - start, segmentProtection(programHeader.p_flags))) {
-            throwError("%s: mprotect(PT_LOAD): %s", image.path.c_str(), strerror(errno));
+            throwError("%s: mprotect(PT_LOAD): %s", path.c_str(), strerror(errno));
         }
     }
 }
 
-void Loader::applyRelro(LinkMap& image) {
-    if (!image.relroSize) {
+void LinkMap::applyRelro() {
+    if (!relroSize) {
         return;
     }
 
     auto pageSize = sysconf(_SC_PAGESIZE);
-    auto start = alignDown(image.base + image.relroStart, pageSize);
-    auto end = alignUp(image.base + image.relroStart + image.relroSize, pageSize);
+    auto start = alignDown(base + relroStart, pageSize);
+    auto end = alignUp(base + relroStart + relroSize, pageSize);
 
     if (mprotect(reinterpret_cast<void*>(start), end - start, PROT_READ)) {
-        throwError("%s: mprotect(RELRO): %s", image.path.c_str(), strerror(errno));
+        throwError("%s: mprotect(RELRO): %s", path.c_str(), strerror(errno));
     }
 }
 
-void Loader::runInitializers(LinkMap& image) {
-    if (image.initializer) {
-        reinterpret_cast<void (*)()>(image.initializer)();
+void LinkMap::runInitializers() {
+    if (initializer) {
+        reinterpret_cast<void (*)()>(initializer)();
     }
 
-    auto* initializers = reinterpret_cast<uintptr_t*>(image.initializerArray);
+    auto* initializers = reinterpret_cast<uintptr_t*>(initializerArray);
 
-    for (size_t index = 0; index < image.initializerCount; ++index) {
+    for (size_t index = 0; index < initializerCount; ++index) {
         if (initializers[index] && initializers[index] != UINTPTR_MAX) {
             reinterpret_cast<void (*)()>(initializers[index])();
         }
     }
 }
 
-void Loader::runFinalizers(LinkMap& image) {
-    auto* finalizers = reinterpret_cast<uintptr_t*>(image.finalizerArray);
+void LinkMap::runFinalizers() {
+    auto* finalizers = reinterpret_cast<uintptr_t*>(finalizerArray);
 
-    for (size_t index = image.finalizerCount; index; --index) {
+    for (size_t index = finalizerCount; index; --index) {
         if (finalizers[index - 1] && finalizers[index - 1] != UINTPTR_MAX) {
             reinterpret_cast<void (*)()>(finalizers[index - 1])();
         }
     }
-    if (image.finalizer) {
-        reinterpret_cast<void (*)()>(image.finalizer)();
+    if (finalizer) {
+        reinterpret_cast<void (*)()>(finalizer)();
     }
 }
 
@@ -1405,7 +1404,7 @@ void Loader::runAllFinalizers() {
     }
 
     for (auto image = images.rbegin(); image != images.rend(); ++image) {
-        runFinalizers(**image);
+        (*image)->runFinalizers();
     }
 }
 
@@ -1436,11 +1435,11 @@ int ElfImage::iterateProgramHeaders(ElfProgramHeaderCallback& callback) {
 }
 
 extern "C" void* elfTlsAddress(const uintptr_t index[2]) {
-    return Loader::tlsAddress(*reinterpret_cast<const LinkMap*>(index[0]), index[1]);
+    return reinterpret_cast<const LinkMap*>(index[0])->tlsAddress(index[1]);
 }
 
 extern "C" void* elfTlsDescAddress(const void* opaqueArgument) {
     const auto& argument = *static_cast<const TlsDescArgument*>(opaqueArgument);
 
-    return Loader::tlsAddress(*argument.image, argument.offset);
+    return argument.image->tlsAddress(argument.offset);
 }
