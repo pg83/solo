@@ -571,7 +571,9 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
     }
 
     image.mapSize = maximumAddress - minimumAddress;
-    auto* mapping = mmap(nullptr, image.mapSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // A reservation for the whole span; the segments are mapped into it from
+    // the file below.
+    auto* mapping = mmap(nullptr, image.mapSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
     if (mapping == MAP_FAILED) {
         throwError("%s: mmap: %s", image.path.c_str(), strerror(errno));
@@ -593,7 +595,36 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
             if (programHeader.p_filesz > programHeader.p_memsz) {
                 throwError("%s: PT_LOAD file size exceeds memory size", image.path.c_str());
             }
-            file.read(reinterpret_cast<void*>(image.base + programHeader.p_vaddr), programHeader.p_filesz, static_cast<off_t>(programHeader.p_offset));
+            if ((programHeader.p_vaddr - programHeader.p_offset) % pageSize) {
+                throwError("%s: PT_LOAD file offset is not congruent with its address", image.path.c_str());
+            }
+
+            // The segments map from the file, copy-on-write: untouched pages
+            // stay shared with the page cache, and /proc/self/maps names the
+            // library for debuggers and profilers. Everything is writable
+            // until protect() runs, so relocations just work.
+            auto start = alignDown(image.base + programHeader.p_vaddr, pageSize);
+            auto fileEnd = image.base + programHeader.p_vaddr + programHeader.p_filesz;
+            auto memoryEnd = alignUp(image.base + programHeader.p_vaddr + programHeader.p_memsz, pageSize);
+
+            if (programHeader.p_filesz) {
+                if (mmap(reinterpret_cast<void*>(start), alignUp(fileEnd, pageSize) - start, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, file.descriptor_, static_cast<off_t>(alignDown(programHeader.p_offset, pageSize))) == MAP_FAILED) {
+                    throwError("%s: mmap segment: %s", image.path.c_str(), strerror(errno));
+                }
+            }
+            if (programHeader.p_memsz > programHeader.p_filesz) {
+                // The zero-fill tail: the rest of the last file page by hand,
+                // fresh anonymous pages beyond it.
+                auto anonymousStart = start;
+
+                if (programHeader.p_filesz) {
+                    anonymousStart = alignUp(fileEnd, pageSize);
+                    memset(reinterpret_cast<void*>(fileEnd), 0, anonymousStart - fileEnd);
+                }
+                if (anonymousStart < memoryEnd && mmap(reinterpret_cast<void*>(anonymousStart), memoryEnd - anonymousStart, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED) {
+                    throwError("%s: mmap zero fill: %s", image.path.c_str(), strerror(errno));
+                }
+            }
         } else if (programHeader.p_type == PT_DYNAMIC) {
             image.dynamic = reinterpret_cast<Elf64_Dyn*>(image.base + programHeader.p_vaddr);
         } else if (programHeader.p_type == PT_GNU_RELRO) {

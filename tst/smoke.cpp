@@ -160,6 +160,24 @@ int main() {
         return 1;
     }
 
+    // File-backed segment mappings keep the library's path in the maps,
+    // which is what profilers and debuggers key on.
+    auto* maps = fopen("/proc/self/maps", "r");
+    auto mapsNamed = false;
+    char mapsLine[512];
+    while (maps && fgets(mapsLine, sizeof(mapsLine), maps)) {
+        if (strstr(mapsLine, "libdlfcn-test-glibc.so")) {
+            mapsNamed = true;
+        }
+    }
+    if (maps) {
+        fclose(maps);
+    }
+    if (!mapsNamed) {
+        fprintf(stderr, "loaded image has no name in /proc/self/maps\n");
+        return 1;
+    }
+
     auto glibcLookup = reinterpret_cast<GlibcLookup>(requiredSymbol(glibc, "glibc_test_lookup"));
     auto glibcDefaultLookup = reinterpret_cast<GlibcDefaultLookup>(requiredSymbol(glibc, "glibc_test_default_lookup"));
     auto glibcVersionLookup = reinterpret_cast<GlibcVersionLookup>(requiredSymbol(glibc, "glibc_test_version_lookup"));
@@ -513,6 +531,7 @@ int main() {
     printf(
         "static libc provider: %zu symbols\n"
         "glibc dlopen/dlsym bridge: libc, libdl, pthread, factory, ELF, versions: ok\n"
+        "file-backed segments named in /proc/self/maps: ok\n"
         "RTLD_GLOBAL and RTLD_NEXT: ok\n"
         "lazy PLT binding: ok\n"
         "initial-exec TLS: arena placement, both models, fresh and parked threads: ok\n"
