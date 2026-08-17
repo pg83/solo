@@ -1698,7 +1698,7 @@ GlibcHandle* GlibcAdapter::handleFor(void* stubHandle, bool runtime) {
         handle->runtime = runtime;
         // The path view of a loaded image is NUL-terminated and lives as long
         // as the image, which is forever.
-        if (auto* image = dynamic_cast<ElfImage*>(static_cast<IfaceHandle*>(stubHandle))) {
+        if (auto* image = cast<ElfImage>(static_cast<IfaceHandle*>(stubHandle))) {
             handle->l_addr = image->base();
             handle->l_name = image->path().data();
             handle->l_ld = image->dynamicSection();
@@ -1738,7 +1738,7 @@ void* GlibcHandle::lookup(std::string_view name, std::string_view version) const
     }
     if (!runtime && !version.empty()) {
         // dlvsym over a loaded image wants the exact version, no fallbacks.
-        if (auto* image = dynamic_cast<ElfImage*>(static_cast<IfaceHandle*>(stubHandle))) {
+        if (auto* image = cast<ElfImage>(static_cast<IfaceHandle*>(stubHandle))) {
             return image->lookupVersion(name, version);
         }
     }

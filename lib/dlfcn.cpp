@@ -51,12 +51,18 @@ namespace {
     }
 
     struct Handle: public IfaceHandle, public std::unordered_map<std::string, void*> {
+        static constexpr Kind kind = Kind::Provider;
+
+        Kind handleKind() const override;
         void* lookup(std::string_view s) const override;
     };
 
     struct Handles: public IfaceHandle, public std::unordered_map<std::string, Handle> {
+        static constexpr Kind kind = Kind::Provider;
+
         Handles();
 
+        Kind handleKind() const override;
         // default handle lookup
         void* lookup(std::string_view s) const override;
         IfaceHandle* findHandle(const std::string& s);
@@ -146,6 +152,14 @@ auto& Dbg::operator<<(T s) noexcept {
     out(s);
 
     return *this;
+}
+
+IfaceHandle::Kind Handle::handleKind() const {
+    return kind;
+}
+
+IfaceHandle::Kind Handles::handleKind() const {
+    return kind;
 }
 
 void* Handle::lookup(std::string_view s) const {

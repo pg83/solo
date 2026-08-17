@@ -30,7 +30,11 @@ namespace dyn {
     };
 
     struct ElfImage: public IfaceHandle {
+        static constexpr Kind kind = Kind::Image;
+
         virtual ~ElfImage() noexcept;
+
+        Kind handleKind() const final;
 
         // The image's identity, for link_map facades and diagnostics. The
         // path view is NUL-terminated.

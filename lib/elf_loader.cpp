@@ -1619,6 +1619,10 @@ const void* LoadedElf::dynamicSection() const {
 ElfImage::~ElfImage() noexcept {
 }
 
+IfaceHandle::Kind ElfImage::handleKind() const {
+    return kind;
+}
+
 ElfImage* ElfImage::loadElf(std::string_view path, int flags) {
     auto& loader = Loader::instance();
     auto* image = loader.load(path, flags);
