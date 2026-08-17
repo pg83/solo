@@ -61,6 +61,7 @@ dlfcn_srcs = [
     "$(S)/lib/glibc_shim.cpp",
     "$(S)/lib/glibc_stubs.cpp",
     "$(S)/lib/hash.cpp",
+    "$(S)/lib/iface_handle.cpp",
     "$(S)/lib/musl_provider.cpp",
     "$(S)/lib/musl_symbols.cpp",
     "$(S)/lib/thread_tls.cpp",

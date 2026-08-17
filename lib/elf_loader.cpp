@@ -163,6 +163,8 @@ namespace {
         size_t tlsMemorySize = 0;
         size_t tlsAlignment = 0;
 
+        std::unique_ptr<ElfImage> wrapper;
+
         State state = State::Loading;
     };
 
@@ -437,6 +439,7 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
     }
     applyRelro(image);
 
+    image.wrapper.reset(new LoadedElf(image));
     image.state = LinkMap::State::Ready;
     runInitializers(image);
 
@@ -1234,7 +1237,7 @@ ElfImage::~ElfImage() noexcept {
 ElfImage* ElfImage::loadElf(std::string_view path, int flags) {
     auto* image = Loader::instance().load(path, flags);
 
-    return image ? new LoadedElf(*image) : nullptr;
+    return image ? image->wrapper.get() : nullptr;
 }
 
 bool ElfImage::findAddress(const void* address, ElfAddress* res) {

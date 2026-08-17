@@ -4,6 +4,7 @@
     #include "elf_loader.h"
 #endif
 
+#include "iface_handle.h"
 #include "musl_provider.h"
 #include "thread_tls.h"
 
@@ -50,33 +51,19 @@ namespace {
         d << X << "\n";   \
     }
 
-    struct IfaceHandle {
-        virtual void* lookup(const std::string_view& s) const = 0;
-    };
-
     struct Handle: public IfaceHandle, public std::unordered_map<std::string, void*> {
-        void* lookup(const std::string_view& s) const override;
+        void* lookup(std::string_view s) const override;
     };
 
     struct Handles: public IfaceHandle, public std::unordered_map<std::string, Handle> {
         Handles();
 
         // default handle lookup
-        void* lookup(const std::string_view& s) const override;
+        void* lookup(std::string_view s) const override;
         IfaceHandle* findHandle(const std::string& s);
         void registar(const char* lib, const char* symbol, void* ptr);
         static Handles* instance();
     };
-
-#if defined(__linux__)
-    struct ElfHandle: public IfaceHandle {
-        explicit ElfHandle(ElfImage* image);
-
-        void* lookup(const std::string_view& symbol) const override;
-
-        ElfImage* image;
-    };
-#endif
 
     static inline void setLastError(const std::string_view& error) {
         ThreadTls::current()->setDlError(error);
@@ -162,7 +149,7 @@ auto& Dbg::operator<<(T s) noexcept {
     return *this;
 }
 
-void* Handle::lookup(const std::string_view& s) const {
+void* Handle::lookup(std::string_view s) const {
     if (auto it = find(std::string(s)); it != end()) {
         DBG("found " << s);
 
@@ -198,7 +185,7 @@ Handles::Handles() {
     registar("c", "dladdr", reinterpret_cast<void*>(stub_dladdr));
 }
 
-void* Handles::lookup(const std::string_view& s) const {
+void* Handles::lookup(std::string_view s) const {
     for (const auto& it : *this) {
         if (auto res = it.second.lookup(s); res) {
             DBG("found global " << s);
@@ -237,17 +224,6 @@ Handles* Handles::instance() {
 
     return h;
 }
-
-#if defined(__linux__)
-ElfHandle::ElfHandle(ElfImage* image)
-    : image(image)
-{
-}
-
-void* ElfHandle::lookup(const std::string_view& symbol) const {
-    return image ? image->lookup(symbol) : nullptr;
-}
-#endif
 
 extern "C" void* stub_dlsym(void* handle, const char* symbol) {
     clearLastError();
@@ -294,7 +270,9 @@ extern "C" void* stub_dlopen(const char* filename, int mode) {
         }
 
 #if defined(__linux__)
-        return new ElfHandle(ElfImage::loadElf(filename, mode));
+        // The loader keeps one wrapper per image, so repeated dlopen of the
+        // same library returns the same handle.
+        return ElfImage::loadElf(filename, mode);
 #endif
     } catch (const std::exception& error) {
         setLastError(error.what());

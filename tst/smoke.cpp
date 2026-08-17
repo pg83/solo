@@ -2,7 +2,6 @@
 #include "elf_loader.h"
 #include "musl_symbols.h"
 
-#include <memory>
 #include <stdio.h>
 #include <stdint.h>
 #include <exception>
@@ -255,9 +254,10 @@ int main() {
         return 1;
     }
 
-    std::unique_ptr<ElfImage> image;
+    // The loader owns the returned image.
+    ElfImage* image = nullptr;
     try {
-        image.reset(ElfImage::loadElf("libdlfcn-test-vulkan.so", RTLD_NOW | RTLD_LOCAL));
+        image = ElfImage::loadElf("libdlfcn-test-vulkan.so", RTLD_NOW | RTLD_LOCAL);
     } catch (const std::exception& error) {
         fprintf(stderr, "load failed: %s\n", error.what());
         return 1;

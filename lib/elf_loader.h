@@ -1,5 +1,7 @@
 #pragma once
 
+#include "iface_handle.h"
+
 #include <elf.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -23,10 +25,8 @@ struct ElfProgramHeaderCallback {
     virtual int call(const ElfProgramHeaders& image) = 0;
 };
 
-struct ElfImage {
+struct ElfImage: IfaceHandle {
     virtual ~ElfImage() noexcept;
-
-    virtual void* lookup(std::string_view symbol) const = 0;
 
     static ElfImage* loadElf(std::string_view path, int flags);
     static bool findAddress(const void* address, ElfAddress* res);
