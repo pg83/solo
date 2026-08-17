@@ -903,6 +903,160 @@ corpus_packages = [
         "brotli-1.2.0-1-x86_64.pkg.tar.zst",
         "4a0c95d5967476d0efdaf76d344b61e3eee02cd7920a315e457f3fd96311b7ec",
     ),
+    (
+        "util-linux-libs",
+        "https://archive.archlinux.org/packages/u/util-linux-libs/"
+        "util-linux-libs-2.42.2-1-x86_64.pkg.tar.zst",
+        "util-linux-libs-2.42.2-1-x86_64.pkg.tar.zst",
+        "50e5541bafc8e7013d1cfe7fe90cba2d5e96ac05acf3e8d1540f21daf24fb9c9",
+    ),
+    (
+        "systemd-libs",
+        "https://archive.archlinux.org/packages/s/systemd-libs/"
+        "systemd-libs-261.2-1-x86_64.pkg.tar.zst",
+        "systemd-libs-261.2-1-x86_64.pkg.tar.zst",
+        "c12d5a2c4bb7cc0088af3f6addddac3219277a14b4aefb135b508d6d9ea15de9",
+    ),
+    (
+        "libcap",
+        "https://archive.archlinux.org/packages/l/libcap/"
+        "libcap-2.78-1-x86_64.pkg.tar.zst",
+        "libcap-2.78-1-x86_64.pkg.tar.zst",
+        "3e984fe1d323b1c5a5fc60fef005776a4882fbca913d6fe3c41ad11128929ed1",
+    ),
+    (
+        "lz4",
+        "https://archive.archlinux.org/packages/l/lz4/"
+        "lz4-1:1.10.0-2-x86_64.pkg.tar.zst",
+        "lz4-1:1.10.0-2-x86_64.pkg.tar.zst",
+        "c6200c776440678fe8c26adae6c104194b425d9393a9e3fc09f934363f0c39a6",
+    ),
+    (
+        "ncurses",
+        "https://archive.archlinux.org/packages/n/ncurses/"
+        "ncurses-6.6-2-x86_64.pkg.tar.zst",
+        "ncurses-6.6-2-x86_64.pkg.tar.zst",
+        "9b80390fd681121443a45a51b74e2e2ade245ce22af8769915d63165b727e27c",
+    ),
+    (
+        "readline",
+        "https://archive.archlinux.org/packages/r/readline/"
+        "readline-8.3.003-1-x86_64.pkg.tar.zst",
+        "readline-8.3.003-1-x86_64.pkg.tar.zst",
+        "a4e861378069dcb15c6fbd52a1f5d9ed01b4bce5fb208268c7c182341f5f3960",
+    ),
+    (
+        "gmp",
+        "https://archive.archlinux.org/packages/g/gmp/"
+        "gmp-6.3.0-3-x86_64.pkg.tar.zst",
+        "gmp-6.3.0-3-x86_64.pkg.tar.zst",
+        "2969061e117d2a8c19d89427b0b88e1c956a6269bc0602087d41aecd15097064",
+    ),
+    (
+        "nettle",
+        "https://archive.archlinux.org/packages/n/nettle/"
+        "nettle-4.0-1-x86_64.pkg.tar.zst",
+        "nettle-4.0-1-x86_64.pkg.tar.zst",
+        "679138a8405ca383aba7836d54fdc282db9394b7dc23c097b8965f70119adf13",
+    ),
+    (
+        "libgpg-error",
+        "https://archive.archlinux.org/packages/l/libgpg-error/"
+        "libgpg-error-1.61-1-x86_64.pkg.tar.zst",
+        "libgpg-error-1.61-1-x86_64.pkg.tar.zst",
+        "7d5a5b39f588b275558f5e13bd792bff84cf89abb6d48e3e494d6c30e8ea9ca4",
+    ),
+    (
+        "libgcrypt",
+        "https://archive.archlinux.org/packages/l/libgcrypt/"
+        "libgcrypt-1.12.2-1-x86_64.pkg.tar.zst",
+        "libgcrypt-1.12.2-1-x86_64.pkg.tar.zst",
+        "27429de23607abb32994f589574d6e680ca3ddf0fdebae82b23fddb4f66ec64c",
+    ),
+    (
+        "libsodium",
+        "https://archive.archlinux.org/packages/l/libsodium/"
+        "libsodium-1.0.22-1-x86_64.pkg.tar.zst",
+        "libsodium-1.0.22-1-x86_64.pkg.tar.zst",
+        "fc0440c108fff0341f3cb7b4ee38f5a9406b45d9315205ce999e1b147b52f972",
+    ),
+    (
+        "json-c",
+        "https://archive.archlinux.org/packages/j/json-c/"
+        "json-c-0.19-1-x86_64.pkg.tar.zst",
+        "json-c-0.19-1-x86_64.pkg.tar.zst",
+        "a2ebb9395bfc18a29abd21b6dd756519114e4e6241d6321588ada285ded4d63f",
+    ),
+    (
+        "libjpeg-turbo",
+        "https://archive.archlinux.org/packages/l/libjpeg-turbo/"
+        "libjpeg-turbo-3.2.0-2-x86_64.pkg.tar.zst",
+        "libjpeg-turbo-3.2.0-2-x86_64.pkg.tar.zst",
+        "14e743e58bbab35665d3e59ea71bd411f81a01d995e0101442f5f4c82c9de0ab",
+    ),
+    (
+        "libdeflate",
+        "https://archive.archlinux.org/packages/l/libdeflate/"
+        "libdeflate-1.25-1-x86_64.pkg.tar.zst",
+        "libdeflate-1.25-1-x86_64.pkg.tar.zst",
+        "4e9b5d01558db0cddfbd2a6a48ed6baf92bbe65af4d0dd1ae390206fe76080ee",
+    ),
+    (
+        "jbigkit",
+        "https://archive.archlinux.org/packages/j/jbigkit/"
+        "jbigkit-2.1-8-x86_64.pkg.tar.zst",
+        "jbigkit-2.1-8-x86_64.pkg.tar.zst",
+        "ca53fa884681273162aadcf99c30514a7010d5e621eb0a5ae491500ae8dc52c9",
+    ),
+    (
+        "libwebp",
+        "https://archive.archlinux.org/packages/l/libwebp/"
+        "libwebp-1.6.0-2-x86_64.pkg.tar.zst",
+        "libwebp-1.6.0-2-x86_64.pkg.tar.zst",
+        "a80e7edd3ddd27c6fd8cd83d0bd98d46b3f0279b7ee01f5baeded0d6f26f8975",
+    ),
+    (
+        "libtiff",
+        "https://archive.archlinux.org/packages/l/libtiff/"
+        "libtiff-4.7.2-1-x86_64.pkg.tar.zst",
+        "libtiff-4.7.2-1-x86_64.pkg.tar.zst",
+        "0627d404a16663e5c2fb11b6698daa69ae93ae8747ee279aecaf3f86bd547a61",
+    ),
+    (
+        "libnghttp2",
+        "https://archive.archlinux.org/packages/l/libnghttp2/"
+        "libnghttp2-1.70.0-1-x86_64.pkg.tar.zst",
+        "libnghttp2-1.70.0-1-x86_64.pkg.tar.zst",
+        "332e2cb2d953dab326f97a3257594f8031ec0fce6305e2bcd5d64d9832c84778",
+    ),
+    (
+        "libssh2",
+        "https://archive.archlinux.org/packages/l/libssh2/"
+        "libssh2-1.11.1-7-x86_64.pkg.tar.zst",
+        "libssh2-1.11.1-7-x86_64.pkg.tar.zst",
+        "462cca91bff394c2719b7e8d1951f0c0a2db979d71521ac93dba6b6b6974f6b9",
+    ),
+    (
+        "libxml2",
+        "https://archive.archlinux.org/packages/l/libxml2/"
+        "libxml2-2.15.3-1-x86_64.pkg.tar.zst",
+        "libxml2-2.15.3-1-x86_64.pkg.tar.zst",
+        "51807c20a300bf85db48ae7f2f8967bec291439764b29279e3297dff3247ed4f",
+    ),
+    (
+        "icu",
+        "https://archive.archlinux.org/packages/i/icu/"
+        "icu-78.3-1-x86_64.pkg.tar.zst",
+        "icu-78.3-1-x86_64.pkg.tar.zst",
+        "118fe41efa6c550f3fe67893946dcea2c6cbb5272299a6ddf4160fb17f3e4bb0",
+    ),
+    (
+        "glib2",
+        "https://archive.archlinux.org/packages/g/glib2/"
+        "glib2-2.88.3-1-x86_64.pkg.tar.zst",
+        "glib2-2.88.3-1-x86_64.pkg.tar.zst",
+        "9569884e1f670d46e40ea0b8ca4ea2a1a29689be297fed1390bc5af9a03967d2",
+    ),
 ]
 
 for package in corpus_packages:
@@ -912,8 +1066,20 @@ for package in corpus_packages:
 # next to it, so its DT_NEEDED entries resolve. One load node per package
 # keeps the runs parallel and cached independently.
 corpus_dependencies = {
+    "glib2": ["pcre2", "libffi", "zlib", "util-linux-libs", "systemd-libs", "libgcc"],
+    "gmp": ["libstdcxx", "libgcc"],
+    "icu": ["libstdcxx", "libgcc"],
+    "libgcrypt": ["libgpg-error"],
     "libpng": ["zlib"],
+    "libssh2": ["openssl", "zlib", "zstd", "brotli"],
+    "libtiff": ["libjpeg-turbo", "zlib", "xz", "zstd", "libdeflate", "jbigkit", "libwebp", "libstdcxx", "libgcc"],
+    "libxml2": ["zlib", "xz", "icu", "libstdcxx", "libgcc"],
+    "ncurses": ["libstdcxx", "libgcc"],
+    "nettle": ["gmp"],
     "openssl": ["zlib", "zstd", "brotli"],
+    "readline": ["ncurses"],
+    "systemd-libs": ["libgcc"],
+    "util-linux-libs": ["sqlite", "systemd-libs", "libgcc"],
 }
 
 corpus_load = vendoredTest("corpus_load", "$(S)/tst/corpus_load.cpp")

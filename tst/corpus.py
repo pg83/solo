@@ -136,6 +136,10 @@ def load(arguments):
 
         for member in sorted(members):
             library = root / member
+            # Only the top-level libraries and the packages' plugin modules;
+            # language bindings under site-packages need their interpreter.
+            if "site-packages" in member or "/lib/security/" in member:
+                continue
             if "/lib/" not in member or ".so" not in member:
                 continue
             if not library.is_file() or library.is_symlink():
