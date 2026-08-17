@@ -29,18 +29,7 @@ namespace {
     };
 
     static void threadExit(void* opaque) {
-        auto* state = static_cast<State*>(opaque);
-
-        // The main thread reaches this from exit(), where atexit handlers of
-        // loaded DSOs still run afterwards and still use their TLS. Keep the
-        // state alive for them, like glibc keeps the main thread's DTV, and
-        // let the process reclaim the memory.
-        if (getpid() == gettid()) {
-            state->drainDtors();
-            return;
-        }
-
-        delete state;
+        delete static_cast<State*>(opaque);
     }
 }
 
@@ -77,8 +66,13 @@ ThreadTls* ThreadTls::current() {
     static thread_local State* state = nullptr;
 
     if (!state) {
-        state = new State();
-        __cxa_thread_atexit(threadExit, state, nullptr);
+        if (getpid() == gettid()) {
+            static State* main = new State(); // never reclaimed
+            state = main;
+        } else {
+            state = new State();
+            __cxa_thread_atexit(threadExit, state, nullptr);
+        }
     }
 
     return state;
