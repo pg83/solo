@@ -28,17 +28,22 @@ def musl_header(table: dict) -> list[str]:
     lines = [
         f"// Generated from musl_symbols.json ({table['source']}).",
         "",
-        '    extern "C" {',
+        "// These declarations name the libc the process is linked against, so they",
+        "// have to stay at file scope: a C declaration inside an unnamed namespace",
+        "// is an internal-linkage object of that namespace for GCC.",
+        'extern "C" {',
     ]
-    lines += [f"        extern void* {symbol};" for symbol in symbols]
+    lines += [f"    extern void* {symbol};" for symbol in symbols]
     lines += [
-        "    }",
+        "}",
         "",
+        "namespace {",
         "    static const MuslSymbol muslSymbolTable[] = {",
     ]
     lines += [f"        {{{quote(symbol)}, &{symbol}}}," for symbol in symbols]
     lines += [
         "    };",
+        "}",
         "",
     ]
 
