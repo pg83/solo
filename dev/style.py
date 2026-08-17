@@ -3,6 +3,7 @@
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -11,8 +12,20 @@ from pathlib import Path
 ROOT = Path.cwd()
 SOURCE_PATTERNS = ("*.cpp", "*.h", "*.hpp", "*.mm")
 EXCLUDED_DIRS = {"third_party", "ext"}
+# Vendored trees keep their upstream formatting.
+VENDORED_ROOTS = (
+    ROOT / "bin" / "vulkan" / "llvm",
+    ROOT / "bin" / "vulkan" / "musl",
+    ROOT / "bin" / "vulkan" / "png",
+    ROOT / "bin" / "vulkan" / "vulkan",
+    ROOT / "bin" / "vulkan" / "zlib",
+)
 INITIALIZER_LIST = re.compile(r"^(?P<indent> +):(?=\s)")
 INCLUDE = re.compile(r'^#include\s+(?P<open>["<])(?P<path>[^">]+)[">]\s*(?P<tail>//.*)?$')
+
+
+def vendored(path):
+    return any(path.is_relative_to(root) for root in VENDORED_ROOTS)
 
 
 def source_files(arguments):
@@ -22,7 +35,11 @@ def source_files(arguments):
     output = subprocess.check_output(
         ["git", "ls-files", "-z", "--", *SOURCE_PATTERNS], cwd=ROOT
     )
-    return [ROOT / name for name in output.decode().split("\0") if name]
+    return [
+        path
+        for name in output.decode().split("\0")
+        if name and not vendored(path := ROOT / name)
+    ]
 
 
 def format_sources(files):
@@ -200,6 +217,10 @@ def reorder_includes(path):
 
 
 def main():
+    command = shlex.split(os.environ.get("CLANG_FORMAT", "clang-format"))
+    if shutil.which(command[0]) is None:
+        raise SystemExit(f"style.py: {command[0]} not found; nothing was touched")
+
     files = source_files(sys.argv[1:])
     if not files:
         return
