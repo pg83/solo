@@ -2,6 +2,8 @@
 #include "elf_loader.h"
 #include "musl_symbols.h"
 
+#include <pthread.h>
+#include <semaphore.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -22,6 +24,9 @@ namespace {
     using GlibcCatch = int (*)(void (*callback)());
     using LazyValue = int (*)(int);
     using LazyMix = double (*)(int, double, long, double);
+    using IeAddress = int* (*)();
+    using IeAdd = void (*)(int);
+    using BigFirst = unsigned char (*)();
 
     static GlibcThrow foreignThrow;
     static bool callbackCaught;
@@ -44,6 +49,42 @@ namespace {
 
     static void throwForeignFromCallback() {
         foreignThrow();
+    }
+
+    // A thread parked before the initial-exec module loads: the documented
+    // restriction gives it zeroed TLS for that module, never garbage.
+    struct ParkedThread {
+        sem_t start;
+        sem_t done;
+        GlibcTest value;
+        int result;
+    };
+
+    static void* parkedThreadMain(void* opaque) {
+        auto* parked = static_cast<ParkedThread*>(opaque);
+
+        sem_wait(&parked->start);
+        parked->result = parked->value();
+        sem_post(&parked->done);
+        return nullptr;
+    }
+
+    struct IeThread {
+        GlibcTest selfcheck;
+        IeAddress tdataAddress;
+        int* mainTdataAddress;
+        int result;
+    };
+
+    static void* ieThreadMain(void* opaque) {
+        auto* state = static_cast<IeThread*>(opaque);
+
+        state->result = state->selfcheck();
+        if (state->result == 0 && state->tdataAddress() == state->mainTdataAddress) {
+            // The same offset must land in this thread's own block.
+            state->result = 100;
+        }
+        return nullptr;
     }
 
     static void* requiredSymbol(void* handle, const char* name) {
@@ -246,6 +287,113 @@ int main() {
         return 1;
     }
 
+    // Initial-exec TLS: one process-wide GOT offset must be valid in every
+    // thread through the surplus static arena. The parked thread exists
+    // before the module loads and must see zeroed TLS for it.
+    ParkedThread parked = {};
+    pthread_t parkedThread;
+    if (sem_init(&parked.start, 0, 0) || sem_init(&parked.done, 0, 0) || pthread_create(&parkedThread, nullptr, parkedThreadMain, &parked)) {
+        fprintf(stderr, "parked thread setup failed\n");
+        return 1;
+    }
+
+    auto* ie = stub_dlopen("libdlfcn-test-ie.so", RTLD_NOW | RTLD_LOCAL);
+    if (!ie) {
+        fprintf(stderr, "initial-exec load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto ieSelfcheck = reinterpret_cast<GlibcTest>(requiredSymbol(ie, "glibc_ie_selfcheck"));
+    auto ieTdataAddress = reinterpret_cast<IeAddress>(requiredSymbol(ie, "glibc_ie_tdata_address"));
+    auto ieTdataValue = reinterpret_cast<GlibcTest>(requiredSymbol(ie, "glibc_ie_tdata_value"));
+    auto ieAlignedAddress = reinterpret_cast<IeAddress>(requiredSymbol(ie, "glibc_ie_aligned_address"));
+    auto gdTdataAddress = reinterpret_cast<IeAddress>(requiredSymbol(ie, "glibc_gd_tdata_address"));
+    auto gdTdataValue = reinterpret_cast<GlibcTest>(requiredSymbol(ie, "glibc_gd_tdata_value"));
+    if (!ieSelfcheck || !ieTdataAddress || !ieTdataValue || !ieAlignedAddress || !gdTdataAddress || !gdTdataValue) {
+        return 1;
+    }
+    if (auto result = ieSelfcheck(); result != 0) {
+        fprintf(stderr, "initial-exec selfcheck failed: %d\n", result);
+        return 1;
+    }
+    // The selfcheck left 1000 behind; the general-dynamic view of the same
+    // variable must be the same memory.
+    if (gdTdataAddress() != ieTdataAddress() || gdTdataValue() != 1000) {
+        fprintf(stderr, "initial-exec and general-dynamic views diverge\n");
+        return 1;
+    }
+    if (reinterpret_cast<uintptr_t>(ieAlignedAddress()) % 64 != 0) {
+        fprintf(stderr, "initial-exec alignment lost\n");
+        return 1;
+    }
+
+    auto* ieRef = stub_dlopen("libdlfcn-test-ieref.so", RTLD_NOW | RTLD_LOCAL);
+    if (!ieRef) {
+        fprintf(stderr, "cross-module initial-exec load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto ieRefAddress = reinterpret_cast<IeAddress>(requiredSymbol(ieRef, "glibc_ieref_tdata_address"));
+    auto ieRefValue = reinterpret_cast<GlibcTest>(requiredSymbol(ieRef, "glibc_ieref_tdata_value"));
+    auto ieRefAdd = reinterpret_cast<IeAdd>(requiredSymbol(ieRef, "glibc_ieref_tdata_add"));
+    if (!ieRefAddress || !ieRefValue || !ieRefAdd) {
+        return 1;
+    }
+    if (ieRefAddress() != ieTdataAddress() || ieRefValue() != 1000) {
+        fprintf(stderr, "cross-module initial-exec views diverge\n");
+        return 1;
+    }
+    ieRefAdd(1);
+    if (ieTdataValue() != 1001) {
+        fprintf(stderr, "cross-module initial-exec write lost\n");
+        return 1;
+    }
+
+    // A thread created after the load starts from the module's template.
+    IeThread ieThread = {ieSelfcheck, ieTdataAddress, ieTdataAddress(), -1};
+    pthread_t freshThread;
+    if (pthread_create(&freshThread, nullptr, ieThreadMain, &ieThread) || pthread_join(freshThread, nullptr)) {
+        fprintf(stderr, "initial-exec thread setup failed\n");
+        return 1;
+    }
+    if (ieThread.result != 0) {
+        fprintf(stderr, "initial-exec fresh thread failed: %d\n", ieThread.result);
+        return 1;
+    }
+    if (ieTdataValue() != 1001) {
+        fprintf(stderr, "fresh thread scribbled over the main thread's TLS\n");
+        return 1;
+    }
+
+    parked.value = ieTdataValue;
+    sem_post(&parked.start);
+    sem_wait(&parked.done);
+    if (pthread_join(parkedThread, nullptr) || parked.result != 0) {
+        fprintf(stderr, "pre-existing thread saw %d instead of zeroed TLS\n", parked.result);
+        return 1;
+    }
+
+    // Oversized TLS: the general-dynamic module falls back to the dynamic
+    // per-thread blocks and keeps its template...
+    auto* big = stub_dlopen("libdlfcn-test-bigtls.so", RTLD_NOW | RTLD_LOCAL);
+    if (!big) {
+        fprintf(stderr, "oversized TLS load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto bigFirst = reinterpret_cast<BigFirst>(requiredSymbol(big, "glibc_big_tls_first"));
+    if (!bigFirst || bigFirst() != 11) {
+        fprintf(stderr, "oversized TLS template lost\n");
+        return 1;
+    }
+    // ...while initial-exec to the same size must fail by name, not crash.
+    if (stub_dlopen("libdlfcn-test-bigtlsie.so", RTLD_NOW | RTLD_LOCAL)) {
+        fprintf(stderr, "oversized initial-exec TLS load succeeded\n");
+        return 1;
+    }
+    auto* arenaError = stub_dlerror();
+    if (!arenaError || !strstr(arenaError, "static TLS arena")) {
+        fprintf(stderr, "oversized initial-exec failure lacks the arena message: %s\n", arenaError ? arenaError : "(null)");
+        return 1;
+    }
+
     // The conformance battery: one check per implemented bridge adapter.
     auto* shim = stub_dlopen("libdlfcn-test-shim.so", RTLD_NOW | RTLD_LOCAL);
     if (!shim) {
@@ -358,6 +506,7 @@ int main() {
         "glibc dlopen/dlsym bridge: libc, libdl, pthread, factory, ELF, versions: ok\n"
         "RTLD_GLOBAL and RTLD_NEXT: ok\n"
         "lazy PLT binding: ok\n"
+        "initial-exec TLS: arena placement, both models, fresh and parked threads: ok\n"
         "glibc shim conformance battery: ok\n"
         "ELF TLS: per-thread blocks and thread-exit destructors: ok\n"
         "glibc C++ throw, unwind, destructor, catch: ok\n"

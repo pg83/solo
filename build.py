@@ -816,7 +816,7 @@ downloads = list(downloadTargets.values())
 
 arch_smoke = command(
     name="arch_smoke",
-    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/glibc_exception_test.cpp", "$(S)/tst/glibc_lazy_test.c", "$(S)/tst/glibc_shim_test.c", "$(S)/tst/run_smoke.py", *archives],
+    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/glibc_exception_test.cpp", "$(S)/tst/glibc_lazy_test.c", "$(S)/tst/glibc_shim_test.c", "$(S)/tst/glibc_ie_test.c", "$(S)/tst/glibc_ie_gd_test.c", "$(S)/tst/glibc_ie_ref_test.c", "$(S)/tst/glibc_big_tls_test.c", "$(S)/tst/run_smoke.py", *archives],
     outputs=["$(B)/tst/arch-smoke.log"],
     deps=[smoke, *downloads],
     cmd=[
@@ -831,6 +831,10 @@ arch_smoke = command(
         "DLFCN_GLIBC_EXCEPTION_TEST_SOURCE": "$(S)/tst/glibc_exception_test.cpp",
         "DLFCN_GLIBC_LAZY_TEST_SOURCE": "$(S)/tst/glibc_lazy_test.c",
         "DLFCN_GLIBC_SHIM_TEST_SOURCE": "$(S)/tst/glibc_shim_test.c",
+        "DLFCN_GLIBC_IE_TEST_SOURCE": "$(S)/tst/glibc_ie_test.c",
+        "DLFCN_GLIBC_IE_GD_TEST_SOURCE": "$(S)/tst/glibc_ie_gd_test.c",
+        "DLFCN_GLIBC_IE_REF_TEST_SOURCE": "$(S)/tst/glibc_ie_ref_test.c",
+        "DLFCN_GLIBC_BIG_TLS_TEST_SOURCE": "$(S)/tst/glibc_big_tls_test.c",
         "DLFCN_GLIBC_TEST_SOURCE": "$(S)/tst/glibc_test.c",
         "DLFCN_SMOKE": "$(B)/tst/smoke",
     },
@@ -1067,9 +1071,8 @@ corpus_packages = [
         "glib2-2.88.3-1-x86_64.pkg.tar.zst",
         "9569884e1f670d46e40ea0b8ca4ea2a1a29689be297fed1390bc5af9a03967d2",
     ),
-    # The red test for dev/PLAN.md item 6: jemalloc carries initial-exec TLS
-    # (1976 bytes of it), so this node stays red until the surplus static TLS
-    # lands.
+    # jemalloc carries 1976 bytes of initial-exec TLS: the regression test
+    # for the surplus static TLS arena.
     (
         "jemalloc",
         "https://archive.archlinux.org/packages/j/jemalloc/"

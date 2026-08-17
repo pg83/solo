@@ -111,6 +111,66 @@ def main():
             ],
             check=True,
         )
+        # The initial-exec family: a defining module carrying both models, a
+        # second module reaching the first one's TLS via initial-exec, and two
+        # over-arena-sized modules, of which only the initial-exec one may
+        # fail to load.
+        ie_test = library_path / "libdlfcn-test-ie.so"
+        subprocess.run(
+            [
+                *shlex.split(os.environ["DLFCN_CC"]),
+                "-fPIC",
+                "-fno-stack-protector",
+                "-shared",
+                "-nostdlib",
+                "-Wl,--no-as-needed",
+                str(root / "usr" / "lib" / "libc.so.6"),
+                "-Wl,-soname,libdlfcn-test-ie.so",
+                os.environ["DLFCN_GLIBC_IE_TEST_SOURCE"],
+                os.environ["DLFCN_GLIBC_IE_GD_TEST_SOURCE"],
+                "-o",
+                str(ie_test),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                *shlex.split(os.environ["DLFCN_CC"]),
+                "-fPIC",
+                "-fno-stack-protector",
+                "-shared",
+                "-nostdlib",
+                "-Wl,--no-as-needed",
+                str(root / "usr" / "lib" / "libc.so.6"),
+                "-Wl,-soname,libdlfcn-test-ieref.so",
+                os.environ["DLFCN_GLIBC_IE_REF_TEST_SOURCE"],
+                str(ie_test),
+                "-o",
+                str(library_path / "libdlfcn-test-ieref.so"),
+            ],
+            check=True,
+        )
+        for big_name, big_flags in (
+            ("libdlfcn-test-bigtls.so", []),
+            ("libdlfcn-test-bigtlsie.so", ["-DBIG_TLS_IE"]),
+        ):
+            subprocess.run(
+                [
+                    *shlex.split(os.environ["DLFCN_CC"]),
+                    "-fPIC",
+                    "-fno-stack-protector",
+                    "-shared",
+                    "-nostdlib",
+                    *big_flags,
+                    "-Wl,--no-as-needed",
+                    str(root / "usr" / "lib" / "libc.so.6"),
+                    f"-Wl,-soname,{big_name}",
+                    os.environ["DLFCN_GLIBC_BIG_TLS_TEST_SOURCE"],
+                    "-o",
+                    str(library_path / big_name),
+                ],
+                check=True,
+            )
         # Two builds of the same source: eager binding of the undefined symbol
         # must fail on one image without poisoning the lazily loadable other.
         for lazy_name in ("libdlfcn-test-lazy.so", "libdlfcn-test-lazynow.so"):

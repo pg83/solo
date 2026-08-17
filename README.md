@@ -216,10 +216,13 @@ Today it is:
 - Linux x86-64 only;
 - focused on real Mesa/Vulkan ICD dependency closures;
 - a load-once runtime (`dlclose` succeeds but does not unload an image);
-- limited to the general-dynamic, local-dynamic, and TLSDESC TLS models: a DSO
-  built with initial-exec TLS expects its variables at a fixed offset in the
-  static TLS block that musl laid out at startup, so loading it fails with an
-  unsupported-relocation error naming the image;
+- supporting all four TLS models. Initial-exec variables are placed in a
+  16 KiB surplus arena that rides in the executable's own static TLS, so one
+  process-wide offset is valid in every thread without patching musl. The one
+  restriction: threads created *before* a `dlopen` see zero-initialized TLS
+  for the modules it loaded, so load initial-exec libraries before spawning
+  the threads that use them. An initial-exec module that does not fit the
+  arena fails to load with an error naming the image and the byte counts;
 - explicit about missing ABI coverage: an unimplemented glibc call aborts and
   names itself.
 

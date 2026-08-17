@@ -7,14 +7,6 @@ but by a corpus of real libraries, failing loudly on everything not yet
 covered. The philosophy of the current code (fail-loud, one runtime, bridging
 in place) scales — the process is what has to scale.
 
-## Phase 2 — the hard ABI cores (where the name matches but the ABI does not)
-
-6. **Initial-exec TLS** — the main wall: surplus static TLS as a patch to the
-   vendored musl (glibc reserves ~1.6 KiB per thread, tunable) plus an offset
-   allocator in the loader. Without it "fullness" is impossible:
-   `-ftls-model=initial-exec` shows up in real distro builds, and a host .so
-   cannot be rebuilt.
-
 ## Phase 3 — loader parity
 
 10. **A decision on `dlclose`**: either honest refcounts + fini + unmap (with
@@ -53,4 +45,11 @@ locale-archive (we stay in C/UTF-8, like musl).
   `__overflow`/`__uflow`; the `_IO_2_1_*` objects now resolve to musl's own
   FILE structures, and the conformance battery drives the inlined paths at
   -O2.
-- Deliberately deferred: 6 (initial-exec TLS), 10 (`dlclose`).
+- Initial-exec TLS landed without patching musl: the surplus arena is
+  ordinary thread_local data of the host executable, so unmodified musl lays
+  it out at one thread-pointer-relative offset in every thread, and the
+  loader seeds future threads by writing guest `.tdata` into the
+  executable's TLS template. Documented restriction: threads created before
+  a `dlopen` see zeroed TLS for its modules. The jemalloc corpus node is the
+  regression test.
+- Deliberately deferred: 10 (`dlclose`).
