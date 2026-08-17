@@ -25,7 +25,9 @@ linker_flags = []
 if shutil.which("ld") is None and (lld := shutil.which("ld.lld")):
     linker_flags.append(f"-fuse-ld={lld}")
 
-vulkanBuild = any(argument in ("vulkan", "vulkan_test") for argument in sys.argv[1:])
+# Targets built against the vendored musl and libc++ instead of the host libc.
+vendoredTargets = ("vulkan", "vulkan_test", "pthread_bridge", "pthread_test", "test")
+vulkanBuild = any(argument in vendoredTargets for argument in sys.argv[1:])
 
 
 def symbolHeader(kind):
@@ -80,31 +82,6 @@ smoke = program(
     deps=[dlfcn],
     ldflags=["-static"],
     output="$(B)/tst/smoke",
-)
-
-pthread_bridge = program(
-    name="pthread_bridge",
-    srcs=[
-        "$(S)/tst/pthread_bridge.cpp",
-    ],
-    deps=[dlfcn],
-    ldflags=["-static"],
-    output="$(B)/tst/pthread_bridge",
-)
-
-pthread_test = command(
-    name="pthread_test",
-    inputs=["$(S)/tst/run_pthread_bridge.py"],
-    outputs=["$(B)/tst/pthread-bridge.log"],
-    deps=[pthread_bridge],
-    cmd=[
-        "python3",
-        "$(S)/tst/run_pthread_bridge.py",
-        "$(B)/tst/pthread_bridge",
-        "$(B)/tst/pthread-bridge.log",
-    ],
-    descr="TS",
-    color="green",
 )
 
 
@@ -654,6 +631,86 @@ vulkan = command(
     ],
     descr="LD",
     color="light-blue",
+)
+
+pthread_bridge_app = library(
+    name="pthread_bridge_app",
+    srcs=[
+        {
+            "src": "$(S)/tst/pthread_bridge.cpp",
+            "inputs": [libcxx_config_path],
+        },
+    ],
+    deps=[*runtime_generated, *symbol_headers],
+    includes=["$(B)/lib"],
+    cflags=c_runtime_flags,
+    cxxflags=cxx_runtime_flags,
+    output="$(B)/tst/lib/libpthread_bridge_app.a",
+)
+
+pthread_bridge_archives = [
+    pthread_bridge_app,
+    dlfcn_static,
+    libcxx,
+    libcxxabi,
+    libunwind,
+    musl,
+    compiler_rt,
+]
+
+pthread_bridge = command(
+    name="pthread_bridge",
+    inputs=[
+        vulkan_crt1.output,
+        vulkan_crti.output,
+        vulkan_crtn.output,
+        *[archive.output for archive in pthread_bridge_archives],
+    ],
+    outputs=["$(B)/tst/pthread_bridge"],
+    deps=[vulkan_crt1, vulkan_crti, vulkan_crtn, *pthread_bridge_archives],
+    cmd=[
+        cc,
+        *linker_flags,
+        "-nostdlib",
+        "-static",
+        "-Wl,--no-pie",
+        "-Wl,--build-id=none",
+        "-Wl,--gc-sections",
+        "-Wl,-z,noexecstack",
+        "-Wl,-e,_start",
+        "-o",
+        "$(B)/tst/pthread_bridge",
+        "-Wl,--whole-archive",
+        vulkan_crti.output,
+        vulkan_crt1.output,
+        "-Wl,--no-whole-archive",
+        "-Wl,--start-group",
+        "-Wl,--whole-archive",
+        pthread_bridge_app.output,
+        "-Wl,--no-whole-archive",
+        *[archive.output for archive in pthread_bridge_archives[1:]],
+        "-Wl,--end-group",
+        "-Wl,--whole-archive",
+        vulkan_crtn.output,
+        "-Wl,--no-whole-archive",
+    ],
+    descr="LD",
+    color="light-blue",
+)
+
+pthread_test = command(
+    name="pthread_test",
+    inputs=["$(S)/tst/run_pthread_bridge.py"],
+    outputs=["$(B)/tst/pthread-bridge.log"],
+    deps=[pthread_bridge],
+    cmd=[
+        "python3",
+        "$(S)/tst/run_pthread_bridge.py",
+        "$(B)/tst/pthread_bridge",
+        "$(B)/tst/pthread-bridge.log",
+    ],
+    descr="TS",
+    color="green",
 )
 
 vulkan_test = command(

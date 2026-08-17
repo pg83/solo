@@ -774,10 +774,6 @@ namespace {
         return PTHREAD_MUTEX_DEFAULT;
     }
 
-#if defined(__GLIBC__)
-    static void sh_adopt_static_mutex(void*) {
-    }
-#else
     // A statically initialized glibc mutex is all zeroes unless it uses one of
     // the recursive or error-check initializers, which encode __kind at byte
     // offset 16. musl keeps its own type in the first word and never writes
@@ -793,7 +789,6 @@ namespace {
         int normal = 0;
         __atomic_compare_exchange_n(&words[0], &normal, kind, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
     }
-#endif
 
     static int sh_pthread_mutexattr_init(void* foreign_attributes) {
         *(int*)foreign_attributes = 0;
