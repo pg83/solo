@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 #include <string_view>
 #include <unordered_map>
 
@@ -14,11 +15,26 @@ namespace {
         const char* version;
         void* address;
         void* (*addressFunction)() noexcept;
+        size_t objectSize;
     };
 
     [[noreturn]] static void abortStub(const char* name, const char* version) noexcept {
         fprintf(stderr, "glibc bridge: called unimplemented ABI %s@%s\n", name, version);
         abort();
+    }
+
+    // An unimplemented data object gets its own inaccessible pages: touching
+    // it faults at the use instead of yielding silent zeroes far from the
+    // cause, and the fault address identifies the object.
+    static void* inaccessibleObject(size_t size) {
+        auto* mapping = mmap(nullptr, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+        if (mapping == MAP_FAILED) {
+            fprintf(stderr, "glibc bridge: cannot map an object stub\n");
+            abort();
+        }
+
+        return mapping;
     }
 
 #include "glibc_symbols.json.h"
@@ -37,6 +53,7 @@ namespace {
     struct Provider {
         void* address;
         void* (*addressFunction)() noexcept;
+        bool inaccessible;
     };
 
     static const auto& providers() {
@@ -48,7 +65,13 @@ namespace {
             value->reserve(sizeof(glibcStubTable) / sizeof(glibcStubTable[0]));
 
             for (const auto& stub : glibcStubTable) {
-                value->emplace(Key{stub.name, stub.version}, Provider{stub.address, stub.addressFunction});
+                Provider provider{stub.address, stub.addressFunction, false};
+
+                if (stub.objectSize) {
+                    provider.address = inaccessibleObject(stub.objectSize);
+                    provider.inaccessible = true;
+                }
+                value->emplace(Key{stub.name, stub.version}, provider);
             }
 
             return value;
@@ -82,6 +105,9 @@ void* resolveGlibcStub(std::string_view name, std::string_view version) {
 
     if (auto item = items.find({name, version}); item != items.end()) {
         report(name, version);
+        if (item->second.inaccessible) {
+            fprintf(stderr, "glibc bridge: unimplemented data object %.*s@%.*s at %p is mapped inaccessible\n", static_cast<int>(name.size()), name.data(), static_cast<int>(version.size()), version.data(), item->second.address);
+        }
         if (item->second.addressFunction) {
             return item->second.addressFunction();
         }

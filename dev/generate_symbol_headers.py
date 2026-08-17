@@ -71,13 +71,12 @@ def glibc_header(table: dict) -> list[str]:
                 "    }",
             ]
             entries.append(
-                f"        {{{name}, {version}, reinterpret_cast<void*>(glibcFunctionStub{index}), nullptr}},"
+                f"        {{{name}, {version}, reinterpret_cast<void*>(glibcFunctionStub{index}), nullptr, 0}},"
             )
         elif kind == "object":
-            lines.append(
-                f"    alignas(max_align_t) static unsigned char glibcObjectStub{index}[{size}] = {{}};"
-            )
-            entries.append(f"        {{{name}, {version}, glibcObjectStub{index}, nullptr}},")
+            # No storage: the runtime maps the object inaccessible, so a read
+            # faults at the use instead of yielding silent zeroes.
+            entries.append(f"        {{{name}, {version}, nullptr, nullptr, {size}}},")
         elif kind == "tls":
             lines += [
                 f"    alignas(max_align_t) static thread_local unsigned char glibcTlsStub{index}[{size}] = {{}};",
@@ -86,7 +85,7 @@ def glibc_header(table: dict) -> list[str]:
                 "    }",
             ]
             entries.append(
-                f"        {{{name}, {version}, nullptr, glibcTlsStubAddress{index}}},"
+                f"        {{{name}, {version}, nullptr, glibcTlsStubAddress{index}, 0}},"
             )
         else:
             raise SystemExit(f"unknown symbol kind: {kind}")
