@@ -72,7 +72,7 @@ dlfcn = library(
     srcs=dlfcn_srcs,
     deps=symbol_headers,
     includes=["$(B)/lib"],
-    cppflags=["-DCOMPILE_DLOPEN"],
+    cppflags=["-DCOMPILE_DLOPEN", "-D_GNU_SOURCE"],
     public_cppflags=["-I$(S)/lib"],
     output="$(B)/libdlfcn.a",
 )
@@ -404,7 +404,7 @@ dlfcn_static = library(
         "-Wno-bitwise-op-parentheses",
         "-Wno-shift-op-parentheses",
     ],
-    cppflags=["-DCOMPILE_DLOPEN"],
+    cppflags=["-DCOMPILE_DLOPEN", "-D_GNU_SOURCE"],
     output="$(B)/bin/vulkan/lib/libdlfcn.a",
 )
 

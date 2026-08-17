@@ -1,7 +1,3 @@
-#if !defined(_GNU_SOURCE)
-    #define _GNU_SOURCE
-#endif
-
 // The bridge defines _dl_find_object itself, with its own result type; hide the
 // declaration a host <dlfcn.h> makes so the two cannot collide.
 #define _dl_find_object sh_host_dl_find_object

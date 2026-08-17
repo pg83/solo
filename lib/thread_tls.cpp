@@ -1,7 +1,3 @@
-#if !defined(_GNU_SOURCE)
-    #define _GNU_SOURCE
-#endif
-
 #include "thread_tls.h"
 
 #include <stdlib.h>
