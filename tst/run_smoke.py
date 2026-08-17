@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import bisect
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -342,12 +344,75 @@ def main():
             stderr=subprocess.STDOUT,
             env=environment,
         )
+        if result.returncode:
+            symbolize_fault(executable, result.stdout)
+            rerun_under_gdb([executable], environment)
 
     print(result.stdout, end="")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(result.stdout)
     if result.returncode:
         raise SystemExit(result.returncode)
+
+
+def rerun_under_gdb(command, environment):
+    """A failed run reruns under gdb when one is around: the crash stops in
+    the debugger before the process dies, and the batch script prints every
+    thread's stack into the CI log."""
+    gdb = shutil.which("gdb")
+    if not gdb:
+        return
+    replay = subprocess.run(
+        [
+            gdb,
+            "--batch",
+            "-quiet",
+            "-ex", "run",
+            "-ex", "info registers",
+            "-ex", "thread apply all bt",
+        ]
+        + ["--args"]
+        + command,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    print(replay.stdout, file=sys.stderr)
+
+
+def symbolize_fault(executable, text):
+    """Resolve the crash reporter's bare pc values (addresses inside the
+    static executable, invisible to the loader's dladdr) against the
+    binary's own symbol table."""
+    addresses = []
+    for line in text.splitlines():
+        match = re.fullmatch(r"solo test: (?:crash|frame) pc 0x([0-9a-f]+)", line)
+        if match:
+            addresses.append(int(match.group(1), 16))
+    nm = shutil.which("nm") or shutil.which("llvm-nm")
+    if not addresses or not nm:
+        return
+    listing = subprocess.run(
+        [nm, "-nC", "--defined-only", executable],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if listing.returncode != 0:
+        return
+    table = []
+    for entry in listing.stdout.splitlines():
+        fields = entry.split(" ", 2)
+        if len(fields) == 3 and fields[1] in "tTwW":
+            table.append((int(fields[0], 16), fields[2]))
+    for address in addresses:
+        index = bisect.bisect_right(table, (address, "￿")) - 1
+        if index >= 0:
+            value, name = table[index]
+            print(f"solo symbolize: 0x{address:x} = {name}+0x{address - value:x}", file=sys.stderr)
 
 
 if __name__ == "__main__":
