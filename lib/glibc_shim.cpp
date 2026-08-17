@@ -1925,6 +1925,16 @@ namespace {
         return {};
     }
 
+    // The classic int-field spelling, honestly empty like mallinfo2 above;
+    // NVIDIA's gpu compiler blob still calls it.
+    struct ShMallinfo {
+        int values[10];
+    };
+
+    static ShMallinfo sh_mallinfo(void) {
+        return {};
+    }
+
     static const char* sh_strerrorname_np(int error) {
         (void)error;
         return nullptr;
@@ -3391,6 +3401,19 @@ namespace {
         return 1;
     }
 
+    // The base namespace is plain dlopen; new link-map namespaces stay an
+    // explicit non-goal, declined through dlerror rather than an abort —
+    // libcuda imports the symbol.
+    static void* sh_glibc_dlmopen(long namespace_id, const char* path, int flags) {
+        if (namespace_id != 0) {
+            ThreadTls::current()->setDlError("dlmopen: link-map namespaces are not supported");
+
+            return nullptr;
+        }
+
+        return sh_glibc_dlopen(path, flags);
+    }
+
     static void* sh_glibc_dlsym(void* handle, const char* name) {
         ThreadTls::current()->clearDlError();
 
@@ -3812,6 +3835,7 @@ namespace {
         SH_FUNCTION("scandirat", "GLIBC_2.15", sh_scandirat64),
         SH_FUNCTION("malloc_trim", "GLIBC_2.2.5", sh_malloc_trim),
         SH_FUNCTION("mallinfo2", "GLIBC_2.33", sh_mallinfo2),
+        SH_FUNCTION("mallinfo", "GLIBC_2.2.5", sh_mallinfo),
         SH_FUNCTION("strerrorname_np", "GLIBC_2.32", sh_strerrorname_np),
         SH_FUNCTION("rpmatch", "GLIBC_2.2.5", sh_rpmatch),
         SH_FUNCTION("getsgnam_r", "GLIBC_2.10", sh_getsgnam_r),
@@ -3869,6 +3893,7 @@ namespace {
         SH_FUNCTION("posix_memalign", "GLIBC_2.2.5", posix_memalign),
         SH_FUNCTION("strcmp", "GLIBC_2.2.5", strcmp),
         SH_FUNCTION("dlopen", "GLIBC_2.34", sh_glibc_dlopen),
+        SH_FUNCTION("dlmopen", "GLIBC_2.3.4", sh_glibc_dlmopen),
         SH_FUNCTION("__memcpy_chk", "GLIBC_2.3.4", sh_memcpy_chk),
         SH_FUNCTION("realpath", "GLIBC_2.3", realpath),
         SH_FUNCTION("memcpy", "GLIBC_2.14", memcpy),
@@ -3938,6 +3963,10 @@ namespace {
         SH_FUNCTION("pthread_getspecific", "GLIBC_2.34", pthread_getspecific),
         SH_FUNCTION("pthread_setspecific", "GLIBC_2.34", pthread_setspecific),
         SH_FUNCTION("pthread_key_create", "GLIBC_2.34", pthread_key_create),
+        // Both versions the name carries: the old-glibc spelling NVIDIA's
+        // blobs import and the 2.34 unification the battery links against.
+        SH_FUNCTION("__pthread_key_create", "GLIBC_2.2.5", pthread_key_create),
+        SH_FUNCTION("__pthread_key_create", "GLIBC_2.34", pthread_key_create),
         SH_FUNCTION("pthread_key_delete", "GLIBC_2.34", pthread_key_delete),
         SH_FUNCTION("pthread_setcanceltype", "GLIBC_2.2.5", pthread_setcanceltype),
         SH_FUNCTION("pthread_sigmask", "GLIBC_2.32", pthread_sigmask),
@@ -4095,6 +4124,7 @@ GlibcAdapter::GlibcAdapter()
         "dlclose",
         "dlerror",
         "dlinfo",
+        "dlmopen",
         "dlopen",
         "dlsym",
         "dlvsym",

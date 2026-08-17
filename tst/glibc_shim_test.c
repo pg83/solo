@@ -900,6 +900,14 @@ static void dynamicLinking(void) {
     CHECK(dl_iterate_phdr(countPhdrs, &images) == 0);
     CHECK(images >= 2);
 
+    /* dlmopen: the base namespace is plain dlopen, a fresh namespace is
+     * declined through dlerror (libcuda imports it and probes). */
+    void* base_namespace = dlmopen(LM_ID_BASE, "libc.so.6", RTLD_LAZY);
+    CHECK(base_namespace != NULL);
+    CHECK(dlclose(base_namespace) == 0);
+    CHECK(dlmopen(LM_ID_NEWLM, "libc.so.6", RTLD_LAZY) == NULL);
+    CHECK(dlerror() != NULL);
+
     CHECK(dlclose(self) == 0);
 }
 
@@ -1178,6 +1186,13 @@ static void popularData(void) {
     soon.tv_sec += 1;
     CHECK(pthread_mutex_clocklock(&fresh, CLOCK_MONOTONIC, &soon) == 0);
     pthread_mutex_unlock(&fresh);
+    /* The pre-2.34 key spelling NVIDIA's gpu compiler blob imports. */
+    int __pthread_key_create(pthread_key_t*, void (*)(void*));
+    pthread_key_t legacy_key;
+    CHECK(__pthread_key_create(&legacy_key, NULL) == 0);
+    CHECK(pthread_setspecific(legacy_key, (void*)7) == 0);
+    CHECK(pthread_getspecific(legacy_key) == (void*)7);
+    CHECK(pthread_key_delete(legacy_key) == 0);
     pthread_t sleeper;
     CHECK(pthread_create(&sleeper, NULL, sleepyThread, NULL) == 0);
     void* joined = NULL;
@@ -1259,6 +1274,12 @@ static void popularData(void) {
     FILE* info = open_memstream(&info_text, &info_size);
     CHECK(malloc_info(0, info) == 0);
     fclose(info);
+    /* Honestly empty, like malloc_info: the classic int spelling NVIDIA's
+     * gpu compiler blob calls, and the size_t one beside it. */
+    struct mallinfo classic_usage = mallinfo();
+    CHECK(classic_usage.arena == 0 && classic_usage.uordblks == 0);
+    struct mallinfo2 modern_usage = mallinfo2();
+    CHECK(modern_usage.arena == 0 && modern_usage.uordblks == 0);
     CHECK(info_text != NULL && strstr(info_text, "<malloc") != NULL);
     free(info_text);
     CHECK(strerrordesc_np(ENOENT) != NULL);
