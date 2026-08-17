@@ -359,7 +359,14 @@ def report(arguments):
         lines.append("stub-resolved (would abort or fault if used):")
         for symbol in sorted(stubbed):
             lines.append(f"  {symbol}  ({', '.join(sorted(stubbed[symbol]))})")
-    unknown = sorted(symbol for symbol in demanded if symbol not in inventory)
+    # GCC_-versioned imports are libgcc_s.so.1's ABI, not glibc's: the host's
+    # own libgcc_s in the dependency closure provides them, except the
+    # _Unwind_ core the bridge interposes so the process keeps one unwinder.
+    unknown = sorted(
+        symbol
+        for symbol in demanded
+        if symbol not in inventory and "@GLIBC_" in symbol
+    )
     if unknown:
         lines.append("demanded but absent from the inventory:")
         lines += [f"  {symbol}" for symbol in unknown]
