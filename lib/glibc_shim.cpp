@@ -11,7 +11,6 @@
 #include "glibc_stubs.h"
 #include "hash.h"
 
-#include <assert.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -47,7 +46,6 @@
 #include <algorithm>
 #include <string>
 #include <exception>
-#include <mutex>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -423,30 +421,6 @@ namespace {
         return __cxa_atexit(function, argument, dso);
     }
 
-    struct ForeignMutex {
-        pthread_mutex_t host;
-    };
-
-    struct ForeignOnce {
-        pthread_once_t host;
-    };
-
-    struct ForeignCondition {
-        pthread_cond_t host;
-    };
-
-    struct ForeignRwlock {
-        pthread_rwlock_t host;
-    };
-
-    struct ForeignBarrier {
-        pthread_barrier_t host;
-    };
-
-    struct ForeignThreadAttributes {
-        pthread_attr_t host;
-    };
-
     struct ThreadDestructor {
         void (*function)(void*);
         void* argument;
@@ -484,34 +458,6 @@ namespace {
         const unsigned short** ctypeFlags();
         void* libcSingleThreaded();
 
-        int mutexInit(void* foreign, const void* foreignAttributes);
-        int mutexDestroy(void* foreign);
-        int mutexLock(void* foreign);
-        int mutexUnlock(void* foreign);
-
-        int once(void* foreign, void (*initialize)(void));
-
-        int conditionInit(void* foreign, const void* foreignAttributes);
-        int conditionDestroy(void* foreign);
-        int conditionSignal(void* foreign);
-        int conditionBroadcast(void* foreign);
-        int conditionWait(void* foreignCondition, void* foreignMutex);
-        int conditionTimedWait(void* foreignCondition, void* foreignMutex, const struct timespec* deadline);
-
-        int rwlockInit(void* foreign);
-        int rwlockDestroy(void* foreign);
-        int rwlockReadLock(void* foreign);
-        int rwlockWriteLock(void* foreign);
-        int rwlockUnlock(void* foreign);
-
-        int barrierInit(void* foreign, unsigned count);
-        int barrierDestroy(void* foreign);
-        int barrierWait(void* foreign);
-
-        int threadAttributesInit(void* foreign);
-        int threadAttributesDestroy(void* foreign);
-        int threadAttributesSetStackSize(void* foreign, size_t size);
-        int threadCreate(uintptr_t* foreignThread, const void* foreignAttributes, void* (*start)(void*), void* argument);
         int threadAtExit(void (*function)(void*), void* argument);
 
         bool hasSymbolVersion(std::string_view name, std::string_view version) const;
@@ -523,20 +469,9 @@ namespace {
         void setDlError(std::string_view error);
         char* takeDlError();
 
-        ForeignMutex* findMutex(void* foreign, bool create, int type);
-        ForeignCondition* findCondition(void* foreign, bool create, const void* foreignAttributes);
-        ForeignRwlock* findRwlock(void* foreign, bool create);
-        ForeignThreadAttributes* findThreadAttributes(void* foreign);
         static GlibcDlError& dlError();
         static void runThreadDestructors(void* opaqueList);
 
-        std::mutex lock_;
-        std::unordered_map<void*, ForeignMutex> mutexes_;
-        std::unordered_map<void*, ForeignOnce> onceFlags_;
-        std::unordered_map<void*, ForeignCondition> conditions_;
-        std::unordered_map<void*, ForeignRwlock> rwlocks_;
-        std::unordered_map<void*, ForeignBarrier> barriers_;
-        std::unordered_map<void*, ForeignThreadAttributes> threadAttributes_;
         pthread_key_t destructorKey_;
 
         unsigned char libcSingleThreaded_;
@@ -794,6 +729,57 @@ namespace {
         return dl_iterate_phdr(callback, data);
     }
 
+    // musl sizes its synchronization objects to the glibc ABI of every
+    // architecture it supports, so a loaded DSO and the process libc describe
+    // the same storage. The bridge therefore works in the caller's object
+    // instead of shadowing it: both worlds then see one lock, an object that is
+    // never destroyed cannot leak a shadow, and a freed address cannot hand its
+    // state to whatever is allocated there next.
+    static_assert(sizeof(pthread_t) == 8);
+    static_assert(sizeof(pthread_mutex_t) == 40 && alignof(pthread_mutex_t) == 8);
+    static_assert(sizeof(pthread_cond_t) == 48 && alignof(pthread_cond_t) == 8);
+    static_assert(sizeof(pthread_rwlock_t) == 56 && alignof(pthread_rwlock_t) == 8);
+    static_assert(sizeof(pthread_barrier_t) == 32 && alignof(pthread_barrier_t) == 8);
+    static_assert(sizeof(pthread_attr_t) == 56 && alignof(pthread_attr_t) == 8);
+    static_assert(sizeof(pthread_once_t) == 4 && alignof(pthread_once_t) == 4);
+    static_assert(sizeof(pthread_mutexattr_t) == 4);
+    static_assert(sizeof(pthread_condattr_t) == 4);
+
+    static constexpr int SH_GLIBC_MUTEX_RECURSIVE = 1;
+    static constexpr int SH_GLIBC_MUTEX_ERRORCHECK = 2;
+
+    static int sh_host_mutex_type(int glibcKind) {
+        if (glibcKind == SH_GLIBC_MUTEX_RECURSIVE) {
+            return PTHREAD_MUTEX_RECURSIVE;
+        }
+        if (glibcKind == SH_GLIBC_MUTEX_ERRORCHECK) {
+            return PTHREAD_MUTEX_ERRORCHECK;
+        }
+
+        return PTHREAD_MUTEX_DEFAULT;
+    }
+
+#if defined(__GLIBC__)
+    static void sh_adopt_static_mutex(void*) {
+    }
+#else
+    // A statically initialized glibc mutex is all zeroes unless it uses one of
+    // the recursive or error-check initializers, which encode __kind at byte
+    // offset 16. musl keeps its own type in the first word and never writes
+    // that slot, so the kind survives and can be adopted once, on first use.
+    static void sh_adopt_static_mutex(void* foreign) {
+        auto* words = static_cast<int*>(foreign);
+        const int kind = __atomic_load_n(&words[4], __ATOMIC_RELAXED) & 3;
+
+        if (kind != SH_GLIBC_MUTEX_RECURSIVE && kind != SH_GLIBC_MUTEX_ERRORCHECK) {
+            return;
+        }
+
+        int normal = 0;
+        __atomic_compare_exchange_n(&words[0], &normal, kind, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+    }
+#endif
+
     static int sh_pthread_mutexattr_init(void* foreign_attributes) {
         *(int*)foreign_attributes = 0;
         return 0;
@@ -805,19 +791,45 @@ namespace {
     }
 
     static int sh_pthread_mutex_init(void* foreign, const void* foreign_attributes) {
-        return GlibcAdapter::instance().mutexInit(foreign, foreign_attributes);
+        const int kind = foreign_attributes ? *static_cast<const int*>(foreign_attributes) & 3 : 0;
+        pthread_mutexattr_t attributes;
+        int result = pthread_mutexattr_init(&attributes);
+
+        if (result == 0 && kind) {
+            result = pthread_mutexattr_settype(&attributes, sh_host_mutex_type(kind));
+        }
+        if (result == 0) {
+            result = pthread_mutex_init(static_cast<pthread_mutex_t*>(foreign), &attributes);
+        }
+        pthread_mutexattr_destroy(&attributes);
+
+        return result;
     }
 
     static int sh_pthread_mutex_destroy(void* foreign) {
-        return GlibcAdapter::instance().mutexDestroy(foreign);
+        return pthread_mutex_destroy(static_cast<pthread_mutex_t*>(foreign));
     }
 
     static int sh_pthread_mutex_lock(void* foreign) {
-        return GlibcAdapter::instance().mutexLock(foreign);
+        sh_adopt_static_mutex(foreign);
+
+        return pthread_mutex_lock(static_cast<pthread_mutex_t*>(foreign));
+    }
+
+    static int sh_pthread_mutex_trylock(void* foreign) {
+        sh_adopt_static_mutex(foreign);
+
+        return pthread_mutex_trylock(static_cast<pthread_mutex_t*>(foreign));
+    }
+
+    static int sh_pthread_mutex_timedlock(void* foreign, const struct timespec* deadline) {
+        sh_adopt_static_mutex(foreign);
+
+        return pthread_mutex_timedlock(static_cast<pthread_mutex_t*>(foreign), deadline);
     }
 
     static int sh_pthread_mutex_unlock(void* foreign) {
-        return GlibcAdapter::instance().mutexUnlock(foreign);
+        return pthread_mutex_unlock(static_cast<pthread_mutex_t*>(foreign));
     }
 
     static int sh_pthread_mutexattr_destroy(void* foreign_attributes) {
@@ -833,7 +845,8 @@ namespace {
         if (sh_trace_enabled()) {
             fprintf(stderr, "glibc bridge: pthread_once(%p, %p)\n", foreign, (void*)(uintptr_t)initialize);
         }
-        return GlibcAdapter::instance().once(foreign, initialize);
+
+        return pthread_once(static_cast<pthread_once_t*>(foreign), initialize);
     }
 
     static int sh_pthread_condattr_init(void* foreign_attributes) {
@@ -852,77 +865,110 @@ namespace {
     }
 
     static int sh_pthread_cond_init(void* foreign, const void* foreign_attributes) {
-        return GlibcAdapter::instance().conditionInit(foreign, foreign_attributes);
+        pthread_condattr_t attributes;
+        bool attributesInitialized = false;
+        int result = 0;
+
+        if (foreign_attributes) {
+            result = pthread_condattr_init(&attributes);
+            attributesInitialized = result == 0;
+            if (result == 0) {
+                result = pthread_condattr_setclock(&attributes, *static_cast<const int*>(foreign_attributes));
+            }
+        }
+        if (result == 0) {
+            result = pthread_cond_init(static_cast<pthread_cond_t*>(foreign), attributesInitialized ? &attributes : nullptr);
+        }
+        if (attributesInitialized) {
+            pthread_condattr_destroy(&attributes);
+        }
+
+        return result;
     }
 
     static int sh_pthread_cond_destroy(void* foreign) {
-        return GlibcAdapter::instance().conditionDestroy(foreign);
+        return pthread_cond_destroy(static_cast<pthread_cond_t*>(foreign));
     }
 
     static int sh_pthread_cond_signal(void* foreign) {
-        return GlibcAdapter::instance().conditionSignal(foreign);
+        return pthread_cond_signal(static_cast<pthread_cond_t*>(foreign));
     }
 
     static int sh_pthread_cond_broadcast(void* foreign) {
-        return GlibcAdapter::instance().conditionBroadcast(foreign);
+        return pthread_cond_broadcast(static_cast<pthread_cond_t*>(foreign));
     }
 
     static int sh_pthread_cond_wait(void* foreign_condition, void* foreign_mutex) {
-        return GlibcAdapter::instance().conditionWait(foreign_condition, foreign_mutex);
+        sh_adopt_static_mutex(foreign_mutex);
+
+        return pthread_cond_wait(static_cast<pthread_cond_t*>(foreign_condition), static_cast<pthread_mutex_t*>(foreign_mutex));
     }
 
     static int sh_pthread_cond_timedwait(void* foreign_condition, void* foreign_mutex, const struct timespec* deadline) {
-        return GlibcAdapter::instance().conditionTimedWait(foreign_condition, foreign_mutex, deadline);
+        sh_adopt_static_mutex(foreign_mutex);
+
+        return pthread_cond_timedwait(static_cast<pthread_cond_t*>(foreign_condition), static_cast<pthread_mutex_t*>(foreign_mutex), deadline);
     }
 
     static int sh_pthread_rwlock_init(void* foreign, const void* attributes) {
         (void)attributes;
-        return GlibcAdapter::instance().rwlockInit(foreign);
+        return pthread_rwlock_init(static_cast<pthread_rwlock_t*>(foreign), nullptr);
     }
 
     static int sh_pthread_rwlock_destroy(void* foreign) {
-        return GlibcAdapter::instance().rwlockDestroy(foreign);
+        return pthread_rwlock_destroy(static_cast<pthread_rwlock_t*>(foreign));
     }
 
     static int sh_pthread_rwlock_rdlock(void* foreign) {
-        return GlibcAdapter::instance().rwlockReadLock(foreign);
+        return pthread_rwlock_rdlock(static_cast<pthread_rwlock_t*>(foreign));
     }
 
     static int sh_pthread_rwlock_wrlock(void* foreign) {
-        return GlibcAdapter::instance().rwlockWriteLock(foreign);
+        return pthread_rwlock_wrlock(static_cast<pthread_rwlock_t*>(foreign));
     }
 
     static int sh_pthread_rwlock_unlock(void* foreign) {
-        return GlibcAdapter::instance().rwlockUnlock(foreign);
+        return pthread_rwlock_unlock(static_cast<pthread_rwlock_t*>(foreign));
     }
 
     static int sh_pthread_barrier_init(void* foreign, const void* attributes, unsigned count) {
         (void)attributes;
-        return GlibcAdapter::instance().barrierInit(foreign, count);
+        return pthread_barrier_init(static_cast<pthread_barrier_t*>(foreign), nullptr, count);
     }
 
     static int sh_pthread_barrier_wait(void* foreign) {
-        return GlibcAdapter::instance().barrierWait(foreign);
+        return pthread_barrier_wait(static_cast<pthread_barrier_t*>(foreign));
     }
 
     static int sh_pthread_barrier_destroy(void* foreign) {
-        return GlibcAdapter::instance().barrierDestroy(foreign);
+        return pthread_barrier_destroy(static_cast<pthread_barrier_t*>(foreign));
     }
 
     static int sh_pthread_attr_init(void* foreign) {
-        return GlibcAdapter::instance().threadAttributesInit(foreign);
+        return pthread_attr_init(static_cast<pthread_attr_t*>(foreign));
     }
 
     static int sh_pthread_attr_destroy(void* foreign) {
-        return GlibcAdapter::instance().threadAttributesDestroy(foreign);
+        return pthread_attr_destroy(static_cast<pthread_attr_t*>(foreign));
     }
 
     static int sh_pthread_attr_setstacksize(void* foreign, size_t size) {
-        return GlibcAdapter::instance().threadAttributesSetStackSize(foreign, size);
+        return pthread_attr_setstacksize(static_cast<pthread_attr_t*>(foreign), size);
     }
 
     static int sh_pthread_create(uintptr_t* foreign_thread, const void* foreign_attributes, void* (*start)(void*), void* argument) {
-        return GlibcAdapter::instance().threadCreate(foreign_thread, foreign_attributes, start, argument);
+        if (sh_trace_enabled()) {
+            fprintf(stderr, "glibc bridge: pthread_create(start=%p, argument=%p)\n", (void*)(uintptr_t)start, argument);
+        }
+
+        pthread_t thread;
+        const int result = pthread_create(&thread, static_cast<const pthread_attr_t*>(foreign_attributes), start, argument);
+
+        if (result == 0) {
+            *foreign_thread = (uintptr_t)thread;
+        }
+
+        return result;
     }
 
     static int sh_pthread_join(uintptr_t thread, void** result) {
@@ -1584,6 +1630,8 @@ namespace {
         SH_FUNCTION("__cxa_atexit", "GLIBC_2.2.5", sh_cxa_atexit),
         SH_FUNCTION("strstr", "GLIBC_2.2.5", sh_strstr),
         SH_FUNCTION("pthread_mutex_lock", "GLIBC_2.2.5", sh_pthread_mutex_lock),
+        SH_FUNCTION("pthread_mutex_trylock", "GLIBC_2.2.5", sh_pthread_mutex_trylock),
+        SH_FUNCTION("pthread_mutex_timedlock", "GLIBC_2.2.5", sh_pthread_mutex_timedlock),
         SH_FUNCTION("__ctype_tolower_loc", "GLIBC_2.3", sh_ctype_tolower_loc),
         SH_FUNCTION("__tls_get_addr", "GLIBC_2.3", elfTlsAddress),
         SH_FUNCTION("__cxa_thread_atexit_impl", "GLIBC_2.18", sh_cxa_thread_atexit_impl),
@@ -1788,6 +1836,8 @@ GlibcAdapter::GlibcAdapter()
         "pthread_mutex_destroy",
         "pthread_mutex_init",
         "pthread_mutex_lock",
+        "pthread_mutex_timedlock",
+        "pthread_mutex_trylock",
         "pthread_mutex_unlock",
         "pthread_mutexattr_destroy",
         "pthread_mutexattr_init",
@@ -1835,359 +1885,6 @@ const unsigned short** GlibcAdapter::ctypeFlags() {
 
 void* GlibcAdapter::libcSingleThreaded() {
     return &libcSingleThreaded_;
-}
-
-ForeignMutex* GlibcAdapter::findMutex(void* foreign, bool create, int type) {
-    std::lock_guard lock(lock_);
-    auto item = mutexes_.find(foreign);
-
-    if (item != mutexes_.end()) {
-        return &item->second;
-    }
-    if (!create) {
-        return nullptr;
-    }
-
-    auto [inserted, isNew] = mutexes_.try_emplace(foreign);
-    assert(isNew);
-
-    // glibc's static recursive and error-check initializers encode __kind at byte offset 16 of pthread_mutex_t.
-    if (type < 0) {
-        type = static_cast<const int*>(foreign)[4] & 3;
-    }
-
-    pthread_mutexattr_t attributes;
-    int result = pthread_mutexattr_init(&attributes);
-    const bool attributesInitialized = result == 0;
-    if (result == 0 && type == 1) {
-        result = pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_RECURSIVE);
-    }
-    if (result == 0 && type == 2) {
-        result = pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_ERRORCHECK);
-    }
-    if (result == 0) {
-        result = pthread_mutex_init(&inserted->second.host, &attributes);
-    }
-    if (attributesInitialized) {
-        pthread_mutexattr_destroy(&attributes);
-    }
-    if (result != 0) {
-        mutexes_.erase(inserted);
-        return nullptr;
-    }
-
-    return &inserted->second;
-}
-
-int GlibcAdapter::mutexInit(void* foreign, const void* foreignAttributes) {
-    const int type = foreignAttributes ? *static_cast<const int*>(foreignAttributes) : 0;
-
-    return findMutex(foreign, true, type) ? 0 : ENOMEM;
-}
-
-int GlibcAdapter::mutexDestroy(void* foreign) {
-    std::lock_guard lock(lock_);
-    auto item = mutexes_.find(foreign);
-
-    if (item == mutexes_.end()) {
-        return 0;
-    }
-
-    int result = pthread_mutex_destroy(&item->second.host);
-    if (result == 0) {
-        mutexes_.erase(item);
-    }
-
-    return result;
-}
-
-int GlibcAdapter::mutexLock(void* foreign) {
-    auto* mutex = findMutex(foreign, true, -1);
-
-    return mutex ? pthread_mutex_lock(&mutex->host) : ENOMEM;
-}
-
-int GlibcAdapter::mutexUnlock(void* foreign) {
-    auto* mutex = findMutex(foreign, false, 0);
-
-    return mutex ? pthread_mutex_unlock(&mutex->host) : EINVAL;
-}
-
-int GlibcAdapter::once(void* foreign, void (*initialize)(void)) {
-    ForeignOnce* onceFlag;
-    {
-        std::lock_guard lock(lock_);
-        auto [item, inserted] = onceFlags_.try_emplace(foreign);
-        if (inserted) {
-            pthread_once_t initial = PTHREAD_ONCE_INIT;
-            item->second.host = initial;
-        }
-        onceFlag = &item->second;
-    }
-
-    return pthread_once(&onceFlag->host, initialize);
-}
-
-ForeignCondition* GlibcAdapter::findCondition(void* foreign, bool create, const void* foreignAttributes) {
-    std::lock_guard lock(lock_);
-    auto item = conditions_.find(foreign);
-
-    if (item != conditions_.end()) {
-        return &item->second;
-    }
-    if (!create) {
-        return nullptr;
-    }
-
-    auto [inserted, isNew] = conditions_.try_emplace(foreign);
-    assert(isNew);
-
-    pthread_condattr_t attributes;
-    pthread_condattr_t* attributesPointer = nullptr;
-    int result = 0;
-    bool attributesInitialized = false;
-    if (foreignAttributes) {
-        result = pthread_condattr_init(&attributes);
-        attributesInitialized = result == 0;
-        if (result == 0) {
-            result = pthread_condattr_setclock(&attributes, *static_cast<const int*>(foreignAttributes));
-        }
-        if (result == 0) {
-            attributesPointer = &attributes;
-        }
-    }
-    if (result == 0) {
-        result = pthread_cond_init(&inserted->second.host, attributesPointer);
-    }
-    if (attributesInitialized) {
-        pthread_condattr_destroy(&attributes);
-    }
-    if (result != 0) {
-        conditions_.erase(inserted);
-        return nullptr;
-    }
-
-    return &inserted->second;
-}
-
-int GlibcAdapter::conditionInit(void* foreign, const void* foreignAttributes) {
-    return findCondition(foreign, true, foreignAttributes) ? 0 : ENOMEM;
-}
-
-int GlibcAdapter::conditionDestroy(void* foreign) {
-    std::lock_guard lock(lock_);
-    auto item = conditions_.find(foreign);
-
-    if (item == conditions_.end()) {
-        return 0;
-    }
-
-    int result = pthread_cond_destroy(&item->second.host);
-    if (result == 0) {
-        conditions_.erase(item);
-    }
-
-    return result;
-}
-
-int GlibcAdapter::conditionSignal(void* foreign) {
-    auto* condition = findCondition(foreign, true, nullptr);
-
-    return condition ? pthread_cond_signal(&condition->host) : ENOMEM;
-}
-
-int GlibcAdapter::conditionBroadcast(void* foreign) {
-    auto* condition = findCondition(foreign, true, nullptr);
-
-    return condition ? pthread_cond_broadcast(&condition->host) : ENOMEM;
-}
-
-int GlibcAdapter::conditionWait(void* foreignCondition, void* foreignMutex) {
-    auto* condition = findCondition(foreignCondition, true, nullptr);
-    auto* mutex = findMutex(foreignMutex, true, -1);
-
-    return condition && mutex ? pthread_cond_wait(&condition->host, &mutex->host) : ENOMEM;
-}
-
-int GlibcAdapter::conditionTimedWait(void* foreignCondition, void* foreignMutex, const struct timespec* deadline) {
-    auto* condition = findCondition(foreignCondition, true, nullptr);
-    auto* mutex = findMutex(foreignMutex, true, -1);
-
-    return condition && mutex ? pthread_cond_timedwait(&condition->host, &mutex->host, deadline) : ENOMEM;
-}
-
-ForeignRwlock* GlibcAdapter::findRwlock(void* foreign, bool create) {
-    std::lock_guard lock(lock_);
-    auto item = rwlocks_.find(foreign);
-
-    if (item != rwlocks_.end()) {
-        return &item->second;
-    }
-    if (!create) {
-        return nullptr;
-    }
-
-    auto [inserted, isNew] = rwlocks_.try_emplace(foreign);
-    assert(isNew);
-    if (pthread_rwlock_init(&inserted->second.host, nullptr) != 0) {
-        rwlocks_.erase(inserted);
-        return nullptr;
-    }
-
-    return &inserted->second;
-}
-
-int GlibcAdapter::rwlockInit(void* foreign) {
-    return findRwlock(foreign, true) ? 0 : ENOMEM;
-}
-
-int GlibcAdapter::rwlockDestroy(void* foreign) {
-    std::lock_guard lock(lock_);
-    auto item = rwlocks_.find(foreign);
-
-    if (item == rwlocks_.end()) {
-        return 0;
-    }
-
-    int result = pthread_rwlock_destroy(&item->second.host);
-    if (result == 0) {
-        rwlocks_.erase(item);
-    }
-
-    return result;
-}
-
-int GlibcAdapter::rwlockReadLock(void* foreign) {
-    auto* rwlock = findRwlock(foreign, true);
-
-    return rwlock ? pthread_rwlock_rdlock(&rwlock->host) : ENOMEM;
-}
-
-int GlibcAdapter::rwlockWriteLock(void* foreign) {
-    auto* rwlock = findRwlock(foreign, true);
-
-    return rwlock ? pthread_rwlock_wrlock(&rwlock->host) : ENOMEM;
-}
-
-int GlibcAdapter::rwlockUnlock(void* foreign) {
-    auto* rwlock = findRwlock(foreign, false);
-
-    return rwlock ? pthread_rwlock_unlock(&rwlock->host) : EINVAL;
-}
-
-int GlibcAdapter::barrierInit(void* foreign, unsigned count) {
-    std::lock_guard lock(lock_);
-    auto [item, inserted] = barriers_.try_emplace(foreign);
-
-    if (!inserted) {
-        return EBUSY;
-    }
-
-    int result = pthread_barrier_init(&item->second.host, nullptr, count);
-    if (result != 0) {
-        barriers_.erase(item);
-    }
-
-    return result;
-}
-
-int GlibcAdapter::barrierDestroy(void* foreign) {
-    std::lock_guard lock(lock_);
-    auto item = barriers_.find(foreign);
-
-    if (item == barriers_.end()) {
-        return 0;
-    }
-
-    int result = pthread_barrier_destroy(&item->second.host);
-    if (result == 0) {
-        barriers_.erase(item);
-    }
-
-    return result;
-}
-
-int GlibcAdapter::barrierWait(void* foreign) {
-    ForeignBarrier* barrier;
-    {
-        std::lock_guard lock(lock_);
-        auto item = barriers_.find(foreign);
-        if (item == barriers_.end()) {
-            return EINVAL;
-        }
-        barrier = &item->second;
-    }
-
-    return pthread_barrier_wait(&barrier->host);
-}
-
-ForeignThreadAttributes* GlibcAdapter::findThreadAttributes(void* foreign) {
-    auto item = threadAttributes_.find(foreign);
-
-    return item == threadAttributes_.end() ? nullptr : &item->second;
-}
-
-int GlibcAdapter::threadAttributesInit(void* foreign) {
-    std::lock_guard lock(lock_);
-    auto [item, inserted] = threadAttributes_.try_emplace(foreign);
-
-    if (!inserted) {
-        return EBUSY;
-    }
-
-    int result = pthread_attr_init(&item->second.host);
-    if (result != 0) {
-        threadAttributes_.erase(item);
-    }
-
-    return result;
-}
-
-int GlibcAdapter::threadAttributesDestroy(void* foreign) {
-    std::lock_guard lock(lock_);
-    auto item = threadAttributes_.find(foreign);
-
-    if (item == threadAttributes_.end()) {
-        return EINVAL;
-    }
-
-    int result = pthread_attr_destroy(&item->second.host);
-    if (result == 0) {
-        threadAttributes_.erase(item);
-    }
-
-    return result;
-}
-
-int GlibcAdapter::threadAttributesSetStackSize(void* foreign, size_t size) {
-    std::lock_guard lock(lock_);
-    auto* attributes = findThreadAttributes(foreign);
-
-    return attributes ? pthread_attr_setstacksize(&attributes->host, size) : EINVAL;
-}
-
-int GlibcAdapter::threadCreate(uintptr_t* foreignThread, const void* foreignAttributes, void* (*start)(void*), void* argument) {
-    if (sh_trace_enabled()) {
-        fprintf(stderr, "glibc bridge: pthread_create(start=%p, argument=%p)\n", (void*)(uintptr_t)start, argument);
-    }
-
-    pthread_attr_t* hostAttributes = nullptr;
-    if (foreignAttributes) {
-        std::lock_guard lock(lock_);
-        auto* attributes = findThreadAttributes(const_cast<void*>(foreignAttributes));
-        if (!attributes) {
-            return EINVAL;
-        }
-        hostAttributes = &attributes->host;
-    }
-
-    pthread_t thread;
-    int result = pthread_create(&thread, hostAttributes, start, argument);
-    if (result == 0) {
-        *foreignThread = (uintptr_t)thread;
-    }
-
-    return result;
 }
 
 void GlibcAdapter::runThreadDestructors(void* opaqueList) {

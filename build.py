@@ -82,6 +82,31 @@ smoke = program(
     output="$(B)/tst/smoke",
 )
 
+pthread_bridge = program(
+    name="pthread_bridge",
+    srcs=[
+        "$(S)/tst/pthread_bridge.cpp",
+    ],
+    deps=[dlfcn],
+    ldflags=["-static"],
+    output="$(B)/tst/pthread_bridge",
+)
+
+pthread_test = command(
+    name="pthread_test",
+    inputs=["$(S)/tst/run_pthread_bridge.py"],
+    outputs=["$(B)/tst/pthread-bridge.log"],
+    deps=[pthread_bridge],
+    cmd=[
+        "python3",
+        "$(S)/tst/run_pthread_bridge.py",
+        "$(B)/tst/pthread_bridge",
+        "$(B)/tst/pthread-bridge.log",
+    ],
+    descr="TS",
+    color="green",
+)
+
 
 def vendorPaths(root, names):
     return [f"{root}/{name}" for name in names]
@@ -736,4 +761,4 @@ arch_smoke = command(
 )
 
 install(dlfcn)
-group("test", arch_smoke)
+group("test", pthread_test, arch_smoke)

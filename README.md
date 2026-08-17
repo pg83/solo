@@ -92,6 +92,12 @@ the process's existing musl runtime. Unsupported glibc functions have unique
 generated stubs that fail loudly with the exact symbol and version if they are
 ever called, instead of silently corrupting the process.
 
+Because musl sizes its synchronization objects to the glibc ABI of each
+architecture, the bridge does not shadow them: a `pthread_mutex_t` a driver
+creates is used in place. A lock is therefore one lock for both the loaded DSO
+and the static executable that may share it, and glibc's static recursive and
+error-check initializers are adopted on first use.
+
 Before loading a DSO from disk, SoLo checks its static provider registry. This
 lets an application satisfy a dependency—Wayland, for example—with functions
 already linked into the executable. `LD_LIBRARY_PATH` and
