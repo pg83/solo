@@ -115,6 +115,59 @@ int glibc_test_thread(void) {
     return value == 73 && result == &value ? 0 : 7;
 }
 
+extern int __cxa_thread_atexit_impl(void (*function)(void*), void* argument, void* dso);
+
+static __thread int tlsSlot;
+static int tlsDestructorRuns;
+
+static void tlsDestructor(void* argument) {
+    if (*(int*)argument == 73) {
+        ++tlsDestructorRuns;
+    }
+}
+
+static void* tlsThreadStart(void* argument) {
+    (void)argument;
+
+    tlsSlot = 73;
+    __cxa_thread_atexit_impl(tlsDestructor, &tlsSlot, (void*)0);
+
+    return (void*)0;
+}
+
+int glibc_test_thread_tls(void) {
+    typedef int (*ThreadCreate)(GlibcThread*, const void*, void* (*)(void*), void*);
+    typedef int (*ThreadJoin)(GlibcThread, void**);
+
+    void* handle = openLibrary("libpthread.so.0");
+    ThreadCreate threadCreate = handle ? (ThreadCreate)dlsym(handle, "pthread_create") : (ThreadCreate)0;
+    ThreadJoin threadJoin = handle ? (ThreadJoin)dlsym(handle, "pthread_join") : (ThreadJoin)0;
+    GlibcThread thread = 0;
+    void* result = (void*)0;
+
+    if (!threadCreate || !threadJoin) {
+        return 1;
+    }
+
+    tlsSlot = 12;
+    if (threadCreate(&thread, (const void*)0, tlsThreadStart, (void*)0) != 0) {
+        return 2;
+    }
+    if (threadJoin(thread, &result) != 0) {
+        return 3;
+    }
+    /* the destructor ran at thread exit and saw the thread's own value */
+    if (tlsDestructorRuns != 1) {
+        return 4;
+    }
+    /* the main thread's copy stayed separate */
+    if (tlsSlot != 12) {
+        return 5;
+    }
+
+    return 0;
+}
+
 enum {
     GlibcObjectCount = 600,
     GlibcAttributeCount = 80,

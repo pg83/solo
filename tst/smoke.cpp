@@ -117,11 +117,12 @@ int main() {
     auto glibcFactory = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_factory"));
     auto glibcOwnSymbol = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_own_symbol"));
     auto glibcThread = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_thread"));
+    auto glibcThreadTls = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_thread_tls"));
     auto glibcManyPthreadObjects = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_many_pthread_objects"));
     auto glibcError = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_error"));
     auto glibcClose = reinterpret_cast<GlibcTest>(requiredSymbol(glibc, "glibc_test_close"));
 
-    if (!glibcLookup || !glibcDefaultLookup || !glibcVersionLookup || !glibcDlFunction || !glibcFactory || !glibcOwnSymbol || !glibcThread || !glibcManyPthreadObjects || !glibcError || !glibcClose) {
+    if (!glibcLookup || !glibcDefaultLookup || !glibcVersionLookup || !glibcDlFunction || !glibcFactory || !glibcOwnSymbol || !glibcThread || !glibcThreadTls || !glibcManyPthreadObjects || !glibcError || !glibcClose) {
         return 1;
     }
 
@@ -172,6 +173,10 @@ int main() {
     }
     if (auto result = glibcThread(); result != 0) {
         fprintf(stderr, "glibc pthread bridge execution failed: %d\n", result);
+        return 1;
+    }
+    if (auto result = glibcThreadTls(); result != 0) {
+        fprintf(stderr, "glibc thread TLS destructor failed: %d\n", result);
         return 1;
     }
     if (auto result = glibcManyPthreadObjects(); result != 0) {
@@ -276,6 +281,7 @@ int main() {
     printf(
         "static libc provider: %zu symbols\n"
         "glibc dlopen/dlsym bridge: libc, libdl, pthread, factory, ELF, versions: ok\n"
+        "ELF TLS: per-thread blocks and thread-exit destructors: ok\n"
         "glibc C++ throw, unwind, destructor, catch: ok\n"
         "C++ exceptions across static/glibc boundaries in both directions: ok\n"
         "recursive DT_NEEDED: libpciaccess -> libz: ok\n"
