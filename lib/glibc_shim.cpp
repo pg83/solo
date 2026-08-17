@@ -8,6 +8,7 @@
 
 #include "dlfcn.h"
 #include "elf_loader.h"
+#include "fts.h"
 #include "glibc_stubs.h"
 #include "hash.h"
 #include "thread_tls.h"
@@ -542,6 +543,33 @@ namespace {
 
     static int sh_mount_setattr(int directory, const char* path, unsigned flags, void* attributes, size_t size) {
         return (int)syscall(442, directory, path, flags, attributes, size);
+    }
+
+    static int sh_pidfd_open(int pid, unsigned flags) {
+        return (int)syscall(434, pid, flags);
+    }
+
+    // The allocation half of glibc's CPU_ALLOC/CPU_FREE macros: a bitmask of
+    // count CPUs in 64-bit words.
+    static void* sh_sched_cpualloc(size_t count) {
+        return malloc((count + 63) / 64 * 8);
+    }
+
+    static void sh_sched_cpufree(void* set) {
+        free(set);
+    }
+
+    // glibc reads /etc/ttys, which Linux systems do not ship, so every
+    // lookup fails; a machine that actually has the file deserves a loud
+    // stop instead of invented entries.
+    static void* sh_getttynam(const char* name) {
+        (void)name;
+        if (access("/etc/ttys", F_OK) == 0) {
+            fputs("glibc bridge: getttynam: /etc/ttys exists but is not supported\n", stderr);
+            abort();
+        }
+
+        return nullptr;
     }
 
     static int sh_creat64(const char* path, mode_t mode) {
@@ -2092,6 +2120,18 @@ namespace {
         SH_FUNCTION("fsmount", "GLIBC_2.36", sh_fsmount),
         SH_FUNCTION("fspick", "GLIBC_2.36", sh_fspick),
         SH_FUNCTION("mount_setattr", "GLIBC_2.36", sh_mount_setattr),
+        SH_FUNCTION("pidfd_open", "GLIBC_2.36", sh_pidfd_open),
+        SH_FUNCTION("__sched_cpualloc", "GLIBC_2.7", sh_sched_cpualloc),
+        SH_FUNCTION("__sched_cpufree", "GLIBC_2.7", sh_sched_cpufree),
+        SH_FUNCTION("getttynam", "GLIBC_2.2.5", sh_getttynam),
+        SH_FUNCTION("fts_open", "GLIBC_2.2.5", ftsOpen),
+        SH_FUNCTION("fts_read", "GLIBC_2.2.5", ftsRead),
+        SH_FUNCTION("fts_set", "GLIBC_2.2.5", ftsSet),
+        SH_FUNCTION("fts_close", "GLIBC_2.2.5", ftsClose),
+        SH_FUNCTION("fts64_open", "GLIBC_2.23", ftsOpen),
+        SH_FUNCTION("fts64_read", "GLIBC_2.23", ftsRead),
+        SH_FUNCTION("fts64_set", "GLIBC_2.23", ftsSet),
+        SH_FUNCTION("fts64_close", "GLIBC_2.23", ftsClose),
         SH_FUNCTION("creat64", "GLIBC_2.2.5", sh_creat64),
         SH_FUNCTION("fallocate64", "GLIBC_2.10", sh_fallocate64),
         SH_FUNCTION("freopen64", "GLIBC_2.2.5", sh_freopen64),

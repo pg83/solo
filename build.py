@@ -58,6 +58,7 @@ symbol_headers = [musl_symbols_header, glibc_symbols_header]
 dlfcn_srcs = [
     "$(S)/lib/dlfcn.cpp",
     "$(S)/lib/elf_loader.cpp",
+    "$(S)/lib/fts.cpp",
     "$(S)/lib/glibc_shim.cpp",
     "$(S)/lib/glibc_stubs.cpp",
     "$(S)/lib/hash.cpp",

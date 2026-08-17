@@ -10,6 +10,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <fts.h>
 #include <ftw.h>
 #include <inttypes.h>
 #include <langinfo.h>
@@ -35,6 +36,8 @@
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
 #include <sys/auxv.h>
+#include <sys/pidfd.h>
+#include <ttyent.h>
 #include <time.h>
 #include <unistd.h>
 #include <wchar.h>
@@ -423,6 +426,97 @@ static void walks(void) {
     rmdir(path);
 }
 
+static int ftsCompare(const FTSENT** left, const FTSENT** right) {
+    return strcmp((*left)->fts_name, (*right)->fts_name);
+}
+
+static void treeWalks(void) {
+    char path[256];
+
+    snprintf(path, sizeof(path), "%s/solo-fts-XXXXXX", temporary_directory());
+    CHECK(mkdtemp(path) != NULL);
+    char file[320], sub[320], subfile[384];
+    snprintf(file, sizeof(file), "%s/alpha", path);
+    snprintf(sub, sizeof(sub), "%s/sub", path);
+    snprintf(subfile, sizeof(subfile), "%s/sub/beta", path);
+    int descriptor = creat64(file, 0600);
+    CHECK(descriptor >= 0);
+    close(descriptor);
+    CHECK(mkdir(sub, 0700) == 0);
+    descriptor = creat64(subfile, 0600);
+    CHECK(descriptor >= 0);
+    close(descriptor);
+
+    /* Pre-order parent, sorted children, post-order after the subtree. */
+    char* const roots[] = {path, NULL};
+    FTS* walk = fts_open(roots, FTS_PHYSICAL | FTS_NOCHDIR, ftsCompare);
+    CHECK(walk != NULL);
+    FTSENT* entry = fts_read(walk);
+    CHECK(entry && entry->fts_info == FTS_D && strcmp(entry->fts_path, path) == 0);
+    CHECK(entry && entry->fts_level == 0);
+    entry = fts_read(walk);
+    CHECK(entry && entry->fts_info == FTS_F && strcmp(entry->fts_name, "alpha") == 0);
+    CHECK(entry && entry->fts_level == 1 && entry->fts_statp->st_size == 0);
+    CHECK(entry && strcmp(entry->fts_accpath, file) == 0);
+    entry = fts_read(walk);
+    CHECK(entry && entry->fts_info == FTS_D && strcmp(entry->fts_name, "sub") == 0);
+    entry = fts_read(walk);
+    CHECK(entry && entry->fts_info == FTS_F && strcmp(entry->fts_name, "beta") == 0);
+    CHECK(entry && entry->fts_parent && strcmp(entry->fts_parent->fts_name, "sub") == 0);
+    entry = fts_read(walk);
+    CHECK(entry && entry->fts_info == FTS_DP && strcmp(entry->fts_name, "sub") == 0);
+    entry = fts_read(walk);
+    CHECK(entry && entry->fts_info == FTS_DP && entry->fts_level == 0);
+    CHECK(fts_read(walk) == NULL);
+    CHECK(fts_close(walk) == 0);
+
+    /* FTS_SKIP prunes the subtree but still delivers the post-order visit. */
+    walk = fts_open(roots, FTS_PHYSICAL | FTS_NOCHDIR, ftsCompare);
+    CHECK(walk != NULL);
+    int sawBeta = 0, sawSubPost = 0;
+    while ((entry = fts_read(walk)) != NULL) {
+        if (strcmp(entry->fts_name, "beta") == 0) {
+            sawBeta = 1;
+        }
+        if (strcmp(entry->fts_name, "sub") == 0 && entry->fts_info == FTS_D) {
+            CHECK(fts_set(walk, entry, FTS_SKIP) == 0);
+        }
+        if (strcmp(entry->fts_name, "sub") == 0 && entry->fts_info == FTS_DP) {
+            sawSubPost = 1;
+        }
+    }
+    CHECK(!sawBeta && sawSubPost);
+    CHECK(fts_close(walk) == 0);
+
+    unlink(subfile);
+    rmdir(sub);
+    unlink(file);
+    rmdir(path);
+}
+
+static void processors(void) {
+    cpu_set_t* set = CPU_ALLOC(130);
+    size_t size = CPU_ALLOC_SIZE(130);
+    CHECK(set != NULL);
+    CHECK(size == 24);
+    CPU_ZERO_S(size, set);
+    CPU_SET_S(129, size, set);
+    CHECK(CPU_ISSET_S(129, size, set));
+    CHECK(!CPU_ISSET_S(1, size, set));
+    CPU_FREE(set);
+
+    int pidfd = pidfd_open(getpid(), 0);
+    CHECK(pidfd >= 0 || errno == ENOSYS);
+    if (pidfd >= 0) {
+        close(pidfd);
+    }
+
+    /* Linux systems do not ship /etc/ttys, so every lookup fails. */
+    if (access("/etc/ttys", F_OK) != 0) {
+        CHECK(getttynam("console") == NULL);
+    }
+}
+
 static void expressions(void) {
     regex_t compiled;
     regmatch_t matches[2];
@@ -749,6 +843,8 @@ int glibc_shim_test(void) {
     memory();
     directories();
     walks();
+    treeWalks();
+    processors();
     expressions();
     descriptorsAndLimits();
     localesAndWide();
