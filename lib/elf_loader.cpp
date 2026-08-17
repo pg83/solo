@@ -116,7 +116,7 @@ namespace {
     };
 
     struct TlsDescArgument {
-        uintptr_t module;
+        const LinkMap* image;
         uintptr_t offset;
     };
 
@@ -187,15 +187,13 @@ namespace {
     extern "C" uintptr_t elfTlsDescEntry();
 
     struct Loader {
-        Loader();
-
         static Loader& instance();
 
         LinkMap* load(const std::string_view& requestedPath, int flags);
 
         void* lookup(LinkMap& image, std::string_view name);
         void* lookup(LinkMap& image, std::string_view name, std::unordered_set<LinkMap*>& visited);
-        void* tlsAddress(size_t module, size_t offset);
+        static void* tlsAddress(const LinkMap& image, size_t offset);
 
         bool findAddress(const void* address, ElfAddress* res);
         int iterateProgramHeaders(ElfProgramHeaderCallback& callback);
@@ -210,7 +208,7 @@ namespace {
         std::optional<std::string> resolvePath(const std::string_view& path) const;
         void rememberLibraryDirectory(const std::string& path);
 
-        size_t addTlsModule(LinkMap& image);
+        size_t addTlsModule();
 
         static bool isGlibcDependency(const std::string_view& name) noexcept;
         void loadDependencies(LinkMap& image);
@@ -236,7 +234,7 @@ namespace {
         std::vector<std::unique_ptr<LinkMap>> images_;
         std::unordered_map<std::string, LinkMap*, StringHash, std::equal_to<>> imagesByName_;
         std::map<uintptr_t, LinkMap*> imagesByAddress_;
-        std::vector<LinkMap*> tlsModules_;
+        size_t tlsModuleCount_ = 0;
         std::string libraryDirectory_;
     };
 
@@ -412,7 +410,7 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
             image.relroStart = programHeader.p_vaddr;
             image.relroSize = programHeader.p_memsz;
         } else if (programHeader.p_type == PT_TLS) {
-            image.tlsModule = addTlsModule(image);
+            image.tlsModule = addTlsModule();
             image.tlsTemplate = image.base + programHeader.p_vaddr;
             image.tlsFileSize = programHeader.p_filesz;
             image.tlsMemorySize = programHeader.p_memsz;
@@ -478,27 +476,22 @@ void* Loader::lookup(LinkMap& image, std::string_view name, std::unordered_set<L
     return nullptr;
 }
 
-void* Loader::tlsAddress(size_t module, size_t offset) {
-    std::lock_guard lock(mutex_);
-
-    if (!module || module >= tlsModules_.size() || !tlsModules_[module]) {
-        throwError("invalid TLS module %zu", module);
-    }
-
-    const auto& image = *tlsModules_[module];
-
+// Touches only the caller's ThreadTls and the image's immutable TLS metadata,
+// so a thread spawned by an initializer can reach its TLS while the loader
+// mutex is still held.
+void* Loader::tlsAddress(const LinkMap& image, size_t offset) {
     if (offset >= image.tlsMemorySize) {
-        throwError("TLS offset %zu exceeds module %zu size %zu", offset, module, image.tlsMemorySize);
+        throwError("%s: TLS offset %zu exceeds size %zu", image.path.c_str(), offset, image.tlsMemorySize);
     }
 
-    auto* slot = ThreadTls::current()->tlsBlock(module);
+    auto* slot = ThreadTls::current()->tlsBlock(image.tlsModule);
 
     if (!*slot) {
         auto alignment = std::max(image.tlsAlignment, sizeof(void*));
         void* block = nullptr;
 
         if (posix_memalign(&block, alignment, image.tlsMemorySize)) {
-            throwError("cannot allocate TLS module %zu", module);
+            throwError("%s: cannot allocate TLS block", image.path.c_str());
         }
 
         memset(block, 0, image.tlsMemorySize);
@@ -561,11 +554,6 @@ int Loader::iterateProgramHeaders(ElfProgramHeaderCallback& callback) {
     }
 
     return 0;
-}
-
-Loader::Loader()
-    : tlsModules_(1, nullptr)
-{
 }
 
 LinkMap* Loader::findByName(const std::string_view& name) const noexcept {
@@ -674,10 +662,8 @@ void Loader::rememberLibraryDirectory(const std::string& path) {
     }
 }
 
-size_t Loader::addTlsModule(LinkMap& image) {
-    tlsModules_.push_back(&image);
-
-    return tlsModules_.size() - 1;
+size_t Loader::addTlsModule() {
+    return ++tlsModuleCount_;
 }
 
 bool Loader::isGlibcDependency(const std::string_view& name) noexcept {
@@ -1019,7 +1005,7 @@ void* Loader::materialize(Definition definition) {
     }
     if (type == STT_TLS) {
         uintptr_t index[2] = {
-            definition.image->tlsModule,
+            reinterpret_cast<uintptr_t>(definition.image),
             definition.symbol->st_value,
         };
 
@@ -1077,7 +1063,7 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
             if (!image.tlsModule) {
                 throwError("%s: local TLS relocation has no module", image.path.c_str());
             }
-            *where = image.tlsModule;
+            *where = reinterpret_cast<uintptr_t>(&image);
             return false;
         }
         if (type == R_X86_64_DTPOFF64) {
@@ -1089,7 +1075,7 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
                 throwError("%s: local TLSDESC has no module", image.path.c_str());
             }
             auto* argument = new TlsDescArgument{
-                image.tlsModule,
+                &image,
                 static_cast<uintptr_t>(relocation.r_addend),
             };
             where[0] = reinterpret_cast<uintptr_t>(elfTlsDescEntry);
@@ -1130,7 +1116,7 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
             if (!definition.image || !definition.image->tlsModule) {
                 throwError("%s: TLS module relocation has no ELF TLS provider", image.path.c_str());
             }
-            *where = definition.image->tlsModule;
+            *where = reinterpret_cast<uintptr_t>(definition.image);
             return false;
         case R_X86_64_DTPOFF64:
             if (!symbolIndex) {
@@ -1155,7 +1141,7 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
             }
 
             auto* argument = new TlsDescArgument{
-                definition.image->tlsModule,
+                definition.image,
                 offset,
             };
             where[0] = reinterpret_cast<uintptr_t>(elfTlsDescEntry);
@@ -1260,11 +1246,11 @@ int ElfImage::iterateProgramHeaders(ElfProgramHeaderCallback& callback) {
 }
 
 extern "C" void* elfTlsAddress(const uintptr_t index[2]) {
-    return Loader::instance().tlsAddress(index[0], index[1]);
+    return Loader::tlsAddress(*reinterpret_cast<const LinkMap*>(index[0]), index[1]);
 }
 
 extern "C" void* elfTlsDescAddress(const void* opaqueArgument) {
     const auto& argument = *static_cast<const TlsDescArgument*>(opaqueArgument);
 
-    return Loader::instance().tlsAddress(argument.module, argument.offset);
+    return Loader::tlsAddress(*argument.image, argument.offset);
 }
