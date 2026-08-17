@@ -7,12 +7,13 @@
 glibc-linked GPU driver. No container, no AppImage, and no second libc in the
 process.**
 
-Static binaries are a wonderfully boring way to deploy software on Linux. We
-build ours with [IX](https://github.com/pg83/ix), a source-first build system for
-producing fully static Linux binaries. The story stays wonderfully boring—right
-up until the application needs the GPU. Vulkan and OpenGL drivers are supplied
-by the host as shared objects, usually built against glibc. A fully static musl
-binary cannot normally `dlopen()` them.
+Static binaries are a wonderfully boring way to deploy software on Linux: one
+file, no dependencies, nothing to break. We build ours with
+[IX](https://github.com/pg83/ix), a source-first build system for producing
+fully static Linux binaries. The boredom ends the moment the application needs
+the GPU: Vulkan and OpenGL drivers are supplied by the host as shared objects,
+usually built against glibc, and a fully static musl binary cannot normally
+`dlopen()` them.
 
 SoLo crosses that boundary. It provides a `dlfcn`-style source API backed by
 its own ELF loader (x86-64 and aarch64) and a glibc ABI bridge implemented on
