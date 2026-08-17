@@ -15,7 +15,8 @@ by the host as shared objects, usually built against glibc. A fully static musl
 binary cannot normally `dlopen()` them.
 
 SoLo crosses that boundary. It provides a `dlfcn`-style source API backed by
-its own x86-64 ELF loader and a glibc ABI bridge implemented on top of musl.
+its own ELF loader (x86-64 and aarch64) and a glibc ABI bridge implemented on
+top of musl.
 The result is still one ordinary static executable, but it can use the graphics
 driver already installed on the machine.
 
@@ -24,6 +25,10 @@ no `PT_INTERP` and no `DT_NEEDED` loads an unmodified system Mesa ICD, runs a
 compute shader, and writes the result to a PNG.
 
 **The host keeps the hardware-specific code. You ship everything else.**
+
+And not on a demo's word alone: on every commit, CI loads the shared
+libraries of the 1,000 most-installed Debian packages — over 2,100 host
+objects — through SoLo, on both x86-64 and aarch64.
 
 ## See it work
 
