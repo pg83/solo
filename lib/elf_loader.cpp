@@ -52,8 +52,6 @@
 #endif
 
 namespace {
-    static constexpr size_t MAX_VERSION_INDEX = 256;
-
     [[noreturn]] static void throwError(const char* format, ...) {
         std::array<char, 1024> buffer;
         va_list arguments;
@@ -141,7 +139,7 @@ namespace {
         size_t symbolCount = 0;
         uint32_t* gnuHash = nullptr;
         Elf64_Half* symbolVersions = nullptr;
-        std::array<std::string_view, MAX_VERSION_INDEX> versionNames = {};
+        std::vector<std::string_view> versionNames;
         std::vector<Dependency> dependencies;
         bool glibcAbi = false;
 
@@ -167,6 +165,11 @@ namespace {
         std::unique_ptr<ElfImage> wrapper;
 
         State state = State::Loading;
+
+        void parseDynamic();
+        void parseVersions(uintptr_t needAddress, size_t needCount, uintptr_t definitionAddress, size_t definitionCount);
+        void setVersionName(size_t index, size_t nameOffset);
+        size_t countSymbols() const noexcept;
     };
 
     struct DeferredRelocation {
@@ -215,10 +218,6 @@ namespace {
 
         static bool isGlibcDependency(const std::string_view& name) noexcept;
         void loadDependencies(LinkMap& image);
-
-        static void parseVersions(LinkMap& image, uintptr_t needAddress, size_t needCount, uintptr_t definitionAddress, size_t definitionCount);
-        static void parseDynamic(LinkMap& image);
-        static size_t countSymbols(const LinkMap& image) noexcept;
 
         static std::string_view symbolVersion(const LinkMap& image, size_t symbolIndex) noexcept;
         static uint32_t gnuHash(const std::string_view& name) noexcept;
@@ -425,7 +424,7 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
     if (!image.dynamic) {
         throwError("%s: missing PT_DYNAMIC", image.path.c_str());
     }
-    parseDynamic(image);
+    image.parseDynamic();
     if (!image.soname.empty()) {
         imagesByName_.emplace(image.soname, &image);
     }
@@ -717,6 +716,9 @@ void Loader::loadDependencies(LinkMap& image) {
         if (entry->d_tag != DT_NEEDED) {
             continue;
         }
+        if (entry->d_un.d_val >= image.stringsSize) {
+            throwError("%s: DT_NEEDED outside the string table", image.path.c_str());
+        }
 
         std::string needed(image.strings + entry->d_un.d_val);
 
@@ -736,19 +738,26 @@ void Loader::loadDependencies(LinkMap& image) {
     }
 }
 
-void Loader::parseVersions(LinkMap& image, uintptr_t needAddress, size_t needCount, uintptr_t definitionAddress, size_t definitionCount) {
+void LinkMap::setVersionName(size_t index, size_t nameOffset) {
+    if (nameOffset >= stringsSize) {
+        throwError("%s: version name outside the string table", path.c_str());
+    }
+    if (index >= versionNames.size()) {
+        versionNames.resize(index + 1);
+    }
+
+    versionNames[index] = strings + nameOffset;
+}
+
+void LinkMap::parseVersions(uintptr_t needAddress, size_t needCount, uintptr_t definitionAddress, size_t definitionCount) {
     if (needAddress) {
-        auto* need = reinterpret_cast<Elf64_Verneed*>(image.base + needAddress);
+        auto* need = reinterpret_cast<Elf64_Verneed*>(base + needAddress);
 
         for (size_t index = 0; index < needCount; ++index) {
             auto* auxiliary = reinterpret_cast<Elf64_Vernaux*>(reinterpret_cast<char*>(need) + need->vn_aux);
 
             for (size_t item = 0; item < need->vn_cnt; ++item) {
-                auto versionIndex = static_cast<size_t>(auxiliary->vna_other & 0x7fff);
-
-                if (versionIndex < image.versionNames.size() && auxiliary->vna_name < image.stringsSize) {
-                    image.versionNames[versionIndex] = image.strings + auxiliary->vna_name;
-                }
+                setVersionName(auxiliary->vna_other & 0x7fff, auxiliary->vna_name);
                 if (!auxiliary->vna_next) {
                     break;
                 }
@@ -762,15 +771,12 @@ void Loader::parseVersions(LinkMap& image, uintptr_t needAddress, size_t needCou
     }
 
     if (definitionAddress) {
-        auto* definition = reinterpret_cast<Elf64_Verdef*>(image.base + definitionAddress);
+        auto* definition = reinterpret_cast<Elf64_Verdef*>(base + definitionAddress);
 
         for (size_t index = 0; index < definitionCount; ++index) {
             auto* auxiliary = reinterpret_cast<Elf64_Verdaux*>(reinterpret_cast<char*>(definition) + definition->vd_aux);
-            auto versionIndex = static_cast<size_t>(definition->vd_ndx & 0x7fff);
 
-            if (versionIndex < image.versionNames.size() && auxiliary->vda_name < image.stringsSize) {
-                image.versionNames[versionIndex] = image.strings + auxiliary->vda_name;
-            }
+            setVersionName(definition->vd_ndx & 0x7fff, auxiliary->vda_name);
             if (!definition->vd_next) {
                 break;
             }
@@ -779,7 +785,7 @@ void Loader::parseVersions(LinkMap& image, uintptr_t needAddress, size_t needCou
     }
 }
 
-void Loader::parseDynamic(LinkMap& image) {
+void LinkMap::parseDynamic() {
     uintptr_t needVersions = 0;
     size_t needVersionCount = 0;
     uintptr_t definedVersions = 0;
@@ -791,22 +797,22 @@ void Loader::parseDynamic(LinkMap& image) {
     size_t relativeRelocationEntrySize = sizeof(Elf64_Addr);
     size_t sonameOffset = SIZE_MAX;
 
-    for (auto* entry = image.dynamic; entry->d_tag != DT_NULL; ++entry) {
+    for (auto* entry = dynamic; entry->d_tag != DT_NULL; ++entry) {
         switch (entry->d_tag) {
             case DT_STRTAB:
-                image.strings = reinterpret_cast<const char*>(image.base + entry->d_un.d_ptr);
+                strings = reinterpret_cast<const char*>(base + entry->d_un.d_ptr);
                 break;
             case DT_STRSZ:
-                image.stringsSize = entry->d_un.d_val;
+                stringsSize = entry->d_un.d_val;
                 break;
             case DT_SYMTAB:
-                image.symbols = reinterpret_cast<Elf64_Sym*>(image.base + entry->d_un.d_ptr);
+                symbols = reinterpret_cast<Elf64_Sym*>(base + entry->d_un.d_ptr);
                 break;
             case DT_GNU_HASH:
-                image.gnuHash = reinterpret_cast<uint32_t*>(image.base + entry->d_un.d_ptr);
+                gnuHash = reinterpret_cast<uint32_t*>(base + entry->d_un.d_ptr);
                 break;
             case DT_VERSYM:
-                image.symbolVersions = reinterpret_cast<Elf64_Half*>(image.base + entry->d_un.d_ptr);
+                symbolVersions = reinterpret_cast<Elf64_Half*>(base + entry->d_un.d_ptr);
                 break;
             case DT_VERNEED:
                 needVersions = entry->d_un.d_ptr;
@@ -821,7 +827,7 @@ void Loader::parseDynamic(LinkMap& image) {
                 definedVersionCount = entry->d_un.d_val;
                 break;
             case DT_RELA:
-                image.relocations = reinterpret_cast<Elf64_Rela*>(image.base + entry->d_un.d_ptr);
+                relocations = reinterpret_cast<Elf64_Rela*>(base + entry->d_un.d_ptr);
                 break;
             case DT_RELASZ:
                 relocationSize = entry->d_un.d_val;
@@ -830,13 +836,13 @@ void Loader::parseDynamic(LinkMap& image) {
                 relocationEntrySize = entry->d_un.d_val;
                 break;
             case DT_JMPREL:
-                image.pltRelocations = reinterpret_cast<Elf64_Rela*>(image.base + entry->d_un.d_ptr);
+                pltRelocations = reinterpret_cast<Elf64_Rela*>(base + entry->d_un.d_ptr);
                 break;
             case DT_PLTRELSZ:
                 pltRelocationSize = entry->d_un.d_val;
                 break;
             case DT_RELR:
-                image.relativeRelocations = reinterpret_cast<Elf64_Addr*>(image.base + entry->d_un.d_ptr);
+                relativeRelocations = reinterpret_cast<Elf64_Addr*>(base + entry->d_un.d_ptr);
                 break;
             case DT_RELRSZ:
                 relativeRelocationSize = entry->d_un.d_val;
@@ -845,13 +851,13 @@ void Loader::parseDynamic(LinkMap& image) {
                 relativeRelocationEntrySize = entry->d_un.d_val;
                 break;
             case DT_INIT:
-                image.initializer = image.base + entry->d_un.d_ptr;
+                initializer = base + entry->d_un.d_ptr;
                 break;
             case DT_INIT_ARRAY:
-                image.initializerArray = image.base + entry->d_un.d_ptr;
+                initializerArray = base + entry->d_un.d_ptr;
                 break;
             case DT_INIT_ARRAYSZ:
-                image.initializerCount = entry->d_un.d_val / sizeof(uintptr_t);
+                initializerCount = entry->d_un.d_val / sizeof(uintptr_t);
                 break;
             case DT_SONAME:
                 sonameOffset = entry->d_un.d_val;
@@ -861,33 +867,33 @@ void Loader::parseDynamic(LinkMap& image) {
         }
     }
 
-    if (!image.strings || !image.symbols || !image.gnuHash) {
-        throwError("%s: missing dynamic string, symbol, or GNU hash table", image.path.c_str());
+    if (!strings || !symbols || !gnuHash) {
+        throwError("%s: missing dynamic string, symbol, or GNU hash table", path.c_str());
     }
     if (relocationSize && relocationEntrySize != sizeof(Elf64_Rela)) {
-        throwError("%s: unsupported RELA entry size %zu", image.path.c_str(), relocationEntrySize);
+        throwError("%s: unsupported RELA entry size %zu", path.c_str(), relocationEntrySize);
     }
     if (relativeRelocationSize && relativeRelocationEntrySize != sizeof(Elf64_Addr)) {
-        throwError("%s: unsupported RELR entry size %zu", image.path.c_str(), relativeRelocationEntrySize);
+        throwError("%s: unsupported RELR entry size %zu", path.c_str(), relativeRelocationEntrySize);
     }
-    if (sonameOffset < image.stringsSize) {
-        image.soname = image.strings + sonameOffset;
+    if (sonameOffset < stringsSize) {
+        soname = strings + sonameOffset;
     }
 
-    image.relocationCount = relocationSize / sizeof(Elf64_Rela);
-    image.pltRelocationCount = pltRelocationSize / sizeof(Elf64_Rela);
-    image.relativeRelocationCount = relativeRelocationSize / sizeof(Elf64_Addr);
-    image.symbolCount = countSymbols(image);
-    parseVersions(image, needVersions, needVersionCount, definedVersions, definedVersionCount);
+    relocationCount = relocationSize / sizeof(Elf64_Rela);
+    pltRelocationCount = pltRelocationSize / sizeof(Elf64_Rela);
+    relativeRelocationCount = relativeRelocationSize / sizeof(Elf64_Addr);
+    symbolCount = countSymbols();
+    parseVersions(needVersions, needVersionCount, definedVersions, definedVersionCount);
 }
 
 // The dynamic section has no symbol count; recover it from the GNU hash
 // table as one past the highest chain index.
-size_t Loader::countSymbols(const LinkMap& image) noexcept {
-    auto bucketCount = image.gnuHash[0];
-    auto symbolOffset = image.gnuHash[1];
-    auto bloomSize = image.gnuHash[2];
-    const auto* bloom = reinterpret_cast<const Elf64_Xword*>(image.gnuHash + 4);
+size_t LinkMap::countSymbols() const noexcept {
+    auto bucketCount = gnuHash[0];
+    auto symbolOffset = gnuHash[1];
+    auto bloomSize = gnuHash[2];
+    const auto* bloom = reinterpret_cast<const Elf64_Xword*>(gnuHash + 4);
     const auto* buckets = reinterpret_cast<const uint32_t*>(bloom + bloomSize);
     const auto* chains = buckets + bucketCount;
     size_t count = symbolOffset;
@@ -973,7 +979,7 @@ Definition Loader::findSymbol(LinkMap& image, const std::string_view& name, cons
             auto versionMatches = version.empty() ? !hidden : foundVersion == version;
             auto visibility = ELF64_ST_VISIBILITY(symbol->st_other);
 
-            if (std::string_view(image.strings + symbol->st_name) == name && symbol->st_shndx != SHN_UNDEF && versionMatches && visibility != STV_HIDDEN && visibility != STV_INTERNAL) {
+            if (symbol->st_name < image.stringsSize && std::string_view(image.strings + symbol->st_name) == name && symbol->st_shndx != SHN_UNDEF && versionMatches && visibility != STV_HIDDEN && visibility != STV_INTERNAL) {
                 return {image.base + symbol->st_value, &image, symbol};
             }
         }
@@ -1011,6 +1017,9 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
 
     if (symbol->st_shndx != SHN_UNDEF) {
         return {image.base + symbol->st_value, &image, symbol};
+    }
+    if (symbol->st_name >= image.stringsSize) {
+        throwError("%s: symbol name outside the string table", image.path.c_str());
     }
 
     std::string_view name(image.strings + symbol->st_name);
