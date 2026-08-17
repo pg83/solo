@@ -40,6 +40,10 @@
     #define DT_RELRENT 37
 #endif
 
+#ifndef DT_RUNPATH
+    #define DT_RUNPATH 29
+#endif
+
 #ifndef R_X86_64_IRELATIVE
     #define R_X86_64_IRELATIVE 37
 #endif
@@ -128,6 +132,10 @@ namespace {
 
         std::string path;
         std::string soname;
+        // The image's library search paths with $ORIGIN substituted; per the
+        // ld.so rules at most one of the two is in effect.
+        std::string rpath;
+        std::string runPath;
         uintptr_t base = 0;
         uintptr_t mapStart = 0;
         size_t mapSize = 0;
@@ -171,6 +179,7 @@ namespace {
         void parseVersions(uintptr_t needAddress, size_t needCount, uintptr_t definitionAddress, size_t definitionCount);
         void setVersionName(size_t index, size_t nameOffset);
         size_t countSymbols() const noexcept;
+        std::string substituteOrigin(std::string_view directories) const;
     };
 
     struct DeferredRelocation {
@@ -183,6 +192,16 @@ namespace {
         ~MarkFailed();
 
         LinkMap& image_;
+    };
+
+    // The image whose DT_NEEDED list is being resolved, for its search paths.
+    // Nested loads save and restore the previous requester.
+    struct ScopedRequester {
+        ScopedRequester(LinkMap*& slot, LinkMap& image);
+        ~ScopedRequester();
+
+        LinkMap*& slot_;
+        LinkMap* previous_;
     };
 
     struct StringHash {
@@ -239,6 +258,7 @@ namespace {
         std::map<uintptr_t, LinkMap*> imagesByAddress_;
         size_t tlsModuleCount_ = 0;
         std::string libraryDirectory_;
+        LinkMap* requester_ = nullptr;
     };
 
     struct LoadedElf final: public ElfImage {
@@ -300,6 +320,17 @@ MarkFailed::~MarkFailed() {
     if (image_.state == LinkMap::State::Loading) {
         image_.state = LinkMap::State::Failed;
     }
+}
+
+ScopedRequester::ScopedRequester(LinkMap*& slot, LinkMap& image)
+    : slot_(slot)
+    , previous_(slot)
+{
+    slot_ = &image;
+}
+
+ScopedRequester::~ScopedRequester() {
+    slot_ = previous_;
 }
 
 Loader& Loader::instance() {
@@ -661,8 +692,18 @@ std::optional<std::string> Loader::resolvePath(const std::string_view& path) con
             return resolved;
         }
     }
+    if (requester_ && !requester_->rpath.empty()) {
+        if (auto resolved = inSearchPath(requester_->rpath, path, false); resolved) {
+            return resolved;
+        }
+    }
     if (const auto* configured = getenv("LD_LIBRARY_PATH"); configured) {
         if (auto resolved = inSearchPath(configured, path, true); resolved) {
+            return resolved;
+        }
+    }
+    if (requester_ && !requester_->runPath.empty()) {
+        if (auto resolved = inSearchPath(requester_->runPath, path, false); resolved) {
             return resolved;
         }
     }
@@ -725,6 +766,8 @@ bool Loader::isGlibcDependency(const std::string_view& name) noexcept {
 }
 
 void Loader::loadDependencies(LinkMap& image) {
+    ScopedRequester requester(requester_, image);
+
     for (auto* entry = image.dynamic; entry->d_tag != DT_NULL; ++entry) {
         if (entry->d_tag != DT_NEEDED) {
             continue;
@@ -809,6 +852,8 @@ void LinkMap::parseDynamic() {
     size_t relativeRelocationSize = 0;
     size_t relativeRelocationEntrySize = sizeof(Elf64_Addr);
     size_t sonameOffset = SIZE_MAX;
+    size_t rpathOffset = SIZE_MAX;
+    size_t runPathOffset = SIZE_MAX;
 
     for (auto* entry = dynamic; entry->d_tag != DT_NULL; ++entry) {
         switch (entry->d_tag) {
@@ -875,6 +920,12 @@ void LinkMap::parseDynamic() {
             case DT_SONAME:
                 sonameOffset = entry->d_un.d_val;
                 break;
+            case DT_RPATH:
+                rpathOffset = entry->d_un.d_val;
+                break;
+            case DT_RUNPATH:
+                runPathOffset = entry->d_un.d_val;
+                break;
             default:
                 break;
         }
@@ -892,6 +943,12 @@ void LinkMap::parseDynamic() {
     if (sonameOffset < stringsSize) {
         soname = strings + sonameOffset;
     }
+    // DT_RUNPATH supersedes DT_RPATH when both are present.
+    if (runPathOffset < stringsSize) {
+        runPath = substituteOrigin(strings + runPathOffset);
+    } else if (rpathOffset < stringsSize) {
+        rpath = substituteOrigin(strings + rpathOffset);
+    }
 
     relocationCount = relocationSize / sizeof(Elf64_Rela);
     pltRelocationCount = pltRelocationSize / sizeof(Elf64_Rela);
@@ -902,6 +959,35 @@ void LinkMap::parseDynamic() {
 
 // The dynamic section has no symbol count; recover it from the GNU hash
 // table as one past the highest chain index.
+std::string LinkMap::substituteOrigin(std::string_view directories) const {
+    auto slash = path.rfind('/');
+    std::string origin(slash == std::string::npos ? "." : path.substr(0, slash));
+    std::string result;
+
+    while (!directories.empty()) {
+        auto dollar = directories.find('$');
+
+        if (dollar == std::string_view::npos) {
+            result.append(directories);
+            break;
+        }
+        result.append(directories.substr(0, dollar));
+        directories.remove_prefix(dollar);
+        if (directories.starts_with("${ORIGIN}")) {
+            result.append(origin);
+            directories.remove_prefix(9);
+        } else if (directories.starts_with("$ORIGIN")) {
+            result.append(origin);
+            directories.remove_prefix(7);
+        } else {
+            result.push_back('$');
+            directories.remove_prefix(1);
+        }
+    }
+
+    return result;
+}
+
 size_t LinkMap::countSymbols() const noexcept {
     auto bucketCount = gnuHash[0];
     auto symbolOffset = gnuHash[1];
