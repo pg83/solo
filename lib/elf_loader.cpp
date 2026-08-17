@@ -1215,6 +1215,11 @@ bool Loader::isGlibcDependency(const std::string_view& name) noexcept {
         std::string_view("libdl.so.2"),
         std::string_view("libm.so.6"),
         std::string_view("librt.so.1"),
+        std::string_view("libresolv.so.2"),
+        std::string_view("libmvec.so.1"),
+        std::string_view("libutil.so.1"),
+        std::string_view("libanl.so.1"),
+        std::string_view("libnsl.so.1"),
 #if defined(__x86_64__)
         std::string_view("ld-linux-x86-64.so.2"),
 #elif defined(__aarch64__)

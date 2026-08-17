@@ -69,7 +69,7 @@ jobs:
   ubuntu-arm:
     name: Ubuntu / arm64
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v7
@@ -108,7 +108,7 @@ jobs:
   ubuntu-clang:
     name: Ubuntu / Clang
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write

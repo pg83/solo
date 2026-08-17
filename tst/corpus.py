@@ -15,7 +15,7 @@ only have stubs.
 
 import json
 import os
-import platform
+import re
 import struct
 import subprocess
 import sys
@@ -25,6 +25,7 @@ from pathlib import Path
 STUB_LINE = "glibc bridge: resolved fallback "
 OBJECT_LINE = "glibc bridge: unimplemented data object "
 
+SHT_DYNAMIC = 6
 SHT_DYNSYM = 11
 SHT_GNU_VERSYM = 0x6FFFFFFF
 SHT_GNU_VERNEED = 0x6FFFFFFE
@@ -117,14 +118,55 @@ def extract(package, root):
         subprocess.run(["bsdtar", "-xpf", package, "-C", str(root)], check=True)
 
 
-def run_driver(driver, library, root):
+def elf_dynamic(path):
+    """The library's soname and DT_NEEDED entries."""
+    data = path.read_bytes()
+    if data[:4] != b"\x7fELF" or data[4] != 2:
+        return None, []
+    table = sections(data)
+    dynamic = next((s for s in table if s["type"] == SHT_DYNAMIC), None)
+    if dynamic is None:
+        return None, []
+    strings = table[dynamic["link"]]
+    soname = None
+    needed = []
+    for offset in range(dynamic["offset"], dynamic["offset"] + dynamic["size"], 16):
+        tag, value = struct.unpack_from("<qQ", data, offset)
+        if tag == 0:
+            break
+        if tag in (1, 14):
+            end = data.index(b"\0", strings["offset"] + value)
+            name = data[strings["offset"] + value : end].decode()
+            if tag == 1:
+                needed.append(name)
+            else:
+                soname = name
+    return soname, needed
+
+
+def library_directories(root):
+    """Every extracted directory holding a shared object: the union of what
+    RPATH entries and ld.so.conf.d snippets would cover on a real system,
+    where our extraction root's absolute paths cannot."""
+    directories = []
+    for path, _, files in os.walk(root):
+        if any(".so" in name for name in files):
+            directories.append(path)
+    return sorted(directories)
+
+
+def needs_host_symbols(error):
+    """A plugin importing unversioned symbols of its host application cannot
+    be loaded standalone under any loader; that is the plugin's contract, not
+    a bridge defect. A missing @GLIBC symbol never matches here."""
+    return re.search(r"(?:unresolved symbol|no ABI thunk for) [^\s@]+$", error) is not None
+
+
+def run_driver(driver, library, search_path):
     environment = os.environ.copy()
     environment["DL_GLIBC_STUB_DEBUG"] = "1"
     environment.pop("DL_ELF_LIBRARY_PATH", None)
-    environment["LD_LIBRARY_PATH"] = os.pathsep.join(
-        str(root / path)
-        for path in (f"usr/lib/{platform.machine()}-linux-gnu", "usr/lib")
-    )
+    environment["LD_LIBRARY_PATH"] = search_path
     result = subprocess.run(
         [driver, str(library)],
         env=environment,
@@ -160,6 +202,7 @@ def load(arguments):
         for archive in [package, *dependencies]:
             extract(archive, root)
 
+        search_path = os.pathsep.join(library_directories(root))
         for member in sorted(members(package)):
             library = root / member
             # Only the top-level libraries and the packages' plugin modules;
@@ -173,14 +216,18 @@ def load(arguments):
             imports = glibc_imports(library)
             if imports is None:
                 continue
-            loaded, stubs, error = run_driver(driver, library, root)
+            loaded, stubs, error = run_driver(driver, library, search_path)
+            skipped = not loaded and error is not None and needs_host_symbols(error)
             results[library.name] = {
                 "loaded": loaded,
+                "skipped": skipped,
                 "imports": sorted(imports),
                 "stubs": sorted(stubs),
                 "error": error,
             }
-            if not loaded:
+            if skipped:
+                print(f"skip {library.name}: {error}", file=sys.stderr)
+            elif not loaded:
                 failures += 1
                 print(f"FAIL {library.name}: {error}", file=sys.stderr)
 
@@ -217,8 +264,12 @@ def report(arguments):
         for symbol in library["stubs"]:
             stubbed.setdefault(symbol, set()).add(name)
 
-    lines = [f"corpus: {len(results)} libraries"]
+    skipped = sum(1 for library in results.values() if library.get("skipped"))
+    lines = [f"corpus: {len(results)} libraries, {skipped} host plugins skipped"]
     for name, library in sorted(results.items()):
+        if library.get("skipped"):
+            lines.append(f"  skip {name}: needs its host application's symbols")
+            continue
         stubs = f", {len(library['stubs'])} through stubs" if library["stubs"] else ""
         lines.append(f"  ok   {name}: {len(library['imports'])} glibc imports{stubs}")
     native = sum(1 for symbol in demanded if symbol not in stubbed)

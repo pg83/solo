@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <fts.h>
 #include <ftw.h>
+#include <gnu/libc-version.h>
 #include <inttypes.h>
 #include <langinfo.h>
 #include <limits.h>
@@ -19,6 +20,7 @@
 #include <locale.h>
 #include <malloc.h>
 #include <poll.h>
+#include <printf.h>
 #include <pthread.h>
 #include <regex.h>
 #include <sched.h>
@@ -519,6 +521,24 @@ static void processors(void) {
     /* The internal alias aarch64 libgcc probes the LSE hwcap through. */
     unsigned long __getauxval(unsigned long type);
     CHECK(__getauxval(AT_PAGESZ) == getauxval(AT_PAGESZ));
+
+    const char* libc_version = gnu_get_libc_version();
+    CHECK(libc_version != NULL && strncmp(libc_version, "2.", 2) == 0);
+
+    /* The printf-hook registry declines honestly; callers must cope. */
+    CHECK(register_printf_modifier(L"Q") == -1);
+    errno = 0;
+
+    /* The libmvec lanes, under the architecture's own spelling. */
+    typedef double shim_double2 __attribute__((vector_size(16)));
+#if defined(__x86_64__)
+    shim_double2 _ZGVbN2v_cos(shim_double2 value);
+    shim_double2 vector_cosine = _ZGVbN2v_cos((shim_double2){0.0, 1.0});
+#elif defined(__aarch64__)
+    shim_double2 _ZGVnN2v_cos(shim_double2 value);
+    shim_double2 vector_cosine = _ZGVnN2v_cos((shim_double2){0.0, 1.0});
+#endif
+    CHECK(vector_cosine[0] == 1.0 && vector_cosine[1] > 0.54 && vector_cosine[1] < 0.541);
 }
 
 static void expressions(void) {

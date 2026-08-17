@@ -15,12 +15,6 @@ in place) scales — the process is what has to scale.
     (zombie, like NODELETE). I favor the second — 95% of the benefit without
     the use-after-unload class of bugs.
 
-## Phase 4 — the broad corpus and the claim to "fullness"
-
-14. GUI/GL stacks (X11, wayland with the provider from the static world — a
-    killer feature nobody else has), LLVM (a stress test of 60k symbols and
-    lookup performance), gstreamer (a stress test of plugin laziness).
-
 ## Explicit non-goals (record in the README)
 
 `dlmopen`/namespaces; running glibc **executables** (a separate project —
@@ -68,4 +62,12 @@ locale-archive (we stay in C/UTF-8, like musl).
   is not async-signal-safe, the static TLS arena is a fixed 16 KiB with no
   rollback on a failed load, and PT_GNU_PROPERTY (BTI/CET) is not carried
   into mappings.
+- The broad corpus (item 14) landed as data: dev/abi_demand.py joins Debian
+  popcon votes with the pinned snapshot, scans the top 1000 library packages'
+  imports, and writes dev/abi-demand.txt — the bridge's priority queue,
+  weighted by real installations (1450 unique imports, 1179 served natively,
+  228 through stubs, none absent). dev/generate_corpus.py turns the same
+  ranking into tst/corpus_<arch>.json — every popular package with a
+  glibc-importing shared object becomes a load node, closures derived from
+  the package index, GLIBC_PRIVATE importers ride along as dependencies only.
 - Deliberately deferred: 10 (`dlclose`).

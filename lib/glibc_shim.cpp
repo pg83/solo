@@ -549,6 +549,66 @@ namespace {
         return (int)syscall(434, pid, flags);
     }
 
+    // The libmvec lanes the corpus demands, split into scalar musl calls:
+    // correctness over vector speed. The 128-bit vector types match both the
+    // x86-64 'b' (SSE) and the aarch64 'n' (AdvSIMD) vector ABIs.
+    typedef double VectorDouble2 __attribute__((vector_size(16)));
+    typedef float VectorFloat4 __attribute__((vector_size(16)));
+
+    static VectorDouble2 sh_vector_cos(VectorDouble2 value) {
+        return VectorDouble2{cos(value[0]), cos(value[1])};
+    }
+
+    static VectorDouble2 sh_vector_sin(VectorDouble2 value) {
+        return VectorDouble2{sin(value[0]), sin(value[1])};
+    }
+
+    static VectorDouble2 sh_vector_log(VectorDouble2 value) {
+        return VectorDouble2{log(value[0]), log(value[1])};
+    }
+
+    static VectorDouble2 sh_vector_log2(VectorDouble2 value) {
+        return VectorDouble2{log2(value[0]), log2(value[1])};
+    }
+
+    static VectorFloat4 sh_vector_cosf(VectorFloat4 value) {
+        return VectorFloat4{cosf(value[0]), cosf(value[1]), cosf(value[2]), cosf(value[3])};
+    }
+
+    static VectorFloat4 sh_vector_sinf(VectorFloat4 value) {
+        return VectorFloat4{sinf(value[0]), sinf(value[1]), sinf(value[2]), sinf(value[3])};
+    }
+
+    static VectorFloat4 sh_vector_acosf(VectorFloat4 value) {
+        return VectorFloat4{acosf(value[0]), acosf(value[1]), acosf(value[2]), acosf(value[3])};
+    }
+
+    static VectorFloat4 sh_vector_logf(VectorFloat4 value) {
+        return VectorFloat4{logf(value[0]), logf(value[1]), logf(value[2]), logf(value[3])};
+    }
+
+    static VectorFloat4 sh_vector_expf(VectorFloat4 value) {
+        return VectorFloat4{expf(value[0]), expf(value[1]), expf(value[2]), expf(value[3])};
+    }
+
+    // The printf-hook registry has no musl counterpart, and the API allows
+    // registration to fail; callers (libquadmath's constructor) must cope.
+    static int sh_register_printf_failure(void) {
+        errno = ENOSYS;
+
+        return -1;
+    }
+
+    // The version of the glibc whose inventory the bridge was generated
+    // from; sanitizer runtimes gate feature probes on it.
+    static const char* sh_gnu_get_libc_version(void) {
+#if defined(__x86_64__)
+        return "2.44";
+#elif defined(__aarch64__)
+        return "2.42";
+#endif
+    }
+
     // The allocation half of glibc's CPU_ALLOC/CPU_FREE macros: a bitmask of
     // count CPUs in 64-bit words.
     static void* sh_sched_cpualloc(size_t count) {
@@ -2123,6 +2183,31 @@ namespace {
         SH_FUNCTION("fspick", "GLIBC_2.36", sh_fspick),
         SH_FUNCTION("mount_setattr", "GLIBC_2.36", sh_mount_setattr),
         SH_FUNCTION("pidfd_open", "GLIBC_2.36", sh_pidfd_open),
+        SH_FUNCTION("gnu_get_libc_version", "GLIBC_2.2.5", sh_gnu_get_libc_version),
+        SH_FUNCTION("register_printf_function", "GLIBC_2.2.5", sh_register_printf_failure),
+        SH_FUNCTION("register_printf_specifier", "GLIBC_2.10", sh_register_printf_failure),
+        SH_FUNCTION("register_printf_modifier", "GLIBC_2.10", sh_register_printf_failure),
+        SH_FUNCTION("register_printf_type", "GLIBC_2.10", sh_register_printf_failure),
+        // libmvec under both vector ABI spellings; the platform inventory
+        // supplies the right versions for whichever names it knows.
+        SH_FUNCTION("_ZGVbN2v_cos", "GLIBC_2.22", sh_vector_cos),
+        SH_FUNCTION("_ZGVbN2v_sin", "GLIBC_2.22", sh_vector_sin),
+        SH_FUNCTION("_ZGVbN2v_log", "GLIBC_2.22", sh_vector_log),
+        SH_FUNCTION("_ZGVbN2v_log2", "GLIBC_2.35", sh_vector_log2),
+        SH_FUNCTION("_ZGVbN4v_cosf", "GLIBC_2.22", sh_vector_cosf),
+        SH_FUNCTION("_ZGVbN4v_sinf", "GLIBC_2.22", sh_vector_sinf),
+        SH_FUNCTION("_ZGVbN4v_acosf", "GLIBC_2.35", sh_vector_acosf),
+        SH_FUNCTION("_ZGVbN4v_logf", "GLIBC_2.22", sh_vector_logf),
+        SH_FUNCTION("_ZGVbN4v_expf", "GLIBC_2.22", sh_vector_expf),
+        SH_FUNCTION("_ZGVnN2v_cos", "GLIBC_2.22", sh_vector_cos),
+        SH_FUNCTION("_ZGVnN2v_sin", "GLIBC_2.22", sh_vector_sin),
+        SH_FUNCTION("_ZGVnN2v_log", "GLIBC_2.22", sh_vector_log),
+        SH_FUNCTION("_ZGVnN2v_log2", "GLIBC_2.35", sh_vector_log2),
+        SH_FUNCTION("_ZGVnN4v_cosf", "GLIBC_2.22", sh_vector_cosf),
+        SH_FUNCTION("_ZGVnN4v_sinf", "GLIBC_2.22", sh_vector_sinf),
+        SH_FUNCTION("_ZGVnN4v_acosf", "GLIBC_2.35", sh_vector_acosf),
+        SH_FUNCTION("_ZGVnN4v_logf", "GLIBC_2.22", sh_vector_logf),
+        SH_FUNCTION("_ZGVnN4v_expf", "GLIBC_2.22", sh_vector_expf),
         SH_FUNCTION("__sched_cpualloc", "GLIBC_2.7", sh_sched_cpualloc),
         SH_FUNCTION("__sched_cpufree", "GLIBC_2.7", sh_sched_cpufree),
         SH_FUNCTION("getttynam", "GLIBC_2.2.5", sh_getttynam),

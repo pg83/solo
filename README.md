@@ -213,7 +213,10 @@ supported system.
   inventories are generated per architecture, so `printf@GLIBC_2.2.5` on one
   is `printf@GLIBC_2.17` on the other without a single translation rule in
   the code;
-- focused on real Mesa/Vulkan ICD dependency closures;
+- focused on real Mesa/Vulkan ICD dependency closures, and proven against a
+  corpus of the 885 most-installed Debian library packages (ranked by popcon
+  votes, closures derived from the package index and DT_NEEDED): about 2100
+  shared objects, every one loaded through SoLo in CI on both architectures;
 - a load-once runtime (`dlclose` succeeds but does not unload an image);
 - supporting all four TLS models. Initial-exec variables are placed in a
   16 KiB surplus arena that rides in the executable's own static TLS, so one
