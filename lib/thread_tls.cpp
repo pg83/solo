@@ -12,6 +12,12 @@ using namespace dyn;
 
 extern "C" int __cxa_thread_atexit(void (*function)(void*), void* argument, void* dso);
 
+// The C++ runtime's __cxa_thread_atexit fallback registers a static cleanup
+// object against __dso_handle, which normally comes from crtbegin.o. The
+// vendored -nostdlib link has no crtbegin.o and GNU ld does not synthesize
+// the symbol, so define it here; weak, letting a host link's crtbegin.o win.
+extern "C" __attribute__((weak, visibility("hidden"))) void* __dso_handle = nullptr;
+
 namespace {
     struct State final: public ThreadTls {
         ~State();
