@@ -213,12 +213,13 @@ supported system.
   inventories are generated per architecture, so `printf@GLIBC_2.2.5` on one
   is `printf@GLIBC_2.17` on the other without a single translation rule in
   the code;
-- focused on real Mesa/Vulkan ICD dependency closures, and proven against
-  the top 1000 Debian library packages by popcon votes: 885 of them ship
-  glibc-linked shared objects — about 2100 objects, every one loaded through
-  SoLo in CI on both architectures. The rest of the thousand is data-only
-  packages, glibc itself, sanitizer runtimes that refuse dlopen by design,
-  and one library the snapshot itself ships broken;
+- focused on real Mesa/Vulkan ICD dependency closures, and driven by the top
+  1000 Debian library packages by popcon votes: the 885 of them that ship
+  glibc-linked shared objects — about 2100 objects — all load through SoLo
+  in CI on both architectures. Loading is the floor, not the claim: calls
+  into the symbols the bridge still stubs abort loudly, and
+  [dev/abi-demand.txt](dev/abi-demand.txt) is the remaining work, ranked by
+  how many installations demand each symbol;
 - a load-once runtime (`dlclose` succeeds but does not unload an image);
 - supporting all four TLS models. Initial-exec variables are placed in a
   16 KiB surplus arena that rides in the executable's own static TLS, so one
