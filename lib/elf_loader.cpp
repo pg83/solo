@@ -6,6 +6,7 @@
 
 #include "dlfcn.h"
 #include "glibc_shim.h"
+#include "thread_tls.h"
 
 #include <elf.h>
 #include <errno.h>
@@ -51,10 +52,7 @@
 #endif
 
 namespace {
-    static constexpr size_t MAX_TLS_MODULES = 128;
     static constexpr size_t MAX_VERSION_INDEX = 256;
-
-    static thread_local std::array<void*, MAX_TLS_MODULES> THREAD_TLS = {};
 
     [[noreturn]] static void throwError(const char* format, ...) {
         std::array<char, 1024> buffer;
@@ -415,9 +413,6 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
             image.relroSize = programHeader.p_memsz;
         } else if (programHeader.p_type == PT_TLS) {
             image.tlsModule = addTlsModule(image);
-            if (!image.tlsModule) {
-                throwError("%s: too many TLS modules", image.path.c_str());
-            }
             image.tlsTemplate = image.base + programHeader.p_vaddr;
             image.tlsFileSize = programHeader.p_filesz;
             image.tlsMemorySize = programHeader.p_memsz;
@@ -496,7 +491,9 @@ void* Loader::tlsAddress(size_t module, size_t offset) {
         throwError("TLS offset %zu exceeds module %zu size %zu", offset, module, image.tlsMemorySize);
     }
 
-    if (!THREAD_TLS[module]) {
+    auto* slot = ThreadTls::current()->tlsBlock(module);
+
+    if (!*slot) {
         auto alignment = std::max(image.tlsAlignment, sizeof(void*));
         void* block = nullptr;
 
@@ -506,10 +503,10 @@ void* Loader::tlsAddress(size_t module, size_t offset) {
 
         memset(block, 0, image.tlsMemorySize);
         memcpy(block, reinterpret_cast<const void*>(image.tlsTemplate), image.tlsFileSize);
-        THREAD_TLS[module] = block;
+        *slot = block;
     }
 
-    return static_cast<unsigned char*>(THREAD_TLS[module]) + offset;
+    return static_cast<unsigned char*>(*slot) + offset;
 }
 
 bool Loader::findAddress(const void* address, ElfAddress* res) {
@@ -547,8 +544,8 @@ int Loader::iterateProgramHeaders(ElfProgramHeaderCallback& callback) {
 
     for (const auto* image : images) {
         void* tlsData = nullptr;
-        if (image->tlsModule < THREAD_TLS.size()) {
-            tlsData = THREAD_TLS[image->tlsModule];
+        if (image->tlsModule) {
+            tlsData = *ThreadTls::current()->tlsBlock(image->tlsModule);
         }
         const ElfProgramHeaders headers{
             image->path.c_str(),
@@ -678,10 +675,6 @@ void Loader::rememberLibraryDirectory(const std::string& path) {
 }
 
 size_t Loader::addTlsModule(LinkMap& image) {
-    if (tlsModules_.size() == MAX_TLS_MODULES) {
-        return 0;
-    }
-
     tlsModules_.push_back(&image);
 
     return tlsModules_.size() - 1;

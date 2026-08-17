@@ -63,6 +63,7 @@ dlfcn_srcs = [
     "$(S)/lib/hash.cpp",
     "$(S)/lib/musl_provider.cpp",
     "$(S)/lib/musl_symbols.cpp",
+    "$(S)/lib/thread_tls.cpp",
     "$(S)/lib/tlsdesc.S",
 ]
 

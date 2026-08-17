@@ -14,6 +14,7 @@
 #include "elf_loader.h"
 #include "glibc_stubs.h"
 #include "hash.h"
+#include "thread_tls.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -427,12 +428,6 @@ namespace {
         return __cxa_atexit(function, argument, dso);
     }
 
-    struct ThreadDestructor {
-        void (*function)(void*);
-        void* argument;
-        ThreadDestructor* next;
-    };
-
     struct GlibcSymbolKey {
         std::string_view name;
         std::string_view version;
@@ -464,8 +459,6 @@ namespace {
         const unsigned short** ctypeFlags();
         void* libcSingleThreaded();
 
-        int threadAtExit(void (*function)(void*), void* argument);
-
         bool hasSymbolVersion(std::string_view name, std::string_view version) const;
         void* findOverride(std::string_view name, std::string_view version) const;
         void* findFallback(std::string_view name, std::string_view version) const;
@@ -476,9 +469,6 @@ namespace {
         char* takeDlError();
 
         static GlibcDlError& dlError();
-        static void runThreadDestructors(void* opaqueList);
-
-        pthread_key_t destructorKey_;
 
         unsigned char libcSingleThreaded_;
         int tolowerTable_[384];
@@ -1019,7 +1009,8 @@ namespace {
 
     static int sh_cxa_thread_atexit_impl(void (*function)(void*), void* argument, void* dso_handle) {
         (void)dso_handle;
-        return GlibcAdapter::instance().threadAtExit(function, argument);
+        ThreadTls::current()->registerDtor(function, argument);
+        return 0;
     }
 
     static FILE* sh_fopen64(const char* path, const char* mode) {
@@ -1745,8 +1736,7 @@ size_t GlibcSymbolKeyHash::operator()(const GlibcSymbolKey& key) const noexcept 
 }
 
 GlibcAdapter::GlibcAdapter()
-    : destructorKey_()
-    , libcSingleThreaded_(0)
+    : libcSingleThreaded_(0)
     , tolowerPointer_(tolowerTable_ + 128)
     , toupperPointer_(toupperTable_ + 128)
     , ctypePointer_(ctypeTable_ + 128)
@@ -1781,10 +1771,6 @@ GlibcAdapter::GlibcAdapter()
         flags |= ispunct(value) ? 0x0004 : 0;
         flags |= isalnum(value) ? 0x0008 : 0;
         ctypeTable_[index] = flags;
-    }
-
-    if (pthread_key_create(&destructorKey_, runThreadDestructors) != 0) {
-        abort();
     }
 
     providers_.byVersion.reserve(sizeof(sh_glibc_symbols) / sizeof(sh_glibc_symbols[0]));
@@ -1895,28 +1881,6 @@ const unsigned short** GlibcAdapter::ctypeFlags() {
 
 void* GlibcAdapter::libcSingleThreaded() {
     return &libcSingleThreaded_;
-}
-
-void GlibcAdapter::runThreadDestructors(void* opaqueList) {
-    auto* item = static_cast<ThreadDestructor*>(opaqueList);
-
-    while (item) {
-        auto* next = item->next;
-        item->function(item->argument);
-        delete item;
-        item = next;
-    }
-}
-
-int GlibcAdapter::threadAtExit(void (*function)(void*), void* argument) {
-    auto* item = new ThreadDestructor{function, argument, static_cast<ThreadDestructor*>(pthread_getspecific(destructorKey_))};
-
-    if (pthread_setspecific(destructorKey_, item) != 0) {
-        delete item;
-        return -1;
-    }
-
-    return 0;
 }
 
 bool GlibcAdapter::hasSymbolVersion(std::string_view name, std::string_view version) const {
