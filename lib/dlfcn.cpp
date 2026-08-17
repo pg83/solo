@@ -1,9 +1,6 @@
 #include "dlfcn.h"
 
-#if defined(__linux__)
-    #include "elf_loader.h"
-#endif
-
+#include "elf_loader.h"
 #include "iface_handle.h"
 #include "musl_provider.h"
 #include "thread_tls.h"
@@ -194,13 +191,11 @@ void* Handles::lookup(std::string_view s) const {
         }
     }
 
-#if defined(__linux__)
     if (auto* res = ElfImage::lookupGlobal(s); res) {
         DBG("found RTLD_GLOBAL " << s);
 
         return res;
     }
-#endif
 
     DBG("not found global " << s);
 
@@ -277,11 +272,9 @@ extern "C" void* stub_dlopen(const char* filename, int mode) {
             return res;
         }
 
-#if defined(__linux__)
         // The loader keeps one wrapper per image, so repeated dlopen of the
         // same library returns the same handle.
         return ElfImage::loadElf(filename, mode);
-#endif
     } catch (const std::exception& error) {
         setLastError(error.what());
         return nullptr;
@@ -289,10 +282,6 @@ extern "C" void* stub_dlopen(const char* filename, int mode) {
         setLastError("unknown dlopen error");
         return nullptr;
     }
-
-    setLastError("library not found");
-
-    return nullptr;
 }
 
 extern "C" int stub_dlclose(void* handle) {
@@ -312,7 +301,6 @@ extern "C" void stub_dlregister(const char* lib, const char* symbol, void* ptr) 
 }
 
 extern "C" int stub_dladdr(const void* addr, Dl_info* info) {
-#if defined(__linux__)
     clearLastError();
 
     try {
@@ -340,10 +328,6 @@ extern "C" int stub_dladdr(const void* addr, Dl_info* info) {
     } catch (...) {
         setLastError("unknown dladdr error");
     }
-#else
-    (void)addr;
-    (void)info;
-#endif
 
     return 0;
 }
