@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Load every corpus library through SoLo and report glibc ABI coverage.
+"""Load corpus libraries through SoLo and report glibc ABI coverage.
 
-Every .so of the extracted packages is loaded eagerly in a fresh process, so
-each import is exercised by relocation. Imports that resolve into abort or
-inaccessible-object stubs are collected from the bridge's debug output; the
-result is a text report and an lcov trace mapped onto the lines of
-lib/glibc_symbols.json, so the coverage service shows which ABI entries the
-corpus demands and which of them only have stubs.
+`load` handles one package: the package's own libraries are loaded eagerly in
+a fresh process each, with the declared dependency packages extracted next to
+them, and the per-library results land in a JSON file. Imports that resolve
+into abort or inaccessible-object stubs are collected from the bridge's debug
+output.
+
+`report` merges the per-package results into a text report and an lcov trace
+mapped onto the lines of lib/glibc_symbols.json, so the coverage service shows
+which ABI entries the corpus demands and which of them only have stubs.
 """
 
 import json
@@ -87,19 +90,7 @@ def glibc_imports(path):
     return imports
 
 
-def inventory_lines(path):
-    """Map name@version to its line number in glibc_symbols.json."""
-    lines = {}
-    for number, line in enumerate(path.read_text().splitlines(), 1):
-        line = line.strip().rstrip(",")
-        if not line.startswith('{"name"'):
-            continue
-        entry = json.loads(line)
-        lines[f"{entry['name']}@{entry['version']}"] = number
-    return lines
-
-
-def load(driver, library, root):
+def run_driver(driver, library, root):
     environment = os.environ.copy()
     environment["DL_GLIBC_STUB_DEBUG"] = "1"
     environment.pop("DL_ELF_LIBRARY_PATH", None)
@@ -123,55 +114,82 @@ def load(driver, library, root):
     return result.returncode == 0, stubs, error
 
 
-def main():
-    if len(sys.argv) < 6:
-        raise SystemExit("usage: corpus.py REPORT LCOV DRIVER SYMBOLS_JSON ARCHIVE...")
+def load(arguments):
+    if len(arguments) < 3:
+        raise SystemExit("usage: corpus.py load RESULT DRIVER PACKAGE [DEPENDENCY...]")
 
-    report_path = Path(sys.argv[1])
-    lcov_path = Path(sys.argv[2])
-    driver = sys.argv[3]
-    inventory = inventory_lines(Path(sys.argv[4]))
-    archives = sys.argv[5:]
+    result_path = Path(arguments[0])
+    driver = arguments[1]
+    package = arguments[2]
+    dependencies = arguments[3:]
 
+    members = subprocess.run(
+        ["bsdtar", "-tf", package], check=True, text=True, stdout=subprocess.PIPE
+    ).stdout.splitlines()
+
+    results = {}
+    failures = 0
     with tempfile.TemporaryDirectory(prefix="dlfcn-corpus-") as temporary:
         root = Path(temporary)
-        for archive in archives:
+        for archive in [package, *dependencies]:
             subprocess.run(["bsdtar", "-xpf", archive, "-C", str(root)], check=True)
 
-        libraries = sorted(
-            path
-            for path in (root / "usr" / "lib").glob("*.so*")
-            if path.is_file() and not path.is_symlink()
-        )
-
-        demanded = {}
-        results = []
-        failures = 0
-        for library in libraries:
+        for member in sorted(members):
+            library = root / member
+            if "/lib/" not in member or ".so" not in member:
+                continue
+            if not library.is_file() or library.is_symlink():
+                continue
             imports = glibc_imports(library)
             if imports is None:
                 continue
-            loaded, stubs, error = load(driver, library, root)
-            for name in imports:
-                demanded.setdefault(name, set()).add(library.name)
-            results.append((library.name, loaded, imports, stubs, error))
+            loaded, stubs, error = run_driver(driver, library, root)
+            results[library.name] = {
+                "loaded": loaded,
+                "imports": sorted(imports),
+                "stubs": sorted(stubs),
+                "error": error,
+            }
             if not loaded:
                 failures += 1
+                print(f"FAIL {library.name}: {error}", file=sys.stderr)
 
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(json.dumps(results, indent=1, sort_keys=True) + "\n")
+
+    if failures:
+        raise SystemExit(f"corpus: {failures} library(ies) failed to load")
+
+
+def report(arguments):
+    if len(arguments) < 4:
+        raise SystemExit("usage: corpus.py report REPORT LCOV SYMBOLS_JSON RESULT...")
+
+    report_path = Path(arguments[0])
+    lcov_path = Path(arguments[1])
+    inventory = {}
+    for number, line in enumerate(Path(arguments[2]).read_text().splitlines(), 1):
+        line = line.strip().rstrip(",")
+        if line.startswith('{"name"'):
+            entry = json.loads(line)
+            inventory[f"{entry['name']}@{entry['version']}"] = number
+
+    results = {}
+    for result in arguments[3:]:
+        results.update(json.loads(Path(result).read_text()))
+
+    demanded = {}
     stubbed = {}
-    for name, loaded, imports, stubs, error in results:
-        for symbol in stubs:
+    for name, library in sorted(results.items()):
+        for symbol in library["imports"]:
+            demanded.setdefault(symbol, set()).add(name)
+        for symbol in library["stubs"]:
             stubbed.setdefault(symbol, set()).add(name)
 
-    lines = []
-    lines.append(f"corpus: {len(results)} libraries, {len(results) - failures} loaded")
-    for name, loaded, imports, stubs, error in results:
-        if not loaded:
-            lines.append(f"  FAIL {name}: {error}")
-        elif stubs:
-            lines.append(f"  ok   {name}: {len(imports)} glibc imports, {len(stubs)} through stubs")
-        else:
-            lines.append(f"  ok   {name}: {len(imports)} glibc imports")
+    lines = [f"corpus: {len(results)} libraries"]
+    for name, library in sorted(results.items()):
+        stubs = f", {len(library['stubs'])} through stubs" if library["stubs"] else ""
+        lines.append(f"  ok   {name}: {len(library['imports'])} glibc imports{stubs}")
     native = sum(1 for symbol in demanded if symbol not in stubbed)
     lines.append(
         f"glibc ABI demand: {len(demanded)} unique symbols, "
@@ -180,29 +198,33 @@ def main():
     if stubbed:
         lines.append("stub-resolved (would abort or fault if used):")
         for symbol in sorted(stubbed):
-            users = ", ".join(sorted(stubbed[symbol]))
-            lines.append(f"  {symbol}  ({users})")
+            lines.append(f"  {symbol}  ({', '.join(sorted(stubbed[symbol]))})")
     unknown = sorted(symbol for symbol in demanded if symbol not in inventory)
     if unknown:
         lines.append("demanded but absent from the inventory:")
-        for symbol in unknown:
-            lines.append(f"  {symbol}")
+        lines += [f"  {symbol}" for symbol in unknown]
 
-    report = "\n".join(lines) + "\n"
-    print(report, end="")
+    text = "\n".join(lines) + "\n"
+    print(text, end="")
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(report)
+    report_path.write_text(text)
 
     trace = ["TN:", "SF:lib/glibc_symbols.json"]
     for symbol, line in sorted(inventory.items(), key=lambda item: item[1]):
-        if symbol not in demanded:
-            continue
-        trace.append(f"DA:{line},{0 if symbol in stubbed else 1}")
+        if symbol in demanded:
+            trace.append(f"DA:{line},{0 if symbol in stubbed else 1}")
     trace.append("end_of_record")
     lcov_path.write_text("\n".join(trace) + "\n")
 
-    if failures:
-        raise SystemExit(f"corpus: {failures} library(ies) failed to load")
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] not in ("load", "report"):
+        raise SystemExit("usage: corpus.py {load|report} ...")
+
+    if sys.argv[1] == "load":
+        load(sys.argv[2:])
+    else:
+        report(sys.argv[2:])
 
 
 if __name__ == "__main__":

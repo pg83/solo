@@ -905,28 +905,70 @@ corpus_packages = [
     ),
 ]
 
-corpus_archives = [downloadPackage(*package) for package in corpus_packages]
-corpus_archives.append(downloadOutputs["zlib"])
+for package in corpus_packages:
+    downloadPackage(*package)
+
+# The dependency closure of each corpus package: these packages are extracted
+# next to it, so its DT_NEEDED entries resolve. One load node per package
+# keeps the runs parallel and cached independently.
+corpus_dependencies = {
+    "libpng": ["zlib"],
+    "openssl": ["zlib", "zstd", "brotli"],
+}
 
 corpus_load = vendoredTest("corpus_load", "$(S)/tst/corpus_load.cpp")
+
+corpus_results = []
+corpus_result_targets = []
+
+for name in [*[package[0] for package in corpus_packages], "zlib"]:
+    dependencies = corpus_dependencies.get(name, [])
+    result = f"$(B)/tst/corpus/{name}.json"
+
+    corpus_results.append(result)
+    corpus_result_targets.append(command(
+        name=f"corpus_{name}",
+        inputs=[
+            "$(S)/tst/corpus.py",
+            downloadOutputs[name],
+            *[downloadOutputs[dependency] for dependency in dependencies],
+        ],
+        outputs=[result],
+        deps=[
+            corpus_load,
+            downloadTargets[name],
+            *[downloadTargets[dependency] for dependency in dependencies],
+        ],
+        cmd=[
+            "python3",
+            "$(S)/tst/corpus.py",
+            "load",
+            result,
+            "$(B)/tst/corpus_load",
+            downloadOutputs[name],
+            *[downloadOutputs[dependency] for dependency in dependencies],
+        ],
+        descr="TS",
+        color="green",
+    ))
 
 corpus = command(
     name="corpus",
     inputs=[
         "$(S)/tst/corpus.py",
         "$(S)/lib/glibc_symbols.json",
-        *corpus_archives,
+        *corpus_results,
     ],
     outputs=["$(B)/tst/corpus-report.txt", "$(B)/tst/coverage.info"],
-    deps=[corpus_load, *[downloadTargets[package[0]] for package in corpus_packages], downloadTargets["zlib"]],
+    deps=corpus_result_targets,
     cmd=[
         "python3",
         "$(S)/tst/corpus.py",
+        "report",
         "$(B)/tst/corpus-report.txt",
         "$(B)/tst/coverage.info",
-        "$(B)/tst/corpus_load",
         "$(S)/lib/glibc_symbols.json",
-        *corpus_archives,
+        *corpus_results,
     ],
     descr="TS",
     color="green",
