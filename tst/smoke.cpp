@@ -1,6 +1,7 @@
 #include "dlfcn.h"
 #include "elf_loader.h"
 #include "musl_symbols.h"
+#include "fault_report.h"
 
 #include <pthread.h>
 #include <semaphore.h>
@@ -100,6 +101,8 @@ namespace {
 }
 
 int main() {
+    installFaultReport();
+
 #if defined(__x86_64__)
     auto* libc = stub_dlopen("libc.musl-x86_64.so.1", RTLD_NOW | RTLD_LOCAL);
 #elif defined(__aarch64__)
