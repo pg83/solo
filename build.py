@@ -25,9 +25,28 @@ linker_flags = []
 if shutil.which("ld") is None and (lld := shutil.which("ld.lld")):
     linker_flags.append(f"-fuse-ld={lld}")
 
-# Targets built against the vendored musl and libc++ instead of the host libc.
-vendoredTargets = ("vulkan", "vulkan_test", "pthread_bridge", "pthread_test", "test")
-vulkanBuild = any(argument in vendoredTargets for argument in sys.argv[1:])
+# Every test links the vendored musl and libc++, like the vulkan demo, and the
+# include list below is global to an invocation. A run that also built the host
+# library would compile it against the vendored libc++ and link it against the
+# host one, so the two worlds are kept in separate invocations, loudly.
+hostTargets = ("dlfcn", "install")
+vendoredTargets = (
+    "arch_smoke",
+    "pthread_bridge",
+    "pthread_test",
+    "smoke",
+    "test",
+    "vulkan",
+    "vulkan_test",
+)
+requested = [argument for argument in sys.argv[1:] if not argument.startswith("-")]
+vendoredBuild = any(argument in vendoredTargets for argument in requested)
+
+if vendoredBuild and any(argument in hostTargets for argument in requested):
+    raise SystemExit(
+        "build.py: the tests build against the vendored runtime and cannot share "
+        "an invocation with the host library; build them separately"
+    )
 
 
 def symbolHeader(kind):
@@ -72,16 +91,6 @@ dlfcn = library(
     cppflags=["-DCOMPILE_DLOPEN"],
     public_cppflags=["-I$(S)/lib"],
     output="$(B)/libdlfcn.a",
-)
-
-smoke = program(
-    name="smoke",
-    srcs=[
-        "$(S)/tst/smoke.cpp",
-    ],
-    deps=[dlfcn],
-    ldflags=["-static"],
-    output="$(B)/tst/smoke",
 )
 
 
@@ -132,7 +141,7 @@ compiler_rt_root = f"{llvm_root}/compiler-rt/builtins"
 vulkan_headers_root = f"{vulkan_root}/vulkan/headers/include"
 vulkan_loader_root = f"{vulkan_root}/vulkan/loader/loader"
 
-if vulkanBuild:
+if vendoredBuild:
     build.includes += [
         "$(S)/lib",
         "$(B)/bin/vulkan/libcxx/include",
@@ -633,70 +642,70 @@ vulkan = command(
     color="light-blue",
 )
 
-pthread_bridge_app = library(
-    name="pthread_bridge_app",
-    srcs=[
-        {
-            "src": "$(S)/tst/pthread_bridge.cpp",
-            "inputs": [libcxx_config_path],
-        },
-    ],
-    deps=[*runtime_generated, *symbol_headers],
-    includes=["$(B)/lib"],
-    cflags=c_runtime_flags,
-    cxxflags=cxx_runtime_flags,
-    output="$(B)/tst/lib/libpthread_bridge_app.a",
-)
 
-pthread_bridge_archives = [
-    pthread_bridge_app,
-    dlfcn_static,
-    libcxx,
-    libcxxabi,
-    libunwind,
-    musl,
-    compiler_rt,
-]
+def vendoredTest(name, source):
+    application = library(
+        name=f"{name}_app",
+        srcs=[{"src": source, "inputs": [libcxx_config_path]}],
+        deps=[*runtime_generated, *symbol_headers],
+        includes=["$(B)/lib"],
+        cflags=c_runtime_flags,
+        cxxflags=cxx_runtime_flags,
+        output=f"$(B)/tst/lib/lib{name}_app.a",
+    )
+    archives = [
+        application,
+        dlfcn_static,
+        libcxx,
+        libcxxabi,
+        libunwind,
+        musl,
+        compiler_rt,
+    ]
 
-pthread_bridge = command(
-    name="pthread_bridge",
-    inputs=[
-        vulkan_crt1.output,
-        vulkan_crti.output,
-        vulkan_crtn.output,
-        *[archive.output for archive in pthread_bridge_archives],
-    ],
-    outputs=["$(B)/tst/pthread_bridge"],
-    deps=[vulkan_crt1, vulkan_crti, vulkan_crtn, *pthread_bridge_archives],
-    cmd=[
-        cc,
-        *linker_flags,
-        "-nostdlib",
-        "-static",
-        "-Wl,--no-pie",
-        "-Wl,--build-id=none",
-        "-Wl,--gc-sections",
-        "-Wl,-z,noexecstack",
-        "-Wl,-e,_start",
-        "-o",
-        "$(B)/tst/pthread_bridge",
-        "-Wl,--whole-archive",
-        vulkan_crti.output,
-        vulkan_crt1.output,
-        "-Wl,--no-whole-archive",
-        "-Wl,--start-group",
-        "-Wl,--whole-archive",
-        pthread_bridge_app.output,
-        "-Wl,--no-whole-archive",
-        *[archive.output for archive in pthread_bridge_archives[1:]],
-        "-Wl,--end-group",
-        "-Wl,--whole-archive",
-        vulkan_crtn.output,
-        "-Wl,--no-whole-archive",
-    ],
-    descr="LD",
-    color="light-blue",
-)
+    return command(
+        name=name,
+        inputs=[
+            vulkan_crt1.output,
+            vulkan_crti.output,
+            vulkan_crtn.output,
+            *[archive.output for archive in archives],
+        ],
+        outputs=[f"$(B)/tst/{name}"],
+        deps=[vulkan_crt1, vulkan_crti, vulkan_crtn, *archives],
+        cmd=[
+            cc,
+            *linker_flags,
+            "-nostdlib",
+            "-static",
+            "-Wl,--no-pie",
+            "-Wl,--build-id=none",
+            "-Wl,--gc-sections",
+            "-Wl,-z,noexecstack",
+            "-Wl,-e,_start",
+            "-o",
+            f"$(B)/tst/{name}",
+            "-Wl,--whole-archive",
+            vulkan_crti.output,
+            vulkan_crt1.output,
+            "-Wl,--no-whole-archive",
+            "-Wl,--start-group",
+            "-Wl,--whole-archive",
+            application.output,
+            "-Wl,--no-whole-archive",
+            *[archive.output for archive in archives[1:]],
+            "-Wl,--end-group",
+            "-Wl,--whole-archive",
+            vulkan_crtn.output,
+            "-Wl,--no-whole-archive",
+        ],
+        descr="LD",
+        color="light-blue",
+    )
+
+
+smoke = vendoredTest("smoke", "$(S)/tst/smoke.cpp")
+pthread_bridge = vendoredTest("pthread_bridge", "$(S)/tst/pthread_bridge.cpp")
 
 pthread_test = command(
     name="pthread_test",
