@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <deque>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -20,12 +21,18 @@ namespace {
         void registerDtor(void (*function)(void*), void* argument) override;
         void** tlsBlock(size_t module) override;
 
+        void setDlError(std::string_view error) override;
+        void clearDlError() override;
+        char* takeDlError() override;
+
         void drainDtors();
 
         std::vector<std::pair<void (*)(void*), void*>> dtors_;
         // A deque keeps the slot pointers tlsBlock() hands out stable while
         // the container grows.
         std::deque<void*> blocks_;
+        std::string dlError_;
+        std::string takenDlError_;
     };
 
     static void threadExit(void* opaque) {
@@ -60,6 +67,25 @@ void** State::tlsBlock(size_t module) {
     }
 
     return &blocks_[module];
+}
+
+void State::setDlError(std::string_view error) {
+    dlError_.assign(error);
+}
+
+void State::clearDlError() {
+    dlError_.clear();
+}
+
+char* State::takeDlError() {
+    if (dlError_.empty()) {
+        return nullptr;
+    }
+
+    takenDlError_.swap(dlError_);
+    dlError_.clear();
+
+    return takenDlError_.data();
 }
 
 ThreadTls* ThreadTls::current() {

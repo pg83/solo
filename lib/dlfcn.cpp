@@ -5,6 +5,7 @@
 #endif
 
 #include "musl_provider.h"
+#include "thread_tls.h"
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -77,32 +78,16 @@ namespace {
     };
 #endif
 
-    static thread_local char DL_ERROR[1024] = {};
-    static thread_local bool HAS_DL_ERROR = false;
-
-    static inline void setLastError(const std::string_view& error) noexcept {
-        auto size = error.size();
-
-        if (size >= sizeof(DL_ERROR)) {
-            size = sizeof(DL_ERROR) - 1;
-        }
-        memcpy(DL_ERROR, error.data(), size);
-        DL_ERROR[size] = 0;
-        HAS_DL_ERROR = true;
+    static inline void setLastError(const std::string_view& error) {
+        ThreadTls::current()->setDlError(error);
     }
 
-    static inline void clearLastError() noexcept {
-        HAS_DL_ERROR = false;
+    static inline void clearLastError() {
+        ThreadTls::current()->clearDlError();
     }
 
-    static auto lastError() noexcept {
-        if (!HAS_DL_ERROR) {
-            return static_cast<char*>(nullptr);
-        }
-
-        HAS_DL_ERROR = false;
-
-        return DL_ERROR;
+    static char* lastError() {
+        return ThreadTls::current()->takeDlError();
     }
 
     static std::string baseName(const std::string& s) {

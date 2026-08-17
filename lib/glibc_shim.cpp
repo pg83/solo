@@ -444,11 +444,6 @@ namespace {
         std::unordered_map<std::string_view, void*> byName;
     };
 
-    struct GlibcDlError {
-        char text[1024];
-        bool present;
-    };
-
     struct GlibcAdapter {
         GlibcAdapter();
 
@@ -463,12 +458,6 @@ namespace {
         void* findOverride(std::string_view name, std::string_view version) const;
         void* findFallback(std::string_view name, std::string_view version) const;
         void* resolveSymbol(std::string_view name, std::string_view version, bool weak);
-
-        void clearDlError();
-        void setDlError(std::string_view error);
-        char* takeDlError();
-
-        static GlibcDlError& dlError();
 
         unsigned char libcSingleThreaded_;
         int tolowerTable_[384];
@@ -1175,11 +1164,15 @@ namespace {
         stub_dlerror();
     }
 
-    static void copyStubError(std::string_view fallback) noexcept {
-        if (auto* error = stub_dlerror(); error) {
-            GlibcAdapter::instance().setDlError(error);
+    // Leave a pending error for dlerror(): the one the stubs raised, or the
+    // fallback when they raised none.
+    static void copyStubError(std::string_view fallback) {
+        auto* tls = ThreadTls::current();
+
+        if (auto* error = tls->takeDlError(); error) {
+            tls->setDlError(error);
         } else {
-            GlibcAdapter::instance().setDlError(fallback);
+            tls->setDlError(fallback);
         }
     }
 
@@ -1297,10 +1290,7 @@ namespace {
     }
 
     static void* sh_glibc_dlopen(const char* path, int flags) {
-        auto& adapter = GlibcAdapter::instance();
-
-        adapter.clearDlError();
-        consumeStubError();
+        ThreadTls::current()->clearDlError();
 
         auto translated = sh_translate_dlopen_flags(flags);
         auto* provider = path ? runtimeProvider(path) : "";
@@ -1319,22 +1309,19 @@ namespace {
 
             return new GlibcStubLoaderHandle(handle);
         } catch (const std::exception& error) {
-            adapter.setDlError(error.what());
+            ThreadTls::current()->setDlError(error.what());
         } catch (...) {
-            adapter.setDlError("unknown dlopen error");
+            ThreadTls::current()->setDlError("unknown dlopen error");
         }
 
         return nullptr;
     }
 
     static void* sh_glibc_dlsym(void* handle, const char* name) {
-        auto& adapter = GlibcAdapter::instance();
-
-        adapter.clearDlError();
-        consumeStubError();
+        ThreadTls::current()->clearDlError();
 
         if (!name) {
-            adapter.setDlError("symbol name is null");
+            ThreadTls::current()->setDlError("symbol name is null");
             return nullptr;
         }
 
@@ -1358,13 +1345,10 @@ namespace {
     }
 
     static void* sh_glibc_dlvsym(void* handle, const char* name, const char* version) {
-        auto& adapter = GlibcAdapter::instance();
-
-        adapter.clearDlError();
-        consumeStubError();
+        ThreadTls::current()->clearDlError();
 
         if (!name || !version) {
-            adapter.setDlError("symbol name or version is null");
+            ThreadTls::current()->setDlError("symbol name or version is null");
             return nullptr;
         }
 
@@ -1388,27 +1372,16 @@ namespace {
     }
 
     static int sh_glibc_dlclose(void* handle) {
-        auto& adapter = GlibcAdapter::instance();
-
-        adapter.clearDlError();
-        consumeStubError();
+        ThreadTls::current()->clearDlError();
 
         if (!handle || handle == (void*)(uintptr_t)-1) {
-            adapter.setDlError("invalid handle");
+            ThreadTls::current()->setDlError("invalid handle");
             return -1;
         }
 
         delete reinterpret_cast<GlibcHandle*>(handle);
 
         return 0;
-    }
-
-    static char* sh_glibc_dlerror(void) {
-        if (auto* error = GlibcAdapter::instance().takeDlError(); error) {
-            return error;
-        }
-
-        return stub_dlerror();
     }
 
     static locale_t sh_newlocale(int mask, const char* name, locale_t base) {
@@ -1564,7 +1537,7 @@ namespace {
         SH_FUNCTION("getenv", "GLIBC_2.2.5", getenv),
         SH_FUNCTION("__isoc23_strtoul", "GLIBC_2.38", sh_isoc23_strtoul),
         SH_FUNCTION("__snprintf_chk", "GLIBC_2.3.4", sh_snprintf_chk),
-        SH_FUNCTION("dlerror", "GLIBC_2.34", sh_glibc_dlerror),
+        SH_FUNCTION("dlerror", "GLIBC_2.34", stub_dlerror),
         SH_FUNCTION("free", "GLIBC_2.2.5", free),
         SH_FUNCTION("abort", "GLIBC_2.2.5", abort),
         SH_FUNCTION("__errno_location", "GLIBC_2.2.5", sh_errno_location),
@@ -1945,40 +1918,6 @@ void* GlibcAdapter::resolveSymbol(std::string_view name, std::string_view versio
     }
 
     return nullptr;
-}
-
-GlibcDlError& GlibcAdapter::dlError() {
-    static thread_local GlibcDlError error{};
-
-    return error;
-}
-
-void GlibcAdapter::clearDlError() {
-    dlError().present = false;
-}
-
-void GlibcAdapter::setDlError(std::string_view error) {
-    auto& state = dlError();
-    auto size = error.size();
-
-    if (size >= sizeof(state.text)) {
-        size = sizeof(state.text) - 1;
-    }
-    memcpy(state.text, error.data(), size);
-    state.text[size] = 0;
-    state.present = true;
-}
-
-char* GlibcAdapter::takeDlError() {
-    auto& state = dlError();
-
-    if (!state.present) {
-        return nullptr;
-    }
-
-    state.present = false;
-
-    return state.text;
 }
 
 void* resolveGlibcSymbol(std::string_view name, std::string_view version, bool weak) {
