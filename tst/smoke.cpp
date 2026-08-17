@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #include <exception>
 
 namespace {
@@ -272,6 +273,12 @@ int main() {
 
     if (!enumerate) {
         fprintf(stderr, "symbol lookup failed\n");
+        return 1;
+    }
+
+    Dl_info info = {};
+    if (!stub_dladdr(reinterpret_cast<const void*>(enumerate), &info) || !info.dli_sname || strcmp(info.dli_sname, "vkEnumerateInstanceVersion") != 0 || info.dli_saddr != reinterpret_cast<void*>(enumerate)) {
+        fprintf(stderr, "dladdr symbol resolution failed: %s %p\n", info.dli_sname ? info.dli_sname : "(null)", info.dli_saddr);
         return 1;
     }
 

@@ -138,6 +138,7 @@ namespace {
         const char* strings = nullptr;
         size_t stringsSize = 0;
         Elf64_Sym* symbols = nullptr;
+        size_t symbolCount = 0;
         uint32_t* gnuHash = nullptr;
         Elf64_Half* symbolVersions = nullptr;
         std::array<std::string_view, MAX_VERSION_INDEX> versionNames = {};
@@ -217,6 +218,7 @@ namespace {
 
         static void parseVersions(LinkMap& image, uintptr_t needAddress, size_t needCount, uintptr_t definitionAddress, size_t definitionCount);
         static void parseDynamic(LinkMap& image);
+        static size_t countSymbols(const LinkMap& image) noexcept;
 
         static std::string_view symbolVersion(const LinkMap& image, size_t symbolIndex) noexcept;
         static uint32_t gnuHash(const std::string_view& name) noexcept;
@@ -508,20 +510,48 @@ void* Loader::tlsAddress(const LinkMap& image, size_t offset) {
 bool Loader::findAddress(const void* address, ElfAddress* res) {
     std::lock_guard lock(mutex_);
     auto needle = reinterpret_cast<uintptr_t>(address);
-    auto image = imagesByAddress_.upper_bound(needle);
+    auto found = imagesByAddress_.upper_bound(needle);
 
-    if (image == imagesByAddress_.begin()) {
+    if (found == imagesByAddress_.begin()) {
         return false;
     }
-    --image;
-    if (needle >= image->second->mapStart + image->second->mapSize) {
+    --found;
+
+    const auto& image = *found->second;
+
+    if (needle >= image.mapStart + image.mapSize) {
         return false;
     }
 
     *res = ElfAddress{
-        image->second->path,
-        reinterpret_cast<void*>(image->second->base),
+        image.path,
+        reinterpret_cast<void*>(image.base),
     };
+
+    // The nearest defined symbol whose storage covers the address.
+    uintptr_t best = 0;
+
+    for (size_t index = 0; index < image.symbolCount; ++index) {
+        const auto& symbol = image.symbols[index];
+        auto type = ELF64_ST_TYPE(symbol.st_info);
+
+        if (symbol.st_shndx == SHN_UNDEF || (type != STT_FUNC && type != STT_OBJECT && type != STT_GNU_IFUNC)) {
+            continue;
+        }
+
+        auto start = image.base + symbol.st_value;
+
+        if (needle < start || start < best || symbol.st_name >= image.stringsSize) {
+            continue;
+        }
+        if (symbol.st_size ? needle >= start + symbol.st_size : needle != start) {
+            continue;
+        }
+
+        best = start;
+        res->symbol = image.strings + symbol.st_name;
+        res->symbolAddress = reinterpret_cast<void*>(start);
+    }
 
     return true;
 }
@@ -847,7 +877,34 @@ void Loader::parseDynamic(LinkMap& image) {
     image.relocationCount = relocationSize / sizeof(Elf64_Rela);
     image.pltRelocationCount = pltRelocationSize / sizeof(Elf64_Rela);
     image.relativeRelocationCount = relativeRelocationSize / sizeof(Elf64_Addr);
+    image.symbolCount = countSymbols(image);
     parseVersions(image, needVersions, needVersionCount, definedVersions, definedVersionCount);
+}
+
+// The dynamic section has no symbol count; recover it from the GNU hash
+// table as one past the highest chain index.
+size_t Loader::countSymbols(const LinkMap& image) noexcept {
+    auto bucketCount = image.gnuHash[0];
+    auto symbolOffset = image.gnuHash[1];
+    auto bloomSize = image.gnuHash[2];
+    const auto* bloom = reinterpret_cast<const Elf64_Xword*>(image.gnuHash + 4);
+    const auto* buckets = reinterpret_cast<const uint32_t*>(bloom + bloomSize);
+    const auto* chains = buckets + bucketCount;
+    size_t count = symbolOffset;
+
+    for (uint32_t bucket = 0; bucket < bucketCount; ++bucket) {
+        auto index = buckets[bucket];
+
+        if (index < symbolOffset) {
+            continue;
+        }
+        while (!(chains[index - symbolOffset] & 1)) {
+            ++index;
+        }
+        count = std::max(count, static_cast<size_t>(index) + 1);
+    }
+
+    return count;
 }
 
 std::string_view Loader::symbolVersion(const LinkMap& image, size_t symbolIndex) noexcept {

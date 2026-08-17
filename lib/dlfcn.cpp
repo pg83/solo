@@ -319,6 +319,10 @@ extern "C" int stub_dladdr(const void* addr, Dl_info* info) {
             if (ElfImage::findAddress(addr, &found)) {
                 info->dli_fname = found.path.data();
                 info->dli_fbase = found.base;
+                if (!found.symbol.empty()) {
+                    info->dli_sname = found.symbol.data();
+                    info->dli_saddr = found.symbolAddress;
+                }
 
                 return 1;
             }

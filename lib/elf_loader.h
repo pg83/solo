@@ -9,7 +9,10 @@
 
 struct ElfAddress {
     std::string_view path;
-    void* base;
+    void* base = nullptr;
+    // The containing symbol, when the image has one; empty otherwise.
+    std::string_view symbol;
+    void* symbolAddress = nullptr;
 };
 
 struct ElfProgramHeaders {
@@ -25,7 +28,7 @@ struct ElfProgramHeaderCallback {
     virtual int call(const ElfProgramHeaders& image) = 0;
 };
 
-struct ElfImage: IfaceHandle {
+struct ElfImage: public IfaceHandle {
     virtual ~ElfImage() noexcept;
 
     static ElfImage* loadElf(std::string_view path, int flags);
