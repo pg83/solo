@@ -11,16 +11,37 @@ elfTlsDescEntry:
      *
      * There are eight pushes (64 bytes).  At function entry %rsp is 8 mod 16;
      * reserving another 264 bytes leaves it 16-byte aligned for the call.
+     *
+     * The CFI directives describe the frame so debuggers and profilers can
+     * unwind through a descriptor call.
      */
+    .cfi_startproc
     pushq %rdi
+    .cfi_adjust_cfa_offset 8
+    .cfi_rel_offset %rdi, 0
     pushq %rsi
+    .cfi_adjust_cfa_offset 8
+    .cfi_rel_offset %rsi, 0
     pushq %rdx
+    .cfi_adjust_cfa_offset 8
+    .cfi_rel_offset %rdx, 0
     pushq %rcx
+    .cfi_adjust_cfa_offset 8
+    .cfi_rel_offset %rcx, 0
     pushq %r8
+    .cfi_adjust_cfa_offset 8
+    .cfi_rel_offset %r8, 0
     pushq %r9
+    .cfi_adjust_cfa_offset 8
+    .cfi_rel_offset %r9, 0
     pushq %r10
+    .cfi_adjust_cfa_offset 8
+    .cfi_rel_offset %r10, 0
     pushq %r11
+    .cfi_adjust_cfa_offset 8
+    .cfi_rel_offset %r11, 0
     subq $264, %rsp
+    .cfi_adjust_cfa_offset 264
 
     movdqu %xmm0, 0(%rsp)
     movdqu %xmm1, 16(%rsp)
@@ -62,15 +83,33 @@ elfTlsDescEntry:
     movdqu 240(%rsp), %xmm15
 
     addq $264, %rsp
+    .cfi_adjust_cfa_offset -264
     popq %r11
+    .cfi_adjust_cfa_offset -8
+    .cfi_restore %r11
     popq %r10
+    .cfi_adjust_cfa_offset -8
+    .cfi_restore %r10
     popq %r9
+    .cfi_adjust_cfa_offset -8
+    .cfi_restore %r9
     popq %r8
+    .cfi_adjust_cfa_offset -8
+    .cfi_restore %r8
     popq %rcx
+    .cfi_adjust_cfa_offset -8
+    .cfi_restore %rcx
     popq %rdx
+    .cfi_adjust_cfa_offset -8
+    .cfi_restore %rdx
     popq %rsi
+    .cfi_adjust_cfa_offset -8
+    .cfi_restore %rsi
     popq %rdi
+    .cfi_adjust_cfa_offset -8
+    .cfi_restore %rdi
     ret
+    .cfi_endproc
 .size elfTlsDescEntry, .-elfTlsDescEntry
 
 .section .note.GNU-stack,"",@progbits
