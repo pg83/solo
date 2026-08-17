@@ -515,6 +515,10 @@ static void processors(void) {
     if (access("/etc/ttys", F_OK) != 0) {
         CHECK(getttynam("console") == NULL);
     }
+
+    /* The internal alias aarch64 libgcc probes the LSE hwcap through. */
+    unsigned long __getauxval(unsigned long type);
+    CHECK(__getauxval(AT_PAGESZ) == getauxval(AT_PAGESZ));
 }
 
 static void expressions(void) {

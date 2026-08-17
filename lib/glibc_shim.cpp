@@ -2003,6 +2003,8 @@ namespace {
         SH_FUNCTION("wctob", "GLIBC_2.2.5", wctob),
         SH_FUNCTION("btowc", "GLIBC_2.2.5", btowc),
         SH_FUNCTION("getauxval", "GLIBC_2.16", getauxval),
+        // aarch64 libgcc probes the LSE hwcap through the internal alias.
+        SH_FUNCTION("__getauxval", "GLIBC_2.16", getauxval),
         SH_FUNCTION("__wcrtomb_chk", "GLIBC_2.4", sh_wcrtomb_chk),
         SH_FUNCTION("__ctype_b_loc", "GLIBC_2.3", sh_ctype_b_loc),
         SH_FUNCTION("__ctype_toupper_loc", "GLIBC_2.3", sh_ctype_toupper_loc),
