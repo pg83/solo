@@ -245,6 +245,10 @@ target_flags = [
     "-fno-stack-protector",
     "-fno-omit-frame-pointer",
 ]
+if machine == "aarch64":
+    # The static world links no libgcc, so the LSE outline-atomic helpers
+    # have no provider; inline LL/SC atomics need none.
+    target_flags.append("-mno-outline-atomics")
 c_runtime_flags = [
     *target_flags,
     "-nostdinc",
