@@ -208,11 +208,6 @@ supported system.
 
 ## Scope
 
-SoLo is early systems software, not a claim to implement every corner of glibc
-or every ELF ever produced.
-
-Today it is:
-
 - Linux x86-64 only;
 - focused on real Mesa/Vulkan ICD dependency closures;
 - a load-once runtime (`dlclose` succeeds but does not unload an image);
