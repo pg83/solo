@@ -20,9 +20,10 @@ top of musl.
 The result is still one ordinary static executable, but it can use the graphics
 driver already installed on the machine.
 
-The repository includes an end-to-end Vulkan proof: a static executable with
-no `PT_INTERP` and no `DT_NEEDED` loads an unmodified system Mesa ICD, runs a
-compute shader, and writes the result to a PNG.
+The repository includes an end-to-end Vulkan proof: a fully static executable
+loads the host's unmodified Vulkan driver, runs a compute shader, and writes
+the result to a PNG. Tested on radv, radeonsi, Intel, and NVIDIA GPUs under
+Linux, and on Apple M1 under Asahi Linux.
 
 **The host keeps the hardware-specific code. You ship everything else.**
 
