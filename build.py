@@ -842,243 +842,415 @@ arch_smoke = command(
     color="green",
 )
 
-# A corpus of real glibc-linked libraries with a dependency closure that stays
-# inside the corpus (plus zlib from the smoke set). Every .so is loaded
-# eagerly through SoLo, and the resulting glibc ABI coverage lands in
-# $(B)/tst/coverage.info for the coverage service.
+# A corpus of real glibc-linked libraries, pinned inside one
+# snapshot.debian.org timestamp: the snapshot archive keeps every package
+# version forever, so these URLs never rot, and the same names and versions
+# exist for every architecture. The dependency closure of each package stays
+# inside the corpus. Every .so is loaded eagerly through SoLo, and the
+# resulting glibc ABI coverage lands in $(B)/tst/coverage.info for the
+# coverage service.
 corpus_packages = [
     (
         "sqlite",
-        "https://archive.archlinux.org/packages/s/sqlite/"
-        "sqlite-3.53.4-1-x86_64.pkg.tar.zst",
-        "sqlite-3.53.4-1-x86_64.pkg.tar.zst",
-        "910e7e59acc3a51c7e3468bb45c7ca20d5e987eaf2c26e4e8ad9f0624bef76d2",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/s/sqlite3/"
+        "libsqlite3-0_3.53.4-1_amd64.deb",
+        "libsqlite3-0_3.53.4-1_amd64.deb",
+        "40babee800d1a15ba2f6fc87075824745f2c22164955b86846a6e636d4992203",
     ),
     (
         "openssl",
-        "https://archive.archlinux.org/packages/o/openssl/"
-        "openssl-3.6.3-1-x86_64.pkg.tar.zst",
-        "openssl-3.6.3-1-x86_64.pkg.tar.zst",
-        "85fdbdd57b6773a9b94d4d54c39deecd808aac6bc48d6d42c36ce712283665b3",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/o/openssl/"
+        "libssl3t64_3.6.3-1_amd64.deb",
+        "libssl3t64_3.6.3-1_amd64.deb",
+        "487a94fcf2120a558b60a0fcf3b6f39cdf56f125dbe15ef62ecaed9f1cb42759",
+    ),
+    (
+        "openssl-legacy",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/o/openssl/"
+        "openssl-provider-legacy_3.6.3-1_amd64.deb",
+        "openssl-provider-legacy_3.6.3-1_amd64.deb",
+        "bfe48a9ec5f60fd43481add5d0f730201b6882581cbd37066de89040ca00a5a7",
     ),
     (
         "expat",
-        "https://archive.archlinux.org/packages/e/expat/"
-        "expat-2.8.3-1-x86_64.pkg.tar.zst",
-        "expat-2.8.3-1-x86_64.pkg.tar.zst",
-        "04785503de1fb932eec7c8a7d50a815c4706df293bf7acf92953be02882c6cad",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/e/expat/"
+        "libexpat1_2.8.2-1_amd64.deb",
+        "libexpat1_2.8.2-1_amd64.deb",
+        "37d24b40a745107941f823d1f22c38f197f01981f7f0783777fe0026af016463",
     ),
     (
         "libffi",
-        "https://archive.archlinux.org/packages/l/libffi/"
-        "libffi-3.8.0-1-x86_64.pkg.tar.zst",
-        "libffi-3.8.0-1-x86_64.pkg.tar.zst",
-        "5d21227f2a1d10db60d0cf5bb02b36a1801ae61dc7dae8c3bc1afa548afd8601",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libf/libffi/"
+        "libffi8_3.7.1-2_amd64.deb",
+        "libffi8_3.7.1-2_amd64.deb",
+        "29a8bfdbc8c66c005efc458a3a6d91c7621fa7320e05774d901ea64cd687eeb3",
     ),
     (
         "pcre2",
-        "https://archive.archlinux.org/packages/p/pcre2/"
-        "pcre2-10.47-1-x86_64.pkg.tar.zst",
-        "pcre2-10.47-1-x86_64.pkg.tar.zst",
-        "54e0d8c998d2748f47fead1926b04357719bdd00fa1cea84901c3af501aab002",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/p/pcre2/"
+        "libpcre2-8-0_10.46-1+b2_amd64.deb",
+        "libpcre2-8-0_10.46-1+b2_amd64.deb",
+        "a15b5dc06ffff7aab6dd7bf2e65691791162426215eff373b2cc851dc1d7848e",
     ),
     (
         "zstd",
-        "https://archive.archlinux.org/packages/z/zstd/"
-        "zstd-1.5.7-3-x86_64.pkg.tar.zst",
-        "zstd-1.5.7-3-x86_64.pkg.tar.zst",
-        "d4cf0049137124c8a025eedfad267a3e8a02310c9efb9d1ae4a61aa1d02789fc",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libz/libzstd/"
+        "libzstd1_1.5.7+dfsg-3+b2_amd64.deb",
+        "libzstd1_1.5.7+dfsg-3+b2_amd64.deb",
+        "5ce884018be1a8bd7a3beb0db95c7b18e1d49246afdfd08889bc9faa48375933",
     ),
     (
         "xz",
-        "https://archive.archlinux.org/packages/x/xz/"
-        "xz-5.8.3-1-x86_64.pkg.tar.zst",
-        "xz-5.8.3-1-x86_64.pkg.tar.zst",
-        "03b9eefeb02c27c4f30fce4481cb5bd2922c0391f628665911c156970285d5d9",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/x/xz-utils/"
+        "liblzma5_5.8.3-1_amd64.deb",
+        "liblzma5_5.8.3-1_amd64.deb",
+        "4ce668e1fd6e2251068d48f72bf9f666eb29e55fade9adc933cfb0866d716be5",
     ),
     (
         "bzip2",
-        "https://archive.archlinux.org/packages/b/bzip2/"
-        "bzip2-1.0.8-6-x86_64.pkg.tar.zst",
-        "bzip2-1.0.8-6-x86_64.pkg.tar.zst",
-        "8779003d659c441b952095c19907603a738c1366f25cc51be3fd139fa4e95748",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/b/bzip2/"
+        "libbz2-1.0_1.0.8-6+b2_amd64.deb",
+        "libbz2-1.0_1.0.8-6+b2_amd64.deb",
+        "04c7528234a6a4a8a2c2470f1470a7a616d90904fe8cdccf4c2c655540cdc61f",
     ),
     (
         "libpng",
-        "https://archive.archlinux.org/packages/l/libpng/"
-        "libpng-1.6.58-2-x86_64.pkg.tar.zst",
-        "libpng-1.6.58-2-x86_64.pkg.tar.zst",
-        "54d7a4647f7289e2c5dc44f87e325d3c84af82b6277fcc292f9a80cdf31e2a69",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libp/libpng1.6/"
+        "libpng16-16t64_1.6.58-1_amd64.deb",
+        "libpng16-16t64_1.6.58-1_amd64.deb",
+        "e01786b8495d7e120333c5208e0d166f080b325f56d7213150a6e83ac912e4e8",
     ),
     (
         "brotli",
-        "https://archive.archlinux.org/packages/b/brotli/"
-        "brotli-1.2.0-1-x86_64.pkg.tar.zst",
-        "brotli-1.2.0-1-x86_64.pkg.tar.zst",
-        "4a0c95d5967476d0efdaf76d344b61e3eee02cd7920a315e457f3fd96311b7ec",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/b/brotli/"
+        "libbrotli1_1.2.0-3_amd64.deb",
+        "libbrotli1_1.2.0-3_amd64.deb",
+        "d30e4e5a7b181a7574fd87666a124892556aefc193688e018b22b4d7400350b3",
     ),
     (
-        "util-linux-libs",
-        "https://archive.archlinux.org/packages/u/util-linux-libs/"
-        "util-linux-libs-2.42.2-1-x86_64.pkg.tar.zst",
-        "util-linux-libs-2.42.2-1-x86_64.pkg.tar.zst",
-        "50e5541bafc8e7013d1cfe7fe90cba2d5e96ac05acf3e8d1540f21daf24fb9c9",
+        "libmount",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/u/util-linux/"
+        "libmount1_2.42.2-2_amd64.deb",
+        "libmount1_2.42.2-2_amd64.deb",
+        "c46d37e2456166e8fe73270c8f048f1938f417ede87ce83fb16bc31f9a164527",
+    ),
+    (
+        "libblkid",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/u/util-linux/"
+        "libblkid1_2.42.2-2_amd64.deb",
+        "libblkid1_2.42.2-2_amd64.deb",
+        "94cae00ff08d0cac48bc8349257830a4e354cd2a0121a639c63f3956a1cfe9a5",
+    ),
+    (
+        "libuuid",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/u/util-linux/"
+        "libuuid1_2.42.2-2_amd64.deb",
+        "libuuid1_2.42.2-2_amd64.deb",
+        "406c2975b7b201d94c08aa88e7ef66ba6082d6caa20dc01a49b6cc49b6354079",
+    ),
+    (
+        "libselinux",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libs/libselinux/"
+        "libselinux1_3.11-2_amd64.deb",
+        "libselinux1_3.11-2_amd64.deb",
+        "07f9cadfafdebd4487b323eed5dcc7ba65bf1f639df1fcf7225869839edad539",
     ),
     (
         "systemd-libs",
-        "https://archive.archlinux.org/packages/s/systemd-libs/"
-        "systemd-libs-261.2-1-x86_64.pkg.tar.zst",
-        "systemd-libs-261.2-1-x86_64.pkg.tar.zst",
-        "c12d5a2c4bb7cc0088af3f6addddac3219277a14b4aefb135b508d6d9ea15de9",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/s/systemd/"
+        "libsystemd0_261.2-1_amd64.deb",
+        "libsystemd0_261.2-1_amd64.deb",
+        "13b8835c64c5fa97ca03107032a73c288962fa0300654a285d78624028cee6b6",
+    ),
+    (
+        "libudev",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/s/systemd/"
+        "libudev1_261.2-1_amd64.deb",
+        "libudev1_261.2-1_amd64.deb",
+        "23d38d6777cac55b02b999c88f9ff17a9b14a7046b6eeb6d9901cb6bac7df15b",
+    ),
+    (
+        "nss-systemd",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/s/systemd/"
+        "libnss-systemd_261.2-1_amd64.deb",
+        "libnss-systemd_261.2-1_amd64.deb",
+        "0a7e646ad3f468a2c4e76a107c45d9e99b87355f1fdf849d817e64e799a1d2da",
+    ),
+    (
+        "nss-mymachines",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/s/systemd/"
+        "libnss-mymachines_261.2-1_amd64.deb",
+        "libnss-mymachines_261.2-1_amd64.deb",
+        "6860d1b474b88ad3eaced58515ae94cd01376add5204e3bd6803d28bdc3de14b",
     ),
     (
         "libcap",
-        "https://archive.archlinux.org/packages/l/libcap/"
-        "libcap-2.78-1-x86_64.pkg.tar.zst",
-        "libcap-2.78-1-x86_64.pkg.tar.zst",
-        "3e984fe1d323b1c5a5fc60fef005776a4882fbca913d6fe3c41ad11128929ed1",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libc/libcap2/"
+        "libcap2_2.78-1_amd64.deb",
+        "libcap2_2.78-1_amd64.deb",
+        "ba722e941e4ea13c42e47b3e8fcd79529af090abf8ae530bb643a8844da74cd1",
     ),
     (
         "lz4",
-        "https://archive.archlinux.org/packages/l/lz4/"
-        "lz4-1:1.10.0-2-x86_64.pkg.tar.zst",
-        "lz4-1:1.10.0-2-x86_64.pkg.tar.zst",
-        "c6200c776440678fe8c26adae6c104194b425d9393a9e3fc09f934363f0c39a6",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/l/lz4/"
+        "liblz4-1_1.10.0-10_amd64.deb",
+        "liblz4-1_1.10.0-10_amd64.deb",
+        "069d0349906af0335de6cb6a4132f0ac45c1e1db0dffffdcb5b1d291f8f6a66f",
+    ),
+    (
+        "xxhash",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/x/xxhash/"
+        "libxxhash0_0.8.3-2+b2_amd64.deb",
+        "libxxhash0_0.8.3-2+b2_amd64.deb",
+        "3dc2a55daf655f3c07df99b2be4cb7eea6b79089e66407f6739fe40c267907c4",
+    ),
+    (
+        "libtinfo",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/n/ncurses/"
+        "libtinfo6_6.6+20260608-2_amd64.deb",
+        "libtinfo6_6.6+20260608-2_amd64.deb",
+        "14682d1f6e35df22df0fe1eb2c09418aff0e29e2ea5a7bc0aa1bcd37192ba5a7",
     ),
     (
         "ncurses",
-        "https://archive.archlinux.org/packages/n/ncurses/"
-        "ncurses-6.6-2-x86_64.pkg.tar.zst",
-        "ncurses-6.6-2-x86_64.pkg.tar.zst",
-        "9b80390fd681121443a45a51b74e2e2ade245ce22af8769915d63165b727e27c",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/n/ncurses/"
+        "libncursesw6_6.6+20260608-2_amd64.deb",
+        "libncursesw6_6.6+20260608-2_amd64.deb",
+        "91dbb5e4ebe44a010703f916b4c4675aa3f54516601bbffe6612bd07e92d2071",
     ),
     (
         "readline",
-        "https://archive.archlinux.org/packages/r/readline/"
-        "readline-8.3.003-1-x86_64.pkg.tar.zst",
-        "readline-8.3.003-1-x86_64.pkg.tar.zst",
-        "a4e861378069dcb15c6fbd52a1f5d9ed01b4bce5fb208268c7c182341f5f3960",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/r/readline/"
+        "libreadline8t64_8.3-4_amd64.deb",
+        "libreadline8t64_8.3-4_amd64.deb",
+        "1b65e285f312f9073dc4f0dafe44143d986bd8914e4a03af3ca59d68f238d02c",
     ),
     (
         "gmp",
-        "https://archive.archlinux.org/packages/g/gmp/"
-        "gmp-6.3.0-3-x86_64.pkg.tar.zst",
-        "gmp-6.3.0-3-x86_64.pkg.tar.zst",
-        "2969061e117d2a8c19d89427b0b88e1c956a6269bc0602087d41aecd15097064",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/g/gmp/"
+        "libgmp10_6.3.0+dfsg-5+b2_amd64.deb",
+        "libgmp10_6.3.0+dfsg-5+b2_amd64.deb",
+        "032743c787f0e1e644e4dcfbdb38f01be8cb150cb9633f8be5e79aba6938f349",
+    ),
+    (
+        "gmpxx",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/g/gmp/"
+        "libgmpxx4ldbl_6.3.0+dfsg-5+b2_amd64.deb",
+        "libgmpxx4ldbl_6.3.0+dfsg-5+b2_amd64.deb",
+        "c04dcc52fd657aadf385f70a0841e5df09ab81f6d0f3367ae31d6cfc8e972da7",
     ),
     (
         "nettle",
-        "https://archive.archlinux.org/packages/n/nettle/"
-        "nettle-4.0-1-x86_64.pkg.tar.zst",
-        "nettle-4.0-1-x86_64.pkg.tar.zst",
-        "679138a8405ca383aba7836d54fdc282db9394b7dc23c097b8965f70119adf13",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/n/nettle/"
+        "libnettle8t64_3.10.2-1+b1_amd64.deb",
+        "libnettle8t64_3.10.2-1+b1_amd64.deb",
+        "213f9f0119cd63efc2529401547bad5f6d2cea4cae5d05cffdef22f19aabb30e",
+    ),
+    (
+        "hogweed",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/n/nettle/"
+        "libhogweed6t64_3.10.2-1+b1_amd64.deb",
+        "libhogweed6t64_3.10.2-1+b1_amd64.deb",
+        "d5872392a9d3b9b6e06f3dbd07a3f954346226d9fa2f318c4a3b5732b060fc44",
     ),
     (
         "libgpg-error",
-        "https://archive.archlinux.org/packages/l/libgpg-error/"
-        "libgpg-error-1.61-1-x86_64.pkg.tar.zst",
-        "libgpg-error-1.61-1-x86_64.pkg.tar.zst",
-        "7d5a5b39f588b275558f5e13bd792bff84cf89abb6d48e3e494d6c30e8ea9ca4",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libg/libgpg-error/"
+        "libgpg-error0_1.61-3_amd64.deb",
+        "libgpg-error0_1.61-3_amd64.deb",
+        "4c23e2388d2eaecf74cb7143b183f37a41f87c13b1c2499009cef1504ff1d14d",
     ),
     (
         "libgcrypt",
-        "https://archive.archlinux.org/packages/l/libgcrypt/"
-        "libgcrypt-1.12.2-1-x86_64.pkg.tar.zst",
-        "libgcrypt-1.12.2-1-x86_64.pkg.tar.zst",
-        "27429de23607abb32994f589574d6e680ca3ddf0fdebae82b23fddb4f66ec64c",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libg/libgcrypt20/"
+        "libgcrypt20_1.12.2-1_amd64.deb",
+        "libgcrypt20_1.12.2-1_amd64.deb",
+        "8a7fa72e7778091223400fec3ea24beb0f0d9af62a2f3f06287acb5a4fe91c60",
     ),
     (
         "libsodium",
-        "https://archive.archlinux.org/packages/l/libsodium/"
-        "libsodium-1.0.22-1-x86_64.pkg.tar.zst",
-        "libsodium-1.0.22-1-x86_64.pkg.tar.zst",
-        "fc0440c108fff0341f3cb7b4ee38f5a9406b45d9315205ce999e1b147b52f972",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libs/libsodium/"
+        "libsodium26_1.0.22-2_amd64.deb",
+        "libsodium26_1.0.22-2_amd64.deb",
+        "18d593b1aaab48f126bd3636f009fc5294f948c4960c171b7e73eab9f814f198",
     ),
     (
         "json-c",
-        "https://archive.archlinux.org/packages/j/json-c/"
-        "json-c-0.19-1-x86_64.pkg.tar.zst",
-        "json-c-0.19-1-x86_64.pkg.tar.zst",
-        "a2ebb9395bfc18a29abd21b6dd756519114e4e6241d6321588ada285ded4d63f",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/j/json-c/"
+        "libjson-c5_0.19+ds-1_amd64.deb",
+        "libjson-c5_0.19+ds-1_amd64.deb",
+        "22a29043cacb0972466c2b978031f37a2c9fe47a3986c87bb2a6755be08844f8",
     ),
     (
         "libjpeg-turbo",
-        "https://archive.archlinux.org/packages/l/libjpeg-turbo/"
-        "libjpeg-turbo-3.2.0-2-x86_64.pkg.tar.zst",
-        "libjpeg-turbo-3.2.0-2-x86_64.pkg.tar.zst",
-        "14e743e58bbab35665d3e59ea71bd411f81a01d995e0101442f5f4c82c9de0ab",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libj/libjpeg-turbo/"
+        "libjpeg62-turbo_3.1.3-4_amd64.deb",
+        "libjpeg62-turbo_3.1.3-4_amd64.deb",
+        "402b02ea2f4aaf8922343e4c08c374cf07f26fb88323f87e1047ec475b3f12b5",
     ),
     (
         "libdeflate",
-        "https://archive.archlinux.org/packages/l/libdeflate/"
-        "libdeflate-1.25-1-x86_64.pkg.tar.zst",
-        "libdeflate-1.25-1-x86_64.pkg.tar.zst",
-        "4e9b5d01558db0cddfbd2a6a48ed6baf92bbe65af4d0dd1ae390206fe76080ee",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libd/libdeflate/"
+        "libdeflate0_1.25-1_amd64.deb",
+        "libdeflate0_1.25-1_amd64.deb",
+        "2d724580f5da70168e415b776d2a8b93777a562677c13d63b438c5519d329f45",
     ),
     (
         "jbigkit",
-        "https://archive.archlinux.org/packages/j/jbigkit/"
-        "jbigkit-2.1-8-x86_64.pkg.tar.zst",
-        "jbigkit-2.1-8-x86_64.pkg.tar.zst",
-        "ca53fa884681273162aadcf99c30514a7010d5e621eb0a5ae491500ae8dc52c9",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/j/jbigkit/"
+        "libjbig0_2.1-6.1+b3_amd64.deb",
+        "libjbig0_2.1-6.1+b3_amd64.deb",
+        "2ea1be21e83f9692fe50549b6129bfb3c2bc1bb3ad2d98811c61660c50ae1513",
+    ),
+    (
+        "sharpyuv",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libw/libwebp/"
+        "libsharpyuv0_1.5.0-0.1+b2_amd64.deb",
+        "libsharpyuv0_1.5.0-0.1+b2_amd64.deb",
+        "1cb284ea8c832fb6903ec3bd4e68a2f8d5175307753886149d9920992387f59b",
     ),
     (
         "libwebp",
-        "https://archive.archlinux.org/packages/l/libwebp/"
-        "libwebp-1.6.0-2-x86_64.pkg.tar.zst",
-        "libwebp-1.6.0-2-x86_64.pkg.tar.zst",
-        "a80e7edd3ddd27c6fd8cd83d0bd98d46b3f0279b7ee01f5baeded0d6f26f8975",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libw/libwebp/"
+        "libwebp7_1.5.0-0.1+b2_amd64.deb",
+        "libwebp7_1.5.0-0.1+b2_amd64.deb",
+        "52a7946593bfc63adbebeecc4d58fcdbebb3023e7e29f3e2aa59b063d0a80209",
+    ),
+    (
+        "lerc",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/l/lerc/"
+        "liblerc4_4.2.0+ds-1_amd64.deb",
+        "liblerc4_4.2.0+ds-1_amd64.deb",
+        "6048745ecb91bfb44bc31ec24b951266923beb697f574694f006cb57c8eb0d09",
     ),
     (
         "libtiff",
-        "https://archive.archlinux.org/packages/l/libtiff/"
-        "libtiff-4.7.2-1-x86_64.pkg.tar.zst",
-        "libtiff-4.7.2-1-x86_64.pkg.tar.zst",
-        "0627d404a16663e5c2fb11b6698daa69ae93ae8747ee279aecaf3f86bd547a61",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/t/tiff/"
+        "libtiff6_4.7.2-1_amd64.deb",
+        "libtiff6_4.7.2-1_amd64.deb",
+        "f621fbc15856bf88b26e7d6fe1679c0a6588e6f45f7d2f1844bc043fcf39b3df",
     ),
     (
         "libnghttp2",
-        "https://archive.archlinux.org/packages/l/libnghttp2/"
-        "libnghttp2-1.70.0-1-x86_64.pkg.tar.zst",
-        "libnghttp2-1.70.0-1-x86_64.pkg.tar.zst",
-        "332e2cb2d953dab326f97a3257594f8031ec0fce6305e2bcd5d64d9832c84778",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/n/nghttp2/"
+        "libnghttp2-14_1.69.0-1_amd64.deb",
+        "libnghttp2-14_1.69.0-1_amd64.deb",
+        "8747d3f60a7395f81db1d82ce4f55cc19e28c5f94da18d1804e9dcd26926888b",
     ),
     (
         "libssh2",
-        "https://archive.archlinux.org/packages/l/libssh2/"
-        "libssh2-1.11.1-7-x86_64.pkg.tar.zst",
-        "libssh2-1.11.1-7-x86_64.pkg.tar.zst",
-        "462cca91bff394c2719b7e8d1951f0c0a2db979d71521ac93dba6b6b6974f6b9",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libs/libssh2/"
+        "libssh2-1t64_1.11.1-5_amd64.deb",
+        "libssh2-1t64_1.11.1-5_amd64.deb",
+        "0830ea69ede584d803a26cde3684b51a2fc2d0fc450408d8253de6a308925c70",
     ),
     (
         "libxml2",
-        "https://archive.archlinux.org/packages/l/libxml2/"
-        "libxml2-2.15.3-1-x86_64.pkg.tar.zst",
-        "libxml2-2.15.3-1-x86_64.pkg.tar.zst",
-        "51807c20a300bf85db48ae7f2f8967bec291439764b29279e3297dff3247ed4f",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/libx/libxml2/"
+        "libxml2-16_2.15.3+dfsg-1_amd64.deb",
+        "libxml2-16_2.15.3+dfsg-1_amd64.deb",
+        "b920f80146fb87f38402508ce1abda303bd3c8f4acb1f8c1b9b2f68a3c11e478",
     ),
     (
         "icu",
-        "https://archive.archlinux.org/packages/i/icu/"
-        "icu-78.3-1-x86_64.pkg.tar.zst",
-        "icu-78.3-1-x86_64.pkg.tar.zst",
-        "118fe41efa6c550f3fe67893946dcea2c6cbb5272299a6ddf4160fb17f3e4bb0",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/i/icu/"
+        "libicu78_78.3-2_amd64.deb",
+        "libicu78_78.3-2_amd64.deb",
+        "dc918ea6cbe7bb6feea43aac3920a86a29dcc5faf4c56d8f0948408f9076d866",
     ),
     (
         "glib2",
-        "https://archive.archlinux.org/packages/g/glib2/"
-        "glib2-2.88.3-1-x86_64.pkg.tar.zst",
-        "glib2-2.88.3-1-x86_64.pkg.tar.zst",
-        "9569884e1f670d46e40ea0b8ca4ea2a1a29689be297fed1390bc5af9a03967d2",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/g/glib2.0/"
+        "libglib2.0-0t64_2.88.3-1_amd64.deb",
+        "libglib2.0-0t64_2.88.3-1_amd64.deb",
+        "726d76956bace02383e86606c14f819990b06f3cbdeb340e3d3b8f7d91cb862a",
     ),
     # jemalloc carries 1976 bytes of initial-exec TLS: the regression test
     # for the surplus static TLS arena.
     (
         "jemalloc",
-        "https://archive.archlinux.org/packages/j/jemalloc/"
-        "jemalloc-1:5.3.1-3-x86_64.pkg.tar.zst",
-        "jemalloc-1:5.3.1-3-x86_64.pkg.tar.zst",
-        "6a08d4f038a799e895576b6e970593402cbafdfea1ffcc37476c9f49382b3a57",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/j/jemalloc/"
+        "libjemalloc2_5.3.1-2_amd64.deb",
+        "libjemalloc2_5.3.1-2_amd64.deb",
+        "115b797f5a25d70cbe81373c9f1cce78536ed2a8a6d9dd5a061682a2340a25df",
+    ),
+    (
+        "zlib1g",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/z/zlib/"
+        "zlib1g_1.3.dfsg+really1.3.2-3_amd64.deb",
+        "zlib1g_1.3.dfsg+really1.3.2-3_amd64.deb",
+        "52c585b07bea72ef36df9ddd5d1937f4739d3caec057d827954baec256292651",
+    ),
+    (
+        "libatomic",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/g/gcc-16/"
+        "libatomic1_16.1.0-3_amd64.deb",
+        "libatomic1_16.1.0-3_amd64.deb",
+        "4033832e95e8be6acae307a025420fc1a810365614c8472c591cb204a00a0853",
+    ),
+    (
+        "libgcc-s1",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/g/gcc-16/"
+        "libgcc-s1_16.1.0-3_amd64.deb",
+        "libgcc-s1_16.1.0-3_amd64.deb",
+        "820799aced43edcc1f7fd0a32edabc8761de90ac5fd15b515b86bbd0d237c590",
+    ),
+    (
+        "libstdcxx6",
+        "https://snapshot.debian.org/archive/debian/20260801T022406Z/"
+        "pool/main/g/gcc-16/"
+        "libstdc++6_16.1.0-3_amd64.deb",
+        "libstdc++6_16.1.0-3_amd64.deb",
+        "f173c9a44daa0206e6c943202eb9d7c46d5817565dfbd10af16877ce0cefe585",
     ),
 ]
 
@@ -1089,21 +1261,26 @@ for package in corpus_packages:
 # next to it, so its DT_NEEDED entries resolve. One load node per package
 # keeps the runs parallel and cached independently.
 corpus_dependencies = {
-    "glib2": ["pcre2", "libffi", "zlib", "util-linux-libs", "systemd-libs", "libgcc"],
-    "jemalloc": ["libstdcxx", "libgcc"],
-    "gmp": ["libstdcxx", "libgcc"],
-    "icu": ["libstdcxx", "libgcc"],
+    "glib2": ["pcre2", "libffi", "zlib1g", "libmount", "libblkid", "libselinux", "systemd-libs", "libatomic", "libgcc-s1"],
+    "gmpxx": ["gmp", "libstdcxx6", "libgcc-s1"],
+    "hogweed": ["nettle", "gmp"],
+    "icu": ["libstdcxx6", "libgcc-s1"],
+    "jemalloc": ["libstdcxx6", "libgcc-s1"],
+    "lerc": ["libstdcxx6", "libgcc-s1"],
     "libgcrypt": ["libgpg-error"],
-    "libpng": ["zlib"],
-    "libssh2": ["openssl", "zlib", "zstd", "brotli"],
-    "libtiff": ["libjpeg-turbo", "zlib", "xz", "zstd", "libdeflate", "jbigkit", "libwebp", "libstdcxx", "libgcc"],
-    "libxml2": ["zlib", "xz", "icu", "libstdcxx", "libgcc"],
-    "ncurses": ["libstdcxx", "libgcc"],
-    "nettle": ["gmp"],
-    "openssl": ["zlib", "zstd", "brotli"],
-    "readline": ["ncurses"],
-    "systemd-libs": ["libgcc"],
-    "util-linux-libs": ["sqlite", "systemd-libs", "libgcc"],
+    "libmount": ["libblkid", "libselinux", "pcre2", "systemd-libs"],
+    "libpng": ["zlib1g"],
+    "libselinux": ["pcre2"],
+    "libssh2": ["openssl", "zstd", "zlib1g"],
+    "libstdcxx6": ["libgcc-s1"],
+    "libtiff": ["libjpeg-turbo", "zlib1g", "xz", "zstd", "libdeflate", "jbigkit", "libwebp", "sharpyuv", "lerc", "libstdcxx6", "libgcc-s1"],
+    "libwebp": ["sharpyuv"],
+    "libxml2": ["zlib1g"],
+    "lz4": ["xxhash"],
+    "ncurses": ["libtinfo"],
+    "openssl": ["zstd", "zlib1g"],
+    "openssl-legacy": ["openssl", "zstd", "zlib1g"],
+    "readline": ["libtinfo"],
 }
 
 # The glibc-vs-musl ABI table: reruns only when the pinned glibc, the vendored
@@ -1142,7 +1319,7 @@ corpus_load = vendoredTest("corpus_load", "$(S)/tst/corpus_load.cpp")
 corpus_results = []
 corpus_result_targets = []
 
-for name in [*[package[0] for package in corpus_packages], "zlib"]:
+for name in [package[0] for package in corpus_packages]:
     dependencies = corpus_dependencies.get(name, [])
     result = f"$(B)/tst/corpus/{name}.json"
 

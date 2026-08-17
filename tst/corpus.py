@@ -90,11 +90,38 @@ def glibc_imports(path):
     return imports
 
 
+def members(package):
+    """The archive's file list; a .deb nests it inside data.tar."""
+    if package.endswith(".deb"):
+        data = subprocess.run(
+            ["bsdtar", "-xOf", package, "data.tar.*"], check=True, stdout=subprocess.PIPE
+        ).stdout
+        listing = subprocess.run(
+            ["bsdtar", "-tf", "-"], input=data, check=True, stdout=subprocess.PIPE
+        ).stdout
+        return listing.decode().splitlines()
+    return subprocess.run(
+        ["bsdtar", "-tf", package], check=True, text=True, stdout=subprocess.PIPE
+    ).stdout.splitlines()
+
+
+def extract(package, root):
+    if package.endswith(".deb"):
+        data = subprocess.run(
+            ["bsdtar", "-xOf", package, "data.tar.*"], check=True, stdout=subprocess.PIPE
+        ).stdout
+        subprocess.run(["bsdtar", "-xpf", "-", "-C", str(root)], input=data, check=True)
+    else:
+        subprocess.run(["bsdtar", "-xpf", package, "-C", str(root)], check=True)
+
+
 def run_driver(driver, library, root):
     environment = os.environ.copy()
     environment["DL_GLIBC_STUB_DEBUG"] = "1"
     environment.pop("DL_ELF_LIBRARY_PATH", None)
-    environment["LD_LIBRARY_PATH"] = str(root / "usr" / "lib")
+    environment["LD_LIBRARY_PATH"] = os.pathsep.join(
+        str(root / path) for path in ("usr/lib/x86_64-linux-gnu", "usr/lib")
+    )
     result = subprocess.run(
         [driver, str(library)],
         env=environment,
@@ -123,18 +150,14 @@ def load(arguments):
     package = arguments[2]
     dependencies = arguments[3:]
 
-    members = subprocess.run(
-        ["bsdtar", "-tf", package], check=True, text=True, stdout=subprocess.PIPE
-    ).stdout.splitlines()
-
     results = {}
     failures = 0
     with tempfile.TemporaryDirectory(prefix="dlfcn-corpus-") as temporary:
         root = Path(temporary)
         for archive in [package, *dependencies]:
-            subprocess.run(["bsdtar", "-xpf", archive, "-C", str(root)], check=True)
+            extract(archive, root)
 
-        for member in sorted(members):
+        for member in sorted(members(package)):
             library = root / member
             # Only the top-level libraries and the packages' plugin modules;
             # language bindings under site-packages need their interpreter.
