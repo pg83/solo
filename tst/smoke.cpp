@@ -99,7 +99,11 @@ namespace {
 }
 
 int main() {
+#if defined(__x86_64__)
     auto* libc = stub_dlopen("libc.musl-x86_64.so.1", RTLD_NOW | RTLD_LOCAL);
+#elif defined(__aarch64__)
+    auto* libc = stub_dlopen("libc.musl-aarch64.so.1", RTLD_NOW | RTLD_LOCAL);
+#endif
 
     if (!libc) {
         fprintf(stderr, "static libc provider failed: %s\n", stub_dlerror());
@@ -208,7 +212,12 @@ int main() {
 
     auto* rawPthreadCreate = stub_dlsym(libc, "pthread_create");
     auto* bridgedPthreadCreate = glibcLookup("libpthread.so.0", "pthread_create");
+    // The oldest version glibc ever gave pthread_create on the architecture.
+#if defined(__x86_64__)
     auto* oldPthreadCreate = glibcVersionLookup("libc.so.6", "pthread_create", "GLIBC_2.2.5");
+#elif defined(__aarch64__)
+    auto* oldPthreadCreate = glibcVersionLookup("libc.so.6", "pthread_create", "GLIBC_2.17");
+#endif
     auto* newPthreadCreate = glibcVersionLookup("libc.so.6", "pthread_create", "GLIBC_2.34");
 
     if (!bridgedPthreadCreate || bridgedPthreadCreate == rawPthreadCreate || oldPthreadCreate != bridgedPthreadCreate || newPthreadCreate != bridgedPthreadCreate || glibcDefaultLookup("pthread_create") != bridgedPthreadCreate) {

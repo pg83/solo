@@ -208,7 +208,11 @@ supported system.
 
 ## Scope
 
-- Linux x86-64 only;
+- Linux only, on x86-64 and aarch64. The loader, the TLSDESC and lazy-PLT
+  resolvers, and the initial-exec arena cover both; the glibc symbol
+  inventories are generated per architecture, so `printf@GLIBC_2.2.5` on one
+  is `printf@GLIBC_2.17` on the other without a single translation rule in
+  the code;
 - focused on real Mesa/Vulkan ICD dependency closures;
 - a load-once runtime (`dlclose` succeeds but does not unload an image);
 - supporting all four TLS models. Initial-exec variables are placed in a

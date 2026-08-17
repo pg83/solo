@@ -8,12 +8,14 @@ into abort or inaccessible-object stubs are collected from the bridge's debug
 output.
 
 `report` merges the per-package results into a text report and an lcov trace
-mapped onto the lines of lib/glibc_symbols.json, so the coverage service shows
-which ABI entries the corpus demands and which of them only have stubs.
+mapped onto the lines of the platform's glibc symbol inventory, so the
+coverage service shows which ABI entries the corpus demands and which of them
+only have stubs.
 """
 
 import json
 import os
+import platform
 import struct
 import subprocess
 import sys
@@ -120,7 +122,8 @@ def run_driver(driver, library, root):
     environment["DL_GLIBC_STUB_DEBUG"] = "1"
     environment.pop("DL_ELF_LIBRARY_PATH", None)
     environment["LD_LIBRARY_PATH"] = os.pathsep.join(
-        str(root / path) for path in ("usr/lib/x86_64-linux-gnu", "usr/lib")
+        str(root / path)
+        for path in (f"usr/lib/{platform.machine()}-linux-gnu", "usr/lib")
     )
     result = subprocess.run(
         [driver, str(library)],
@@ -194,8 +197,9 @@ def report(arguments):
 
     report_path = Path(arguments[0])
     lcov_path = Path(arguments[1])
+    symbols_path = Path(arguments[2])
     inventory = {}
-    for number, line in enumerate(Path(arguments[2]).read_text().splitlines(), 1):
+    for number, line in enumerate(symbols_path.read_text().splitlines(), 1):
         line = line.strip().rstrip(",")
         if line.startswith('{"name"'):
             entry = json.loads(line)
@@ -236,7 +240,7 @@ def report(arguments):
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(text)
 
-    trace = ["TN:", "SF:lib/glibc_symbols.json"]
+    trace = ["TN:", f"SF:lib/{symbols_path.name}"]
     for symbol, line in sorted(inventory.items(), key=lambda item: item[1]):
         if symbol in demanded:
             trace.append(f"DA:{line},{0 if symbol in stubbed else 1}")

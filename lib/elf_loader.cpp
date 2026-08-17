@@ -59,16 +59,32 @@ using namespace dyn;
     #define DF_1_NOW 0x1
 #endif
 
-#ifndef R_X86_64_IRELATIVE
-    #define R_X86_64_IRELATIVE 37
-#endif
-
-#ifndef R_X86_64_TLSDESC
-    #define R_X86_64_TLSDESC 36
-#endif
-
-#ifndef R_X86_64_TPOFF64
-    #define R_X86_64_TPOFF64 18
+// The dynamic relocations of the supported architectures under one set of
+// names; numeric values, because libc elf.h coverage varies.
+#if defined(__x86_64__)
+    #define ELF_MACHINE EM_X86_64
+    #define R_ARCH_ABS64 1 /* R_ARCH_ABS64 */
+    #define R_ARCH_GLOB_DAT 6
+    #define R_ARCH_JUMP_SLOT 7
+    #define R_ARCH_RELATIVE 8
+    #define R_ARCH_TLS_DTPMOD 16 /* R_ARCH_TLS_DTPMOD */
+    #define R_ARCH_TLS_DTPREL 17 /* R_ARCH_TLS_DTPREL */
+    #define R_ARCH_TLS_TPREL 18 /* R_ARCH_TLS_TPREL */
+    #define R_ARCH_TLSDESC 36
+    #define R_ARCH_IRELATIVE 37
+#elif defined(__aarch64__)
+    #define ELF_MACHINE EM_AARCH64
+    #define R_ARCH_ABS64 257 /* R_AARCH64_ABS64 */
+    #define R_ARCH_GLOB_DAT 1025
+    #define R_ARCH_JUMP_SLOT 1026
+    #define R_ARCH_RELATIVE 1027
+    #define R_ARCH_TLS_DTPMOD 1028
+    #define R_ARCH_TLS_DTPREL 1029
+    #define R_ARCH_TLS_TPREL 1030
+    #define R_ARCH_TLSDESC 1031
+    #define R_ARCH_IRELATIVE 1032
+#else
+    #error "unsupported architecture"
 #endif
 
 #ifndef STT_GNU_IFUNC
@@ -140,12 +156,37 @@ namespace {
         0x2a, 0x68, 0xb0, 0xf5, 0x3c, 0x81, 0xd6, 0x4b,
     };
 
+    // An ifunc resolver call. The aarch64 ABI hands resolvers the hwcaps so
+    // they can pick an implementation without reading the auxv themselves;
+    // bit 62 of the first argument says the second one is present.
+    static uintptr_t resolveIfunc(uintptr_t resolver) {
+#if defined(__x86_64__)
+        return reinterpret_cast<uintptr_t (*)()>(resolver)();
+#elif defined(__aarch64__)
+        struct {
+            unsigned long size;
+            unsigned long hwcap;
+            unsigned long hwcap2;
+        } arguments = {
+            sizeof(arguments),
+            getauxval(AT_HWCAP),
+            getauxval(AT_HWCAP2),
+        };
+
+        return reinterpret_cast<uintptr_t (*)(unsigned long, const void*)>(resolver)(arguments.hwcap | (1UL << 62), &arguments);
+#endif
+    }
+
     static uintptr_t threadPointer() {
         uintptr_t pointer;
 
+#if defined(__x86_64__)
         // musl keeps the pthread self pointer, whose value is the thread
         // pointer itself, at %fs:0.
         __asm__("mov %%fs:0, %0" : "=r"(pointer));
+#elif defined(__aarch64__)
+        __asm__("mrs %0, tpidr_el0" : "=r"(pointer));
+#endif
 
         return pointer;
     }
@@ -234,8 +275,9 @@ namespace {
         size_t tlsMemorySize = 0;
         size_t tlsAlignment = 0;
         // Thread-pointer-relative offset of the module's block in the static
-        // TLS arena, always negative on x86-64; 0 for modules served from the
-        // dynamic per-thread blocks instead.
+        // TLS arena: negative on x86-64 (TLS below the thread pointer),
+        // positive on aarch64 (above it), and never 0, which marks modules
+        // served from the dynamic per-thread blocks instead.
         intptr_t staticTlsOffset = 0;
 
         std::unique_ptr<ElfImage> wrapper;
@@ -492,8 +534,8 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
     Elf64_Ehdr header;
 
     file.read(&header, sizeof(header), 0);
-    if (memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 || header.e_ident[EI_CLASS] != ELFCLASS64 || header.e_ident[EI_DATA] != ELFDATA2LSB || header.e_machine != EM_X86_64 || header.e_type != ET_DYN || header.e_phentsize != sizeof(Elf64_Phdr)) {
-        throwError("%s: not a supported x86-64 ET_DYN ELF", resolved->c_str());
+    if (memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 || header.e_ident[EI_CLASS] != ELFCLASS64 || header.e_ident[EI_DATA] != ELFDATA2LSB || header.e_machine != ELF_MACHINE || header.e_type != ET_DYN || header.e_phentsize != sizeof(Elf64_Phdr)) {
+        throwError("%s: not an ET_DYN ELF for this machine", resolved->c_str());
     }
 
     auto imageOwner = std::make_unique<LinkMap>();
@@ -925,8 +967,13 @@ std::optional<std::string> Loader::resolvePath(const std::string_view& path) con
         std::string_view("/lib"),
         std::string_view("/usr/lib64"),
         std::string_view("/lib64"),
+#if defined(__x86_64__)
         std::string_view("/usr/lib/x86_64-linux-gnu"),
         std::string_view("/lib/x86_64-linux-gnu"),
+#elif defined(__aarch64__)
+        std::string_view("/usr/lib/aarch64-linux-gnu"),
+        std::string_view("/lib/aarch64-linux-gnu"),
+#endif
     };
 
     for (auto directory : systemDirectories) {
@@ -1044,7 +1091,11 @@ bool Loader::isGlibcDependency(const std::string_view& name) noexcept {
         std::string_view("libdl.so.2"),
         std::string_view("libm.so.6"),
         std::string_view("librt.so.1"),
+#if defined(__x86_64__)
         std::string_view("ld-linux-x86-64.so.2"),
+#elif defined(__aarch64__)
+        std::string_view("ld-linux-aarch64.so.1"),
+#endif
     };
 
     return std::find(dependencies.begin(), dependencies.end(), name) != dependencies.end();
@@ -1456,9 +1507,7 @@ void* Loader::materialize(Definition definition) {
     auto type = ELF64_ST_TYPE(definition.symbol->st_info);
 
     if (type == STT_GNU_IFUNC) {
-        auto resolver = reinterpret_cast<uintptr_t (*)()>(definition.address);
-
-        return reinterpret_cast<void*>(resolver());
+        return reinterpret_cast<void*>(resolveIfunc(definition.address));
     }
     if (type == STT_TLS) {
         uintptr_t index[2] = {
@@ -1502,32 +1551,31 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
     auto symbolIndex = ELF64_R_SYM(relocation.r_info);
     auto* where = reinterpret_cast<uintptr_t*>(image.base + relocation.r_offset);
 
-    if (type == R_X86_64_RELATIVE) {
+    if (type == R_ARCH_RELATIVE) {
         *where = image.base + relocation.r_addend;
         return false;
     }
-    if (type == R_X86_64_IRELATIVE) {
+    if (type == R_ARCH_IRELATIVE) {
         if (!allowIfunc) {
             return true;
         }
 
-        auto resolver = reinterpret_cast<uintptr_t (*)()>(image.base + relocation.r_addend);
-        *where = resolver();
+        *where = resolveIfunc(image.base + relocation.r_addend);
         return false;
     }
     if (!symbolIndex) {
-        if (type == R_X86_64_DTPMOD64) {
+        if (type == R_ARCH_TLS_DTPMOD) {
             if (!image.tlsModule) {
                 throwError("%s: local TLS relocation has no module", image.path.c_str());
             }
             *where = reinterpret_cast<uintptr_t>(&image);
             return false;
         }
-        if (type == R_X86_64_DTPOFF64) {
+        if (type == R_ARCH_TLS_DTPREL) {
             *where = relocation.r_addend;
             return false;
         }
-        if (type == R_X86_64_TLSDESC) {
+        if (type == R_ARCH_TLSDESC) {
             if (!image.tlsModule) {
                 throwError("%s: local TLSDESC has no module", image.path.c_str());
             }
@@ -1539,7 +1587,7 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
             where[1] = reinterpret_cast<uintptr_t>(argument);
             return false;
         }
-        if (type == R_X86_64_TPOFF64) {
+        if (type == R_ARCH_TLS_TPREL) {
             if (!image.tlsModule) {
                 throwError("%s: local initial-exec relocation has no module", image.path.c_str());
             }
@@ -1564,19 +1612,18 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
         return true;
     }
     if (ifunc) {
-        auto resolver = reinterpret_cast<uintptr_t (*)()>(definition.address);
-        definition.address = resolver();
+        definition.address = resolveIfunc(definition.address);
     }
 
     switch (type) {
-        case R_X86_64_64:
+        case R_ARCH_ABS64:
             *where = definition.address + relocation.r_addend;
             return false;
-        case R_X86_64_GLOB_DAT:
-        case R_X86_64_JUMP_SLOT:
+        case R_ARCH_GLOB_DAT:
+        case R_ARCH_JUMP_SLOT:
             *where = definition.address;
             return false;
-        case R_X86_64_DTPMOD64:
+        case R_ARCH_TLS_DTPMOD:
             if (!symbolIndex) {
                 definition.image = &image;
             }
@@ -1585,7 +1632,7 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
             }
             *where = reinterpret_cast<uintptr_t>(definition.image);
             return false;
-        case R_X86_64_DTPOFF64:
+        case R_ARCH_TLS_DTPREL:
             if (!symbolIndex) {
                 *where = relocation.r_addend;
                 return false;
@@ -1595,7 +1642,7 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
             }
             *where = definition.symbol->st_value + relocation.r_addend;
             return false;
-        case R_X86_64_TLSDESC: {
+        case R_ARCH_TLSDESC: {
             uintptr_t offset = relocation.r_addend;
 
             if (!symbolIndex) {
@@ -1615,7 +1662,7 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
             where[1] = reinterpret_cast<uintptr_t>(argument);
             return false;
         }
-        case R_X86_64_TPOFF64: {
+        case R_ARCH_TLS_TPREL: {
             if (!definition) {
                 *where = 0;
                 return false;
@@ -1633,7 +1680,7 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
             return false;
         }
         default:
-            throwError("%s: unsupported x86-64 relocation type %u at %#lx", image.path.c_str(), type, static_cast<unsigned long>(relocation.r_offset));
+            throwError("%s: unsupported relocation type %u at %#lx", image.path.c_str(), type, static_cast<unsigned long>(relocation.r_offset));
     }
 }
 
@@ -1653,7 +1700,7 @@ void Loader::applyRelocations(LinkMap& image, std::vector<DeferredRelocation>& d
 
         // A lazy JUMP_SLOT keeps pointing at its PLT push, rebased; the first
         // call enters elfPltResolveEntry through PLT0.
-        if (lazy && ELF64_R_TYPE(relocation.r_info) == R_X86_64_JUMP_SLOT) {
+        if (lazy && ELF64_R_TYPE(relocation.r_info) == R_ARCH_JUMP_SLOT) {
             *reinterpret_cast<uintptr_t*>(image.base + relocation.r_offset) += image.base;
             continue;
         }

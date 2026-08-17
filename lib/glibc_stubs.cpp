@@ -102,6 +102,18 @@ bool dyn::hasGlibcStub(std::string_view name, std::string_view version) {
     return providers().contains({name, version});
 }
 
+std::vector<std::string_view> dyn::glibcSymbolVersions(std::string_view name) {
+    std::vector<std::string_view> versions;
+
+    for (const auto& stub : glibcStubTable) {
+        if (name == std::string_view(stub.name)) {
+            versions.push_back(stub.version);
+        }
+    }
+
+    return versions;
+}
+
 void* dyn::resolveGlibcStub(std::string_view name, std::string_view version) {
     const auto& items = providers();
 

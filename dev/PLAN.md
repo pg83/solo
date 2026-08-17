@@ -52,4 +52,11 @@ locale-archive (we stay in C/UTF-8, like musl).
   executable's TLS template. Documented restriction: threads created before
   a `dlopen` see zeroed TLS for its modules. The jemalloc corpus node is the
   regression test.
+- aarch64 landed end to end: per-architecture relocation tables, the TLSDESC
+  and lazy-PLT resolvers in aarch64 assembly, hwcap-carrying ifunc calls, the
+  initial-exec arena unchanged (its arithmetic never assumed a TLS variant),
+  generated per-architecture glibc and musl symbol inventories, the corpus
+  and smoke sysroots from the same Debian snapshot's arm64 pool, and a native
+  arm64 CI job. The ABI probe (`abi_diff`) still reads the Arch package
+  layout and stays x86-64-only for now.
 - Deliberately deferred: 10 (`dlclose`).

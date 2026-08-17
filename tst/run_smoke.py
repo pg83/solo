@@ -34,16 +34,28 @@ def main():
         raise SystemExit("usage: run_smoke.py OUTPUT ARCHIVE...")
 
     executable = os.environ["DLFCN_SMOKE"]
+    sysroot_lib = os.environ["DLFCN_SYSROOT_LIB"]
+    sysroot_includes = os.environ["DLFCN_SYSROOT_INCLUDES"].split(":")
     output = Path(sys.argv[1])
     archives = sys.argv[2:]
 
     with tempfile.TemporaryDirectory(prefix="dlfcn-test-") as temporary:
         root = Path(temporary)
         for archive in archives:
-            subprocess.run(
-                ["bsdtar", "-xpf", archive, "-C", str(root)],
-                check=True,
-            )
+            if archive.endswith(".deb"):
+                data = subprocess.run(
+                    ["bsdtar", "-xOf", archive, "data.tar.*"],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                ).stdout
+                subprocess.run(
+                    ["bsdtar", "-xpf", "-", "-C", str(root)], input=data, check=True
+                )
+            else:
+                subprocess.run(
+                    ["bsdtar", "-xpf", archive, "-C", str(root)],
+                    check=True,
+                )
 
         library_path = root / "ld-library-path"
         library_path.mkdir()
@@ -56,7 +68,7 @@ def main():
                 "-shared",
                 "-nostdlib",
                 "-Wl,--no-as-needed",
-                str(root / "usr" / "lib" / "libc.so.6"),
+                str(root / sysroot_lib / "libc.so.6"),
                 "-Wl,-soname,libdlfcn-test-glibc.so",
                 os.environ["DLFCN_GLIBC_TEST_SOURCE"],
                 "-o",
@@ -74,9 +86,9 @@ def main():
                 "-nostdlib",
                 "-Wl,--no-as-needed",
                 os.environ["DLFCN_GLIBC_EXCEPTION_TEST_SOURCE"],
-                str(root / "usr" / "lib" / "libstdc++.so.6"),
-                str(root / "usr" / "lib" / "libgcc_s.so.1"),
-                str(root / "usr" / "lib" / "libc.so.6"),
+                str(root / sysroot_lib / "libstdc++.so.6"),
+                str(root / sysroot_lib / "libgcc_s.so.1"),
+                str(root / sysroot_lib / "libc.so.6"),
                 "-Wl,-soname,libdlfcn-test-exception.so",
                 "-o",
                 str(glibc_exception_test),
@@ -98,12 +110,11 @@ def main():
                 "-shared",
                 "-nostdlib",
                 "-nostdinc",
-                "-isystem",
-                str(root / "usr" / "include"),
+                *[flag for include in sysroot_includes for flag in ("-isystem", str(root / include))],
                 "-isystem",
                 str(builtin_include(compiler)),
                 "-Wl,--no-as-needed",
-                str(root / "usr" / "lib" / "libc.so.6"),
+                str(root / sysroot_lib / "libc.so.6"),
                 "-Wl,-soname,libdlfcn-test-shim.so",
                 os.environ["DLFCN_GLIBC_SHIM_TEST_SOURCE"],
                 "-o",
@@ -124,7 +135,7 @@ def main():
                 "-shared",
                 "-nostdlib",
                 "-Wl,--no-as-needed",
-                str(root / "usr" / "lib" / "libc.so.6"),
+                str(root / sysroot_lib / "libc.so.6"),
                 "-Wl,-soname,libdlfcn-test-ie.so",
                 os.environ["DLFCN_GLIBC_IE_TEST_SOURCE"],
                 os.environ["DLFCN_GLIBC_IE_GD_TEST_SOURCE"],
@@ -141,7 +152,7 @@ def main():
                 "-shared",
                 "-nostdlib",
                 "-Wl,--no-as-needed",
-                str(root / "usr" / "lib" / "libc.so.6"),
+                str(root / sysroot_lib / "libc.so.6"),
                 "-Wl,-soname,libdlfcn-test-ieref.so",
                 os.environ["DLFCN_GLIBC_IE_REF_TEST_SOURCE"],
                 str(ie_test),
@@ -163,7 +174,7 @@ def main():
                     "-nostdlib",
                     *big_flags,
                     "-Wl,--no-as-needed",
-                    str(root / "usr" / "lib" / "libc.so.6"),
+                    str(root / sysroot_lib / "libc.so.6"),
                     f"-Wl,-soname,{big_name}",
                     os.environ["DLFCN_GLIBC_BIG_TLS_TEST_SOURCE"],
                     "-o",
@@ -185,7 +196,7 @@ def main():
                     # Hardened toolchains default to -z now; the test is about
                     # lazy slots, so ask for them explicitly.
                     "-Wl,-z,lazy",
-                    str(root / "usr" / "lib" / "libc.so.6"),
+                    str(root / sysroot_lib / "libc.so.6"),
                     f"-Wl,-soname,{lazy_name}",
                     os.environ["DLFCN_GLIBC_LAZY_TEST_SOURCE"],
                     "-o",
@@ -194,19 +205,19 @@ def main():
                 check=True,
             )
         (library_path / "libdlfcn-test-pci.so").symlink_to(
-            root / "usr" / "lib" / "libpciaccess.so.0"
+            root / sysroot_lib / "libpciaccess.so.0"
         )
         (library_path / "libdlfcn-test-vulkan.so").symlink_to(
-            root / "usr" / "lib" / "libvulkan.so.1"
+            root / sysroot_lib / "libvulkan.so.1"
         )
         (library_path / "libz.so.1").symlink_to(
-            root / "usr" / "lib" / "libz.so.1"
+            root / sysroot_lib / "libz.so.1"
         )
         (library_path / "libgcc_s.so.1").symlink_to(
-            root / "usr" / "lib" / "libgcc_s.so.1"
+            root / sysroot_lib / "libgcc_s.so.1"
         )
         (library_path / "libstdc++.so.6").symlink_to(
-            root / "usr" / "lib" / "libstdc++.so.6"
+            root / sysroot_lib / "libstdc++.so.6"
         )
 
         environment = os.environ.copy()

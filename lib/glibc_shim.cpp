@@ -2376,7 +2376,21 @@ GlibcAdapter::GlibcAdapter()
     providers_.byVersion.reserve(sizeof(sh_glibc_symbols) / sizeof(sh_glibc_symbols[0]));
     providers_.byName.reserve(sizeof(sh_glibc_symbols) / sizeof(sh_glibc_symbols[0]));
     for (const auto& symbol : sh_glibc_symbols) {
-        providers_.byVersion.emplace(GlibcSymbolKey{symbol.name, symbol.version}, symbol.address);
+        // The hand-written versions are x86-64 glibc's. When the platform's
+        // generated inventory knows the name but not that exact version, the
+        // adapter is registered under the versions the platform's glibc
+        // really exports. Names outside the inventory entirely (the GCC_ and
+        // CXXABI families of libgcc and libstdc++) keep the hand-written
+        // version: those ABIs do not vary per architecture.
+        auto versions = glibcSymbolVersions(symbol.name);
+
+        if (versions.empty() || std::find(versions.begin(), versions.end(), symbol.version) != versions.end()) {
+            providers_.byVersion.emplace(GlibcSymbolKey{symbol.name, symbol.version}, symbol.address);
+        } else {
+            for (auto version : versions) {
+                providers_.byVersion.emplace(GlibcSymbolKey{symbol.name, version}, symbol.address);
+            }
+        }
         providers_.byName.emplace(symbol.name, symbol.address);
     }
 
@@ -2526,14 +2540,21 @@ void* GlibcAdapter::findFallback(std::string_view name, std::string_view version
 }
 
 void* GlibcAdapter::resolveSymbol(std::string_view name, std::string_view version, bool weak) {
-    if (name == "stderr" && version == "GLIBC_2.2.5") {
+    // The oldest version any symbol carries on the architecture.
+#if defined(__x86_64__)
+    constexpr std::string_view baseline = "GLIBC_2.2.5";
+#elif defined(__aarch64__)
+    constexpr std::string_view baseline = "GLIBC_2.17";
+#endif
+
+    if (name == "stderr" && version == baseline) {
         return (void*)(uintptr_t)&stderr;
     }
     // The pre-2.1 stdio ABI: the _IO_2_1_* objects are the FILE structures
     // themselves, and musl lays its FILE out to serve the accessors compilers
     // inline (dev/abi-diff.txt notwithstanding: the read pointers, the
     // always-overflowing write end, and the EOF/ERR bits all line up).
-    if (version == "GLIBC_2.2.5") {
+    if (version == baseline) {
         if (name == "_IO_2_1_stdin_") {
             return stdin;
         }

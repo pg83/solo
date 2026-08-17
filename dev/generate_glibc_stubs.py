@@ -24,6 +24,8 @@ def quote(value: str) -> str:
 
 
 def source(package: Path) -> str:
+    if package.name.endswith(".deb"):
+        return "Debian " + package.name.removesuffix(".deb").replace("_", " ")
     name = package.name.split(".pkg.")[0].removesuffix("-x86_64")
 
     return "Arch " + name.replace("-", " ", 1)
@@ -65,12 +67,20 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="dlfcn-glibc-") as temporary:
         root = Path(temporary)
-        subprocess.run(
-            ["bsdtar", "-xpf", str(package), "-C", str(root)],
-            check=True,
-        )
+        if package.name.endswith(".deb"):
+            data = subprocess.check_output(["bsdtar", "-xOf", str(package), "data.tar.*"])
+            subprocess.run(["bsdtar", "-xpf", "-", "-C", str(root)], input=data, check=True)
+        else:
+            subprocess.run(
+                ["bsdtar", "-xpf", str(package), "-C", str(root)],
+                check=True,
+            )
         found: set[Export] = set()
-        for path in sorted((root / "usr" / "lib").glob("*.so*")):
+        libraries = [
+            *(root / "usr" / "lib").glob("*.so*"),
+            *(root / "usr" / "lib").glob("*-linux-gnu/*.so*"),
+        ]
+        for path in sorted(libraries):
             if not path.is_file() or path.read_bytes()[:4] != b"\x7fELF":
                 continue
             found.update(exports(path))
