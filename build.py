@@ -557,6 +557,11 @@ vulkan_loader = library(
         "-DLOADER_ENABLE_LINUX_SORT",
         "-DVK_ENABLE_BETA_EXTENSIONS",
         '-DSYSCONFDIR="/etc"',
+        # NixOS has no /usr/share; its graphics drivers publish their ICD
+        # manifests under /run/opengl-driver/share, and nixpkgs teaches its
+        # own vulkan-loader that path the same way. Scanned unconditionally,
+        # harmless where the directory does not exist.
+        '-DEXTRASYSCONFDIR="/run/opengl-driver/share"',
         '-DFALLBACK_CONFIG_DIRS="/etc/xdg"',
         '-DFALLBACK_DATA_DIRS="/usr/local/share:/usr/share"',
     ],
