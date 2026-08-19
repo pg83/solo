@@ -156,3 +156,41 @@ jobs:
           fail_ci_if_error: true
           name: corpus-abi
           verbose: true
+
+  nixos-lavapipe:
+    name: NixOS / lavapipe
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang g++ libarchive-tools python3
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      # The NixOS driver layout: the libraries stay in the store with their
+      # RUNPATH closure, the ICD manifests appear under
+      # /run/opengl-driver/share, and no FHS path carries any manifest.
+      - name: Lay out the NixOS driver tree
+        run: |
+          store="$(nix build --no-link --print-out-paths nixpkgs#mesa | head -1)"
+          test -n "$(find "$store/share/vulkan/icd.d" -name 'lvp_icd*.json' -print -quit)"
+          sudo mkdir -p /run/opengl-driver
+          sudo ln -s "$store/share" /run/opengl-driver/share
+          sudo rm -rf /usr/share/vulkan /usr/local/share/vulkan /etc/vulkan
+
+      - name: Vulkan
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          ./build -j12 vulkan
+          env -u XDG_DATA_DIRS -u XDG_CONFIG_DIRS -u VK_DRIVER_FILES -u VK_ICD_FILENAMES ./vulkan nixos.png
+          echo "9abbdcc0f3290f075f404ece8b4fd2966c46e97e5f8e5733221632891b9d1648  nixos.png" | sha256sum -c
