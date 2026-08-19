@@ -1,7 +1,5 @@
 # Contributing to SoLo
 
-## AI-assisted contributions
-
 The architecture of this project is designed by a human. Every change is
 reviewed by a human, and performance work is also profiled and evaluated by a
 human. The implementation itself, however, is currently written entirely by
