@@ -64,6 +64,7 @@ glibc_symbols_header = symbolHeader("glibc")
 symbol_headers = [musl_symbols_header, glibc_symbols_header]
 
 dlfcn_srcs = [
+    "$(S)/lib/bionic_shim.cpp",
     "$(S)/lib/dlfcn.cpp",
     "$(S)/lib/elf_loader.S",
     "$(S)/lib/elf_loader.cpp",
@@ -755,6 +756,21 @@ vulkan_test = command(
         "$(B)/bin/vulkan/vulkan",
         f"/usr/share/vulkan/icd.d/lvp_icd.{machine}.json",
         "$(B)/tst/lavapipe.png",
+    ],
+    descr="TS",
+    color="green",
+)
+
+bionic_test = command(
+    name="bionic_test",
+    inputs=["$(S)/tst/run_bionic.py", "$(S)/tst/run_vulkan.py"],
+    outputs=["$(B)/tst/bionic-lavapipe.png"],
+    deps=[vulkan],
+    cmd=[
+        "python3",
+        "$(S)/tst/run_bionic.py",
+        "$(B)/bin/vulkan/vulkan",
+        "$(B)/tst/bionic-lavapipe.png",
     ],
     descr="TS",
     color="green",

@@ -194,3 +194,35 @@ jobs:
           ./build -j12 vulkan
           env -u XDG_DATA_DIRS -u XDG_CONFIG_DIRS -u VK_DRIVER_FILES -u VK_ICD_FILENAMES ./vulkan nixos.png
           echo "9abbdcc0f3290f075f404ece8b4fd2966c46e97e5f8e5733221632891b9d1648  nixos.png" | sha256sum -c
+
+  termux-bionic:
+    name: Termux / bionic (${{ matrix.machine }})
+    strategy:
+      matrix:
+        include:
+          - machine: x86_64
+            runner: ubuntu-latest
+          - machine: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang g++ gdb libarchive-tools python3
+
+      # Termux's mesa hardcodes its prefix as the temporary directory.
+      - name: Provide the Termux temp directory
+        run: sudo mkdir -p -m 1777 /data/data/com.termux/files/usr/tmp
+
+      - name: Bionic
+        env:
+          CC: clang
+          CXX: clang++
+        run: ./build -j12 bionic_test

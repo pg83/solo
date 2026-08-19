@@ -1,6 +1,7 @@
 #include "elf_loader.h"
 
 #include "dlfcn.h"
+#include "bionic_shim.h"
 #include "glibc_shim.h"
 #include "thread_tls.h"
 
@@ -256,6 +257,7 @@ namespace {
         std::vector<std::string_view> versionNames;
         std::vector<Dependency> dependencies;
         bool glibcAbi = false;
+        bool bionicAbi = false;
 
         Elf64_Rela* relocations = nullptr;
         size_t relocationCount = 0;
@@ -1208,6 +1210,20 @@ void Loader::allocateStaticTls(LinkMap& image) {
     memcpy(staticTlsArena.bytes + offset, reinterpret_cast<const void*>(image.tlsTemplate), image.tlsFileSize);
 }
 
+// Bionic's system libraries, spelled without versions: Termux packages are
+// bionic-linked and import these from /system, which never enters the
+// process — the bionic personality serves them over the same musl runtime.
+static bool isBionicDependency(const std::string_view& name) noexcept {
+    static constexpr std::array dependencies = {
+        std::string_view("libc.so"),
+        std::string_view("libm.so"),
+        std::string_view("libdl.so"),
+        std::string_view("liblog.so"),
+    };
+
+    return std::find(dependencies.begin(), dependencies.end(), name) != dependencies.end();
+}
+
 bool Loader::isGlibcDependency(const std::string_view& name) noexcept {
     static constexpr std::array dependencies = {
         std::string_view("libc.so.6"),
@@ -1245,6 +1261,10 @@ void Loader::loadDependencies(LinkMap& image) {
 
         if (isGlibcDependency(needed)) {
             image.glibcAbi = true;
+            continue;
+        }
+        if (isBionicDependency(needed)) {
+            image.bionicAbi = true;
             continue;
         }
 
@@ -1645,7 +1665,7 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
     auto version = image.symbolVersion(symbolIndex);
     auto weak = ELF64_ST_BIND(symbol->st_info) == STB_WEAK;
 
-    if (image.glibcAbi) {
+    if (image.glibcAbi || image.bionicAbi) {
         if (auto* address = resolveGlibcOverride(name, version); address) {
             debugBinding(image, name, "glibc bridge (override)");
             return {reinterpret_cast<uintptr_t>(address), nullptr, nullptr};
@@ -1703,7 +1723,9 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
         return definition;
     }
 
-    auto* address = image.glibcAbi ? resolveGlibcSymbol(name, version, weak) : nullptr;
+    auto* address = image.glibcAbi   ? resolveGlibcSymbol(name, version, weak)
+                    : image.bionicAbi ? resolveBionicSymbol(name, weak)
+                                      : nullptr;
 
     if (!address && !weak) {
         throwError("%s: unresolved symbol %.*s%.*s%.*s", image.path.c_str(), static_cast<int>(name.size()), name.data(), version.empty() ? 0 : 1, "@", static_cast<int>(version.size()), version.data());
