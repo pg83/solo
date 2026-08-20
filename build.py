@@ -16,6 +16,13 @@ build.cxxflags += [
     "-std=c++20",
 ]
 
+build.flags.allow({
+    "use_corpus": {
+        "descr": "directory with pre-fetched package archives; downloads copy "
+                 "from it and fall back to the network on a miss",
+    },
+})
+
 cc = os.environ.get("CC", "cc")
 # The first component of the target triple: musl arch directories, symbol
 # inventories, and package pools all key off it.
@@ -922,6 +929,7 @@ def downloadPackage(name, url, filename, sha256):
         cmd=[
             "python3",
             "$(S)/tst/download.py",
+            *(["--mirror", build.flags.use_corpus] if build.flags.use_corpus else []),
             url,
             sha256,
             output,
@@ -1087,3 +1095,5 @@ corpus = command(
 
 install(dlfcn)
 group("test", pthread_test, arch_smoke)
+# Everything the tests download, for warming a package mirror in one pass.
+group("fetch", *downloadTargets.values())

@@ -3,6 +3,7 @@
 import hashlib
 import os
 import random
+import shutil
 import sys
 import time
 import urllib.error
@@ -22,15 +23,40 @@ def fetch(url, temporary):
     return digest.hexdigest()
 
 
-def main():
-    if len(sys.argv) != 4:
-        raise SystemExit("usage: download.py URL SHA256 OUTPUT")
+def fromMirror(mirror, expected, output, temporary):
+    candidate = mirror / output.name
 
-    url, expected, output_name = sys.argv[1:]
+    try:
+        digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    if digest != expected:
+        print(f"download.py: {candidate}: SHA-256 mismatch, falling back to the network", file=sys.stderr)
+        return False
+
+    shutil.copyfile(candidate, temporary)
+    os.replace(temporary, output)
+
+    return True
+
+
+def main():
+    arguments = sys.argv[1:]
+    mirror = None
+
+    if len(arguments) >= 2 and arguments[0] == "--mirror":
+        mirror = Path(arguments[1])
+        arguments = arguments[2:]
+    if len(arguments) != 3:
+        raise SystemExit("usage: download.py [--mirror DIR] URL SHA256 OUTPUT")
+
+    url, expected, output_name = arguments
     output = Path(output_name)
     temporary = output.with_name(output.name + ".part")
 
     output.parent.mkdir(parents=True, exist_ok=True)
+    if mirror and fromMirror(mirror, expected, output, temporary):
+        return
     try:
         # snapshot.debian.org resets connections under parallel load; back
         # off with jitter so a whole build graph of downloads gets through.
