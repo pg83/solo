@@ -24,7 +24,8 @@ driver already installed on the machine.
 The repository includes an end-to-end Vulkan proof: a fully static executable
 loads the host's unmodified Vulkan driver, runs a compute shader, and writes
 the result to a PNG. Tested on AMD radv, radeonsi, Intel, and NVIDIA GPUs under
-Linux, and on Apple M1 under Asahi Linux.
+Linux, on Apple M1 under Asahi Linux, on Android under Termux, and on WSL with
+Mesa's dzn driver over Direct3D 12.
 
 **The host keeps the hardware-specific code. You ship everything else.**
 
