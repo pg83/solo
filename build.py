@@ -641,6 +641,13 @@ vulkan = command(
         "-Wl,--build-id=none",
         "-Wl,--gc-sections",
         "-Wl,-z,noexecstack",
+        # gcc suppresses --eh-frame-hdr for -static links (gnu-user.h:
+        # %{!static|static-pie:--eh-frame-hdr}); ld then leaves the binary
+        # without .eh_frame_hdr on Debian, and the static libunwind discovers
+        # unwind tables through PT_GNU_EH_FRAME, so every exception thrown
+        # from the executable's own frames terminates the process. Pass the
+        # flag explicitly.
+        "-Wl,--eh-frame-hdr",
         "-Wl,-e,_start",
         "-o",
         "$(B)/bin/vulkan/vulkan",
@@ -704,6 +711,13 @@ def vendoredTest(name, source):
             "-Wl,--build-id=none",
             "-Wl,--gc-sections",
             "-Wl,-z,noexecstack",
+            # gcc suppresses --eh-frame-hdr for -static links (gnu-user.h:
+            # %{!static|static-pie:--eh-frame-hdr}); ld then leaves the binary
+            # without .eh_frame_hdr on Debian, and the static libunwind
+            # discovers unwind tables through PT_GNU_EH_FRAME, so every
+            # exception thrown from the executable's own frames terminates
+            # the process. Pass the flag explicitly.
+            "-Wl,--eh-frame-hdr",
             "-Wl,-e,_start",
             "-o",
             f"$(B)/tst/{name}",
