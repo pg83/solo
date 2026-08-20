@@ -1135,27 +1135,23 @@ size_t Loader::addTlsModule() {
 // pthread_create copies into every new thread, and pins down the arena's
 // thread-pointer-relative offset, a link-time constant of the executable.
 void Loader::initializeStaticTls() {
-    auto* headers = reinterpret_cast<const Elf64_Phdr*>(getauxval(AT_PHDR));
-    auto count = getauxval(AT_PHNUM);
-    uintptr_t base = 0;
+    auto program = elfMainProgram();
     const Elf64_Phdr* tls = nullptr;
 
-    if (!headers || !count) {
-        throwError("static TLS: the auxiliary vector has no program headers");
+    if (!program.count) {
+        throwError("static TLS: no program headers in the auxiliary vector or behind __ehdr_start");
     }
 
-    for (unsigned long index = 0; index < count; ++index) {
-        if (headers[index].p_type == PT_PHDR) {
-            base = reinterpret_cast<uintptr_t>(headers) - headers[index].p_vaddr;
-        } else if (headers[index].p_type == PT_TLS) {
-            tls = &headers[index];
+    for (Elf64_Half index = 0; index < program.count; ++index) {
+        if (program.headers[index].p_type == PT_TLS) {
+            tls = &program.headers[index];
         }
     }
     if (!tls) {
         throwError("static TLS: the executable has no PT_TLS segment");
     }
 
-    auto* image = reinterpret_cast<unsigned char*>(base + tls->p_vaddr);
+    auto* image = reinterpret_cast<unsigned char*>(program.base + tls->p_vaddr);
     auto* marker = static_cast<unsigned char*>(memmem(image, tls->p_filesz, staticTlsMarker, sizeof(staticTlsMarker)));
 
     if (!marker) {
@@ -2108,6 +2104,56 @@ bool ElfImage::findAddress(const void* address, ElfAddress* res) {
 
 int ElfImage::iterateProgramHeaders(ElfProgramHeaderCallback& callback) {
     return Loader::instance().iterateProgramHeaders(callback);
+}
+
+// The linker places __ehdr_start on the executable's ELF header whenever a
+// loaded segment covers it. Weak, so a layout that leaves the header unmapped
+// resolves it to null instead of failing the link.
+extern "C" const unsigned char __ehdr_start[] __attribute__((weak));
+
+ElfMainProgram dyn::elfMainProgram() {
+    ElfMainProgram program;
+
+    program.headers = reinterpret_cast<const Elf64_Phdr*>(getauxval(AT_PHDR));
+    program.count = static_cast<Elf64_Half>(getauxval(AT_PHNUM));
+
+    const auto* mapped = reinterpret_cast<const Elf64_Ehdr*>(__ehdr_start);
+
+    if (!mapped || memcmp(mapped->e_ident, ELFMAG, SELFMAG) != 0) {
+        mapped = nullptr;
+    }
+    // proot-style loaders build the auxiliary vector by hand and can leave
+    // AT_PHDR empty; the executable's own mapped ELF header does not depend
+    // on the loading environment at all.
+    if (!program.headers || !program.count) {
+        if (!mapped) {
+            return {};
+        }
+        program.headers = reinterpret_cast<const Elf64_Phdr*>(__ehdr_start + mapped->e_phoff);
+        program.count = mapped->e_phnum;
+    }
+
+    bool viaPhdrEntry = false;
+
+    for (Elf64_Half index = 0; index < program.count; ++index) {
+        if (program.headers[index].p_type == PT_PHDR) {
+            program.base = reinterpret_cast<uintptr_t>(program.headers) - program.headers[index].p_vaddr;
+            viaPhdrEntry = true;
+        }
+    }
+    // Without a PT_PHDR entry the mapped ELF header anchors the base itself:
+    // it is the byte at file offset zero of the segment that maps it.
+    if (!viaPhdrEntry && mapped) {
+        for (Elf64_Half index = 0; index < program.count; ++index) {
+            const auto& header = program.headers[index];
+
+            if (header.p_type == PT_LOAD && !header.p_offset) {
+                program.base = reinterpret_cast<uintptr_t>(mapped) - header.p_vaddr;
+            }
+        }
+    }
+
+    return program;
 }
 
 void* ElfImage::lookupGlobal(std::string_view symbol) {

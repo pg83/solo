@@ -2590,28 +2590,24 @@ int ShDlFindObjectContext::call(const ElfProgramHeaders& image) {
 
 namespace {
     static int iterateMainProgramHeaders(int (*callback)(dl_phdr_info*, size_t, void*), void* data) {
-        auto* headers = reinterpret_cast<const Elf64_Phdr*>(getauxval(AT_PHDR));
-        auto count = static_cast<Elf64_Half>(getauxval(AT_PHNUM));
+        const auto program = elfMainProgram();
 
-        if (!headers || !count) {
+        if (!program.count) {
             return 0;
         }
 
-        uintptr_t base = 0;
         const Elf64_Phdr* tls = nullptr;
-        for (Elf64_Half index = 0; index < count; ++index) {
-            if (headers[index].p_type == PT_PHDR) {
-                base = reinterpret_cast<uintptr_t>(headers) - headers[index].p_vaddr;
-            } else if (headers[index].p_type == PT_TLS) {
-                tls = &headers[index];
+        for (Elf64_Half index = 0; index < program.count; ++index) {
+            if (program.headers[index].p_type == PT_TLS) {
+                tls = &program.headers[index];
             }
         }
 
         dl_phdr_info info{};
-        info.dlpi_addr = base;
+        info.dlpi_addr = program.base;
         info.dlpi_name = "/proc/self/exe";
-        info.dlpi_phdr = headers;
-        info.dlpi_phnum = count;
+        info.dlpi_phdr = program.headers;
+        info.dlpi_phnum = program.count;
         info.dlpi_tls_modid = tls ? 1 : 0;
         return callback(&info, sizeof(info), data);
     }
@@ -3256,16 +3252,7 @@ namespace {
 
 namespace {
     static uintptr_t mainProgramBase() {
-        auto* headers = reinterpret_cast<const Elf64_Phdr*>(getauxval(AT_PHDR));
-        auto count = getauxval(AT_PHNUM);
-
-        for (unsigned long index = 0; index < count; ++index) {
-            if (headers[index].p_type == PT_PHDR) {
-                return reinterpret_cast<uintptr_t>(headers) - headers[index].p_vaddr;
-            }
-        }
-
-        return 0;
+        return elfMainProgram().base;
     }
 }
 

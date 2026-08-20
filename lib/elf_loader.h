@@ -29,6 +29,17 @@ namespace dyn {
         virtual int call(const ElfProgramHeaders& image) = 0;
     };
 
+    // The main program's in-memory program headers and load base, from the
+    // auxiliary vector, or from the mapped ELF header when the loading
+    // environment left AT_PHDR empty; count is 0 when neither source works.
+    struct ElfMainProgram {
+        const Elf64_Phdr* headers = nullptr;
+        Elf64_Half count = 0;
+        uintptr_t base = 0;
+    };
+
+    ElfMainProgram elfMainProgram();
+
     struct ElfImage: public IfaceHandle {
         static constexpr Kind kind = Kind::Image;
 
