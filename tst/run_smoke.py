@@ -298,6 +298,65 @@ def main():
                 ],
                 check=True,
             )
+        # The caller-RUNPATH family: a host carrying -rpath '$ORIGIN/runpath'
+        # loads a sibling by bare name that sits outside every other search
+        # path, so the load succeeds only when the caller's DT_RUNPATH joins
+        # the search.
+        runpath_directory = library_path / "runpath"
+        runpath_directory.mkdir()
+        subprocess.run(
+            [
+                *shlex.split(os.environ["DLFCN_CC"]),
+                "-fPIC",
+                "-fno-stack-protector",
+                "-shared",
+                "-nostdlib",
+                "-Wl,--no-as-needed",
+                "-Wl,--enable-new-dtags",
+                "-Wl,-rpath,$ORIGIN/runpath",
+                str(root / sysroot_lib / "libc.so.6"),
+                "-Wl,-soname,libdlfcn-test-runpath-host.so",
+                os.environ["DLFCN_GLIBC_RUNPATH_HOST_TEST_SOURCE"],
+                "-o",
+                str(library_path / "libdlfcn-test-runpath-host.so"),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                *shlex.split(os.environ["DLFCN_CC"]),
+                "-fPIC",
+                "-fno-stack-protector",
+                "-shared",
+                "-nostdlib",
+                "-Wl,--no-as-needed",
+                str(root / sysroot_lib / "libc.so.6"),
+                "-Wl,-soname,libdlfcn-test-runpath-sibling.so",
+                os.environ["DLFCN_GLIBC_RUNPATH_SIBLING_TEST_SOURCE"],
+                "-o",
+                str(runpath_directory / "libdlfcn-test-runpath-sibling.so"),
+            ],
+            check=True,
+        )
+        # The same host with old-dtags: a caller carrying DT_RPATH only.
+        subprocess.run(
+            [
+                *shlex.split(os.environ["DLFCN_CC"]),
+                "-fPIC",
+                "-fno-stack-protector",
+                "-shared",
+                "-nostdlib",
+                "-Wl,--no-as-needed",
+                "-Wl,--disable-new-dtags",
+                "-Wl,-rpath,$ORIGIN/runpath",
+                str(root / sysroot_lib / "libc.so.6"),
+                "-Wl,-soname,libdlfcn-test-rpath-host.so",
+                os.environ["DLFCN_GLIBC_RUNPATH_HOST_TEST_SOURCE"],
+                "-o",
+                str(library_path / "libdlfcn-test-rpath-host.so"),
+            ],
+            check=True,
+        )
         (library_path / "libdlfcn-test-pci.so").symlink_to(
             root / sysroot_lib / "libpciaccess.so.0"
         )

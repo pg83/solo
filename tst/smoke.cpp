@@ -318,6 +318,32 @@ int main() {
         return 1;
     }
 
+    // A dlopen issued by loaded code searches the caller's DT_RUNPATH: the
+    // host carries -rpath '$ORIGIN/runpath' and loads a sibling that sits
+    // outside every other search path.
+    auto* runpathHost = stub_dlopen("libdlfcn-test-runpath-host.so", RTLD_NOW | RTLD_LOCAL);
+    if (!runpathHost) {
+        fprintf(stderr, "runpath host load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto runpathHostValue = reinterpret_cast<GlibcTest>(requiredSymbol(runpathHost, "glibc_runpath_host_value"));
+    if (!runpathHostValue || runpathHostValue() != 77) {
+        fprintf(stderr, "caller DT_RUNPATH lookup failed\n");
+        return 1;
+    }
+
+    // The old-dtags counterpart: a caller carrying DT_RPATH only.
+    auto* rpathHost = stub_dlopen("libdlfcn-test-rpath-host.so", RTLD_NOW | RTLD_LOCAL);
+    if (!rpathHost) {
+        fprintf(stderr, "rpath host load failed: %s\n", stub_dlerror());
+        return 1;
+    }
+    auto rpathHostValue = reinterpret_cast<GlibcTest>(requiredSymbol(rpathHost, "glibc_runpath_host_value"));
+    if (!rpathHostValue || rpathHostValue() != 77) {
+        fprintf(stderr, "caller DT_RPATH lookup failed\n");
+        return 1;
+    }
+
     // Initial-exec TLS: one process-wide GOT offset must be valid in every
     // thread through the surplus static arena. The parked thread exists
     // before the module loads and must see zeroed TLS for it.

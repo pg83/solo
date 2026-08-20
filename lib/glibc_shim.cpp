@@ -3370,7 +3370,7 @@ namespace {
         return translated;
     }
 
-    static void* sh_glibc_dlopen(const char* path, int flags) {
+    static void* sh_glibc_dlopenFrom(const void* caller, const char* path, int flags) {
         ThreadTls::current()->clearDlError();
 
         try {
@@ -3379,7 +3379,7 @@ namespace {
             }
 
             auto* provider = runtimeProvider(path);
-            auto* handle = stub_dlopen(provider ? provider : path, sh_translate_dlopen_flags(flags));
+            auto* handle = stub_dlopen_from(caller, provider ? provider : path, sh_translate_dlopen_flags(flags));
 
             if (!handle) {
                 copyStubError("library not found");
@@ -3394,6 +3394,13 @@ namespace {
         }
 
         return nullptr;
+    }
+
+    // The glibc-boundary entry: its caller's return address names the image
+    // that issued the dlopen, whose DT_RPATH/DT_RUNPATH join the search for
+    // names without a slash.
+    __attribute__((noinline)) static void* sh_glibc_dlopen(const char* path, int flags) {
+        return sh_glibc_dlopenFrom(__builtin_return_address(0), path, flags);
     }
 
     static int sh_dladdr1(const void* address, Dl_info* information, void** extra, int flags) {
@@ -3416,14 +3423,14 @@ namespace {
     // The base namespace is plain dlopen; new link-map namespaces stay an
     // explicit non-goal, declined through dlerror rather than an abort —
     // libcuda imports the symbol.
-    static void* sh_glibc_dlmopen(long namespace_id, const char* path, int flags) {
+    __attribute__((noinline)) static void* sh_glibc_dlmopen(long namespace_id, const char* path, int flags) {
         if (namespace_id != 0) {
             ThreadTls::current()->setDlError("dlmopen: link-map namespaces are not supported");
 
             return nullptr;
         }
 
-        return sh_glibc_dlopen(path, flags);
+        return sh_glibc_dlopenFrom(__builtin_return_address(0), path, flags);
     }
 
     static void* sh_glibc_dlsym(void* handle, const char* name) {
@@ -3905,6 +3912,7 @@ namespace {
         SH_FUNCTION("posix_memalign", "GLIBC_2.2.5", posix_memalign),
         SH_FUNCTION("strcmp", "GLIBC_2.2.5", strcmp),
         SH_FUNCTION("dlopen", "GLIBC_2.34", sh_glibc_dlopen),
+        SH_FUNCTION("dlopen", "GLIBC_2.2.5", sh_glibc_dlopen),
         SH_FUNCTION("dlmopen", "GLIBC_2.3.4", sh_glibc_dlmopen),
         SH_FUNCTION("__memcpy_chk", "GLIBC_2.3.4", sh_memcpy_chk),
         SH_FUNCTION("realpath", "GLIBC_2.3", realpath),

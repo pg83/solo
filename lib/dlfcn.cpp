@@ -266,7 +266,7 @@ extern "C" void* stub_dlsym(void* handle, const char* symbol) {
     return nullptr;
 }
 
-extern "C" void* stub_dlopen(const char* filename, int mode) {
+static void* dlopenImpl(const void* caller, const char* filename, int mode) {
     clearLastError();
 
     try {
@@ -290,7 +290,7 @@ extern "C" void* stub_dlopen(const char* filename, int mode) {
 
         // The loader keeps one wrapper per image, so repeated dlopen of the
         // same library returns the same handle.
-        return ElfImage::loadElf(filename, mode);
+        return caller ? ElfImage::loadElfFrom(caller, filename, mode) : ElfImage::loadElf(filename, mode);
     } catch (const std::exception& error) {
         setLastError(error.what());
         return nullptr;
@@ -298,6 +298,14 @@ extern "C" void* stub_dlopen(const char* filename, int mode) {
         setLastError("unknown dlopen error");
         return nullptr;
     }
+}
+
+extern "C" void* stub_dlopen(const char* filename, int mode) {
+    return dlopenImpl(nullptr, filename, mode);
+}
+
+extern "C" void* stub_dlopen_from(const void* caller, const char* filename, int mode) {
+    return dlopenImpl(caller, filename, mode);
 }
 
 extern "C" int stub_dlclose(void* handle) {
