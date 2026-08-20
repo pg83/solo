@@ -638,6 +638,9 @@ vulkan = command(
         "-nostdlib",
         "-static",
         "-Wl,--no-pie",
+        # GCC's LINK_EH_SPEC drops --eh-frame-hdr for -static, expecting crtbegin
+        # to register frames; our libunwind finds them through PT_GNU_EH_FRAME.
+        "-Wl,--eh-frame-hdr",
         "-Wl,--build-id=none",
         "-Wl,--gc-sections",
         "-Wl,-z,noexecstack",
@@ -701,6 +704,7 @@ def vendoredTest(name, source):
             "-nostdlib",
             "-static",
             "-Wl,--no-pie",
+            "-Wl,--eh-frame-hdr",
             "-Wl,--build-id=none",
             "-Wl,--gc-sections",
             "-Wl,-z,noexecstack",

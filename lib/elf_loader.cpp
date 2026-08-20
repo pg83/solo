@@ -1140,6 +1140,10 @@ void Loader::initializeStaticTls() {
     uintptr_t base = 0;
     const Elf64_Phdr* tls = nullptr;
 
+    if (!headers || !count) {
+        throwError("static TLS: the auxiliary vector has no program headers");
+    }
+
     for (unsigned long index = 0; index < count; ++index) {
         if (headers[index].p_type == PT_PHDR) {
             base = reinterpret_cast<uintptr_t>(headers) - headers[index].p_vaddr;
