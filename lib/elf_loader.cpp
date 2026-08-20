@@ -350,7 +350,7 @@ namespace {
 
         static Loader& instance();
 
-        LinkMap* load(const std::string_view& requestedPath, int flags);
+        LinkMap* load(const std::string_view& requestedPath, int flags, LinkMap* dlopenCaller);
         void runPendingInitializers();
 
         void* lookup(LinkMap& image, std::string_view name, std::string_view version);
@@ -359,6 +359,7 @@ namespace {
         void makeGlobal(LinkMap& image);
 
         bool findAddress(const void* address, ElfAddress* res);
+        LinkMap* findImageByAddress(const void* address);
         int iterateProgramHeaders(ElfProgramHeaderCallback& callback);
 
         LinkMap* findByName(const std::string_view& name) const noexcept;
@@ -369,7 +370,7 @@ namespace {
         static std::optional<std::string> inSearchPath(std::string_view directories, const std::string_view& name, bool emptyIsCurrentDirectory);
         static std::optional<std::string> inCache(const std::string_view& name);
 
-        std::optional<std::string> resolvePath(const std::string_view& path) const;
+        std::optional<std::string> resolvePath(const std::string_view& path, const LinkMap* dlopenCaller) const;
         void rememberLibraryDirectory(const std::string& path);
 
         size_t addTlsModule();
@@ -505,7 +506,7 @@ Loader& Loader::instance() {
     return *loader;
 }
 
-LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
+LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap* dlopenCaller) {
     std::lock_guard lock(mutex_);
 
     if (requestedPath.empty()) {
@@ -523,7 +524,7 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags) {
         return image;
     }
 
-    auto resolved = resolvePath(requestedPath);
+    auto resolved = resolvePath(requestedPath, dlopenCaller);
 
     if (!resolved) {
         throwError("cannot resolve ELF image: %.*s", static_cast<int>(requestedPath.size()), requestedPath.data());
@@ -894,6 +895,25 @@ bool Loader::findAddress(const void* address, ElfAddress* res) {
     return true;
 }
 
+LinkMap* Loader::findImageByAddress(const void* address) {
+    std::lock_guard lock(mutex_);
+    auto needle = reinterpret_cast<uintptr_t>(address);
+    auto found = imagesByAddress_.upper_bound(needle);
+
+    if (found == imagesByAddress_.begin()) {
+        return nullptr;
+    }
+    --found;
+
+    auto& image = *found->second;
+
+    if (needle >= image.mapStart + image.mapSize) {
+        return nullptr;
+    }
+
+    return &image;
+}
+
 int Loader::iterateProgramHeaders(ElfProgramHeaderCallback& callback) {
     std::vector<LinkMap*> images;
     {
@@ -1053,18 +1073,22 @@ std::optional<std::string> Loader::inCache(const std::string_view& name) {
     return resolved;
 }
 
-std::optional<std::string> Loader::resolvePath(const std::string_view& path) const {
+std::optional<std::string> Loader::resolvePath(const std::string_view& path, const LinkMap* dlopenCaller) const {
     if (path.find('/') != std::string_view::npos) {
         return realPath(std::string(path));
     }
+
+    // A dlopen issued by loaded code searches the calling image's paths;
+    // while resolving DT_NEEDED, the image being loaded is the requester.
+    const LinkMap* requester = dlopenCaller ? dlopenCaller : requester_;
 
     if (const auto* configured = getenv("DL_ELF_LIBRARY_PATH"); configured) {
         if (auto resolved = inSearchPath(configured, path, false); resolved) {
             return resolved;
         }
     }
-    if (requester_ && !requester_->rpath.empty()) {
-        if (auto resolved = inSearchPath(requester_->rpath, path, false); resolved) {
+    if (requester && !requester->rpath.empty()) {
+        if (auto resolved = inSearchPath(requester->rpath, path, false); resolved) {
             return resolved;
         }
     }
@@ -1073,8 +1097,8 @@ std::optional<std::string> Loader::resolvePath(const std::string_view& path) con
             return resolved;
         }
     }
-    if (requester_ && !requester_->runPath.empty()) {
-        if (auto resolved = inSearchPath(requester_->runPath, path, false); resolved) {
+    if (requester && !requester->runPath.empty()) {
+        if (auto resolved = inSearchPath(requester->runPath, path, false); resolved) {
             return resolved;
         }
     }
@@ -2091,7 +2115,17 @@ IfaceHandle::Kind ElfImage::handleKind() const {
 
 ElfImage* ElfImage::loadElf(std::string_view path, int flags) {
     auto& loader = Loader::instance();
-    auto* image = loader.load(path, flags);
+    auto* image = loader.load(path, flags, nullptr);
+
+    loader.runPendingInitializers();
+
+    return image ? image->wrapper.get() : nullptr;
+}
+
+ElfImage* ElfImage::loadElfFrom(const void* callerAddress, std::string_view path, int flags) {
+    auto& loader = Loader::instance();
+    auto* caller = callerAddress ? loader.findImageByAddress(callerAddress) : nullptr;
+    auto* image = loader.load(path, flags, caller);
 
     loader.runPendingInitializers();
 
