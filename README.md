@@ -220,6 +220,16 @@ real glibc headers at `-O2`, and by loading every shared object of the
 thousand most-installed Debian library packages in CI, on x86-64 and
 aarch64.
 
+- [android2gnulinux](https://github.com/Cloudef/android2gnulinux) and its
+  continuation [bionic_translation](https://gitlab.com/android_translation_layer/bionic_translation)
+  are the closest relatives: a modified AOSP linker maps bionic-linked DSOs on
+  a glibc or musl host, with their libc, pthread, and libdl imports shimmed
+  onto the host's runtime — one libc in the process, SoLo's philosophy in the
+  Android-to-desktop direction. Their host stays an ordinary dynamic
+  executable next to the platform's `ld.so`, and bionic's unversioned imports
+  sidestep glibc's versioned resolution; SoLo starts from a fully static
+  binary with no system loader at all, and covers the same bionic ground with
+  its Termux personality.
 - [gcompat](https://github.com/Stantheman/gcompat) is a distribution-level
   glibc API shim for running prebuilt glibc binaries on musl. Its loader stub
   re-executes the program through musl's dynamic linker with `libgcompat.so`
