@@ -27,6 +27,7 @@
 #include <sys/uio.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <fenv.h>
 #include <ftw.h>
 #include <getopt.h>
 #include <inttypes.h>
@@ -60,9 +61,11 @@
 #include <sys/statvfs.h>
 #include <sys/types.h>
 #include <sys/auxv.h>
+#include <sys/sysmacros.h>
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
+#include <utmpx.h>
 #include <wchar.h>
 #include <wctype.h>
 
@@ -1695,6 +1698,447 @@ namespace {
 
     static void sh_setbuffer(FILE* stream, char* buffer, size_t size) {
         sh_setvbuf(stream, buffer, buffer ? _IOFBF : _IONBF, size);
+    }
+
+    // The gcompat harvest: Adélie's compatibility layer catalogues the glibc
+    // long tail LSB binaries still import; the forwards below are rewritten
+    // over the bridge, and the fenv trio is implemented for real where
+    // gcompat politely lies.
+
+#if defined(__x86_64__)
+    // Unmasking an exception bit in the x87 control word and MXCSR arms the
+    // trap; the return value is the previously armed set, glibc's contract.
+    static int sh_feenableexcept(int excepts) {
+        excepts &= FE_ALL_EXCEPT;
+
+        unsigned short control;
+
+        __asm__("fnstcw %0" : "=m"(control));
+
+        auto previous = static_cast<int>(~control) & FE_ALL_EXCEPT;
+
+        control = static_cast<unsigned short>(control & ~excepts);
+        __asm__ volatile("fldcw %0" : : "m"(control));
+
+        unsigned status;
+
+        __asm__("stmxcsr %0" : "=m"(status));
+        status &= ~(static_cast<unsigned>(excepts) << 7);
+        __asm__ volatile("ldmxcsr %0" : : "m"(status));
+
+        return previous;
+    }
+
+    static int sh_fedisableexcept(int excepts) {
+        excepts &= FE_ALL_EXCEPT;
+
+        unsigned short control;
+
+        __asm__("fnstcw %0" : "=m"(control));
+
+        auto previous = static_cast<int>(~control) & FE_ALL_EXCEPT;
+
+        control = static_cast<unsigned short>(control | excepts);
+        __asm__ volatile("fldcw %0" : : "m"(control));
+
+        unsigned status;
+
+        __asm__("stmxcsr %0" : "=m"(status));
+        status |= static_cast<unsigned>(excepts) << 7;
+        __asm__ volatile("ldmxcsr %0" : : "m"(status));
+
+        return previous;
+    }
+
+    static int sh_fegetexcept(void) {
+        unsigned short control;
+
+        __asm__("fnstcw %0" : "=m"(control));
+
+        return static_cast<int>(~control) & FE_ALL_EXCEPT;
+    }
+#elif defined(__aarch64__)
+    // FPCR trap-enable bits sit eight above the exception flags; hardware
+    // without trapping support ignores the write, and glibc answers -1 when
+    // the bits refuse to stick.
+    static int sh_feenableexcept(int excepts) {
+        excepts &= FE_ALL_EXCEPT;
+
+        unsigned long control;
+
+        __asm__("mrs %0, fpcr" : "=r"(control));
+
+        auto previous = static_cast<int>(control >> 8) & FE_ALL_EXCEPT;
+
+        __asm__ volatile("msr fpcr, %0" : : "r"(control | (static_cast<unsigned long>(excepts) << 8)));
+        __asm__("mrs %0, fpcr" : "=r"(control));
+        if ((static_cast<int>(control >> 8) & excepts) != excepts) {
+            return -1;
+        }
+
+        return previous;
+    }
+
+    static int sh_fedisableexcept(int excepts) {
+        excepts &= FE_ALL_EXCEPT;
+
+        unsigned long control;
+
+        __asm__("mrs %0, fpcr" : "=r"(control));
+
+        auto previous = static_cast<int>(control >> 8) & FE_ALL_EXCEPT;
+
+        __asm__ volatile("msr fpcr, %0" : : "r"(control & ~(static_cast<unsigned long>(excepts) << 8)));
+
+        return previous;
+    }
+
+    static int sh_fegetexcept(void) {
+        unsigned long control;
+
+        __asm__("mrs %0, fpcr" : "=r"(control));
+
+        return static_cast<int>(control >> 8) & FE_ALL_EXCEPT;
+    }
+#endif
+
+    // The classification trio as the functions old binaries import; the
+    // headers only give macros.
+    static int sh_isinf(double value) { return isinf(value) ? (value < 0 ? -1 : 1) : 0; }
+    static int sh_isinfl(long double value) { return isinf(value) ? (value < 0 ? -1 : 1) : 0; }
+    static int sh_isnan(double value) { return isnan(value) != 0; }
+    static int sh_isnanl(long double value) { return isnan(value) != 0; }
+    static int sh_finite(double value) { return isfinite(value) != 0; }
+    static int sh_finitef(float value) { return isfinite(value) != 0; }
+    static int sh_finitel(long double value) { return isfinite(value) != 0; }
+
+    // musl carries no long double Bessel or scalb variants; the double ones
+    // hold every bit of precision the x87 results ever had.
+    static long double sh_j0l(long double value) { return j0(static_cast<double>(value)); }
+    static long double sh_j1l(long double value) { return j1(static_cast<double>(value)); }
+    static long double sh_jnl(int order, long double value) { return jn(order, static_cast<double>(value)); }
+    static long double sh_y0l(long double value) { return y0(static_cast<double>(value)); }
+    static long double sh_y1l(long double value) { return y1(static_cast<double>(value)); }
+    static long double sh_ynl(int order, long double value) { return yn(order, static_cast<double>(value)); }
+    static long double sh_scalbl(long double value, long double exponent) { return scalb(static_cast<double>(value), static_cast<double>(exponent)); }
+
+    // The reentrant fgetpwent and fgetgrent: musl parses into its own
+    // static storage, the copy into the caller's buffer is ours.
+    static int sh_fgetpwent_r(FILE* stream, struct passwd* record, char* buffer, size_t size, struct passwd** result) {
+        *result = nullptr;
+
+        auto* parsed = sh_fgetpwent(stream);
+
+        if (!parsed) {
+            return ENOENT;
+        }
+
+        auto* cursor = buffer;
+        auto* end = buffer + size;
+        auto place = [&cursor, end](char*& field) {
+            if (!field) {
+                return true;
+            }
+
+            auto length = strlen(field) + 1;
+
+            if (cursor + length > end) {
+                return false;
+            }
+            memcpy(cursor, field, length);
+            field = cursor;
+            cursor += length;
+
+            return true;
+        };
+
+        *record = *parsed;
+        if (!place(record->pw_name) || !place(record->pw_passwd) || !place(record->pw_gecos) || !place(record->pw_dir) || !place(record->pw_shell)) {
+            return ERANGE;
+        }
+        *result = record;
+
+        return 0;
+    }
+
+    static int sh_fgetgrent_r(FILE* stream, struct group* record, char* buffer, size_t size, struct group** result) {
+        *result = nullptr;
+
+        auto* parsed = sh_fgetgrent(stream);
+
+        if (!parsed) {
+            return ENOENT;
+        }
+
+        auto* cursor = buffer;
+        auto* end = buffer + size;
+        auto place = [&cursor, end](char*& field) {
+            if (!field) {
+                return true;
+            }
+
+            auto length = strlen(field) + 1;
+
+            if (cursor + length > end) {
+                return false;
+            }
+            memcpy(cursor, field, length);
+            field = cursor;
+            cursor += length;
+
+            return true;
+        };
+
+        *record = *parsed;
+        if (!place(record->gr_name) || !place(record->gr_passwd)) {
+            return ERANGE;
+        }
+
+        // The member vector: the pointers first, the strings after.
+        size_t members = 0;
+
+        while (parsed->gr_mem && parsed->gr_mem[members]) {
+            ++members;
+        }
+
+        auto aligned = reinterpret_cast<char*>((reinterpret_cast<uintptr_t>(cursor) + alignof(char*) - 1) & ~(alignof(char*) - 1));
+        auto** vector = reinterpret_cast<char**>(aligned);
+
+        cursor = aligned + (members + 1) * sizeof(char*);
+        if (cursor > end) {
+            return ERANGE;
+        }
+        for (size_t index = 0; index < members; ++index) {
+            vector[index] = parsed->gr_mem[index];
+            if (!place(vector[index])) {
+                return ERANGE;
+            }
+        }
+        vector[members] = nullptr;
+        record->gr_mem = vector;
+        *result = record;
+
+        return 0;
+    }
+
+    // Rewinds our random_r stream onto a previously initialized state
+    // buffer, matching sh_initstate_r's layout.
+    static int sh_setstate_r(char* state, GlibcRandomData* data) {
+        if (!state || !data) {
+            errno = EINVAL;
+            return -1;
+        }
+        data->state = reinterpret_cast<uint64_t*>(state);
+
+        return 0;
+    }
+
+    // LSB says the caller gets nothing when there is no accounting
+    // database; musl never keeps one.
+    static int sh_getutent_r(struct utmpx* buffer, struct utmpx** result) {
+        (void)buffer;
+        *result = nullptr;
+
+        return -1;
+    }
+
+    // The resolver's state-carrying spellings over musl's stateless ones.
+    static int sh_dn_expand(const unsigned char* message, const unsigned char* end, const unsigned char* compressed, char* expanded, int size) {
+        return dn_expand(message, end, compressed, expanded, size);
+    }
+
+    static int sh_xpg_sigpause(int signal) {
+        return sigpause(signal);
+    }
+
+    static struct cmsghdr* sh_cmsg_nxthdr(struct msghdr* message, struct cmsghdr* control) {
+        return CMSG_NXTHDR(message, control);
+    }
+
+    static int sh_pthread_yield(void) {
+        return sched_yield();
+    }
+
+    static int sh_mutexattr_getkind(const pthread_mutexattr_t* attributes, int* kind) {
+        return pthread_mutexattr_gettype(attributes, kind);
+    }
+
+    static int sh_mutexattr_setkind(pthread_mutexattr_t* attributes, int kind) {
+        return pthread_mutexattr_settype(attributes, kind);
+    }
+
+    static char* sh_tmpnam_r(char* buffer) {
+        return buffer ? tmpnam(buffer) : nullptr;
+    }
+
+    static int sh_io_feof(FILE* stream) {
+        return feof(stream);
+    }
+
+    static int sh_io_puts(const char* text) {
+        return puts(text);
+    }
+
+    static int sh_group_member(gid_t group) {
+        if (getgid() == group || getegid() == group) {
+            return 1;
+        }
+
+        gid_t groups[64];
+        auto count = getgroups(64, groups);
+
+        for (int index = 0; index < count; ++index) {
+            if (groups[index] == group) {
+                return 1;
+            }
+        }
+
+        return 0;
+    }
+
+    static unsigned long long sh_gnu_dev_makedev(unsigned major, unsigned minor) {
+        return makedev(major, minor);
+    }
+
+    static const char* sh_gnu_get_libc_release(void) {
+        return "stable";
+    }
+
+    static int sh_getlogin_r_chk(char* buffer, size_t size, size_t bufferSize) {
+        if (size > bufferSize) {
+            sh_fortify_fail();
+        }
+        return getlogin_r(buffer, size);
+    }
+
+    static int sh_ttyname_r_chk(int descriptor, char* buffer, size_t size, size_t bufferSize) {
+        if (size > bufferSize) {
+            sh_fortify_fail();
+        }
+        return ttyname_r(descriptor, buffer, size);
+    }
+
+    static size_t sh_strcspn_c2(const char* text, int first, int second) {
+        size_t length = 0;
+
+        while (text[length] && text[length] != first && text[length] != second) {
+            ++length;
+        }
+
+        return length;
+    }
+
+    static void* sh_memfrob(void* memory, size_t size) {
+        auto* bytes = static_cast<unsigned char*>(memory);
+
+        for (size_t index = 0; index < size; ++index) {
+            bytes[index] ^= 42;
+        }
+
+        return memory;
+    }
+
+    static char* sh_strfry(char* text) {
+        static unsigned seed = 42;
+        auto length = strlen(text);
+
+        for (size_t index = 0; index + 1 < length; ++index) {
+            seed = seed * 1103515245 + 12345;
+
+            auto other = index + seed % (length - index);
+            auto held = text[index];
+
+            text[index] = text[other];
+            text[other] = held;
+        }
+
+        return text;
+    }
+
+    // The __*_internal spellings carry glibc's digit-grouping argument; a
+    // nonzero group was never implemented there either.
+    static double sh_strtod_internal(const char* text, char** end, int group) {
+        (void)group;
+        return strtod(text, end);
+    }
+
+    static float sh_strtof_internal(const char* text, char** end, int group) {
+        (void)group;
+        return strtof(text, end);
+    }
+
+    static long double sh_strtold_internal(const char* text, char** end, int group) {
+        (void)group;
+        return strtold(text, end);
+    }
+
+    static long sh_strtol_internal(const char* text, char** end, int base, int group) {
+        (void)group;
+        return strtol(text, end, base);
+    }
+
+    static long sh_wcstol_internal(const wchar_t* text, wchar_t** end, int base, int group) {
+        (void)group;
+        return wcstol(text, end, base);
+    }
+
+    // The locale-taking numeric parsers; musl parses the C locale only.
+    static long long sh_strtoll_l(const char* text, char** end, int base, locale_t locale) {
+        (void)locale;
+        return strtoll(text, end, base);
+    }
+
+    static unsigned long long sh_strtoull_l(const char* text, char** end, int base, locale_t locale) {
+        (void)locale;
+        return strtoull(text, end, base);
+    }
+
+    static double sh_wcstod_l(const wchar_t* text, wchar_t** end, locale_t locale) {
+        (void)locale;
+        return wcstod(text, end);
+    }
+
+    static long sh_wcstol_l(const wchar_t* text, wchar_t** end, int base, locale_t locale) {
+        (void)locale;
+        return wcstol(text, end, base);
+    }
+
+    static unsigned long sh_wcstoul_l(const wchar_t* text, wchar_t** end, int base, locale_t locale) {
+        (void)locale;
+        return wcstoul(text, end, base);
+    }
+
+    static wchar_t* sh_wcscpy_chk(wchar_t* destination, const wchar_t* source, size_t destinationSize) {
+        if (wcslen(source) >= destinationSize) {
+            sh_fortify_fail();
+        }
+        return wcscpy(destination, source);
+    }
+
+    static wchar_t* sh_wcscat_chk(wchar_t* destination, const wchar_t* source, size_t destinationSize) {
+        if (wcslen(destination) + wcslen(source) >= destinationSize) {
+            sh_fortify_fail();
+        }
+        return wcscat(destination, source);
+    }
+
+    static int sh_fwprintf_chk(FILE* stream, int flag, const wchar_t* format, ...) {
+        (void)flag;
+
+        va_list arguments;
+
+        va_start(arguments, format);
+
+        auto result = vfwprintf(stream, format, arguments);
+
+        va_end(arguments);
+
+        return result;
+    }
+
+    static int sh_vfwprintf_chk(FILE* stream, int flag, const wchar_t* format, va_list arguments) {
+        (void)flag;
+        return vfwprintf(stream, format, arguments);
     }
 
     // glibc's own message catalog name, referenced by its gettext callers.
@@ -4707,6 +5151,173 @@ namespace {
         SH_FUNCTION("obstack_free", "GLIBC_2.2.5", sh_obstack_free),
         SH_FUNCTION("_obstack_memory_used", "GLIBC_2.2.5", sh_obstack_memory_used),
         SH_FUNCTION("error_at_line", "GLIBC_2.2.5", sh_error_at_line),
+        // The -ffinite-math-only ABI: the plain functions under the names
+        // glibc gives callers built with __FINITE_MATH_ONLY__.
+        SH_FUNCTION("__acos_finite", "GLIBC_2.15", static_cast<double (*)(double)>(acos)),
+        SH_FUNCTION("__acosf_finite", "GLIBC_2.15", static_cast<float (*)(float)>(acosf)),
+        SH_FUNCTION("__acosl_finite", "GLIBC_2.15", static_cast<long double (*)(long double)>(acosl)),
+        SH_FUNCTION("__acosh_finite", "GLIBC_2.15", static_cast<double (*)(double)>(acosh)),
+        SH_FUNCTION("__acoshf_finite", "GLIBC_2.15", static_cast<float (*)(float)>(acoshf)),
+        SH_FUNCTION("__acoshl_finite", "GLIBC_2.15", static_cast<long double (*)(long double)>(acoshl)),
+        SH_FUNCTION("__asin_finite", "GLIBC_2.15", static_cast<double (*)(double)>(asin)),
+        SH_FUNCTION("__asinf_finite", "GLIBC_2.15", static_cast<float (*)(float)>(asinf)),
+        SH_FUNCTION("__asinl_finite", "GLIBC_2.15", static_cast<long double (*)(long double)>(asinl)),
+        SH_FUNCTION("__atanh_finite", "GLIBC_2.15", static_cast<double (*)(double)>(atanh)),
+        SH_FUNCTION("__atanhf_finite", "GLIBC_2.15", static_cast<float (*)(float)>(atanhf)),
+        SH_FUNCTION("__atanhl_finite", "GLIBC_2.15", static_cast<long double (*)(long double)>(atanhl)),
+        SH_FUNCTION("__cosh_finite", "GLIBC_2.15", static_cast<double (*)(double)>(cosh)),
+        SH_FUNCTION("__coshf_finite", "GLIBC_2.15", static_cast<float (*)(float)>(coshf)),
+        SH_FUNCTION("__coshl_finite", "GLIBC_2.15", static_cast<long double (*)(long double)>(coshl)),
+        SH_FUNCTION("__exp_finite", "GLIBC_2.15", static_cast<double (*)(double)>(exp)),
+        SH_FUNCTION("__expf_finite", "GLIBC_2.15", static_cast<float (*)(float)>(expf)),
+        SH_FUNCTION("__expl_finite", "GLIBC_2.15", static_cast<long double (*)(long double)>(expl)),
+        SH_FUNCTION("__exp2_finite", "GLIBC_2.15", static_cast<double (*)(double)>(exp2)),
+        SH_FUNCTION("__exp2f_finite", "GLIBC_2.15", static_cast<float (*)(float)>(exp2f)),
+        SH_FUNCTION("__exp2l_finite", "GLIBC_2.15", static_cast<long double (*)(long double)>(exp2l)),
+        SH_FUNCTION("__exp10_finite", "GLIBC_2.15", static_cast<double (*)(double)>(exp10)),
+        SH_FUNCTION("__exp10f_finite", "GLIBC_2.15", static_cast<float (*)(float)>(exp10f)),
+        SH_FUNCTION("__exp10l_finite", "GLIBC_2.15", static_cast<long double (*)(long double)>(exp10l)),
+        SH_FUNCTION("__log_finite", "GLIBC_2.15", static_cast<double (*)(double)>(log)),
+        SH_FUNCTION("__logf_finite", "GLIBC_2.15", static_cast<float (*)(float)>(logf)),
+        SH_FUNCTION("__logl_finite", "GLIBC_2.15", static_cast<long double (*)(long double)>(logl)),
+        SH_FUNCTION("__log10_finite", "GLIBC_2.15", static_cast<double (*)(double)>(log10)),
+        SH_FUNCTION("__log10f_finite", "GLIBC_2.15", static_cast<float (*)(float)>(log10f)),
+        SH_FUNCTION("__log10l_finite", "GLIBC_2.15", static_cast<long double (*)(long double)>(log10l)),
+        SH_FUNCTION("__log2_finite", "GLIBC_2.15", static_cast<double (*)(double)>(log2)),
+        SH_FUNCTION("__log2f_finite", "GLIBC_2.15", static_cast<float (*)(float)>(log2f)),
+        SH_FUNCTION("__log2l_finite", "GLIBC_2.15", static_cast<long double (*)(long double)>(log2l)),
+        SH_FUNCTION("__sinh_finite", "GLIBC_2.15", static_cast<double (*)(double)>(sinh)),
+        SH_FUNCTION("__sinhf_finite", "GLIBC_2.15", static_cast<float (*)(float)>(sinhf)),
+        SH_FUNCTION("__sinhl_finite", "GLIBC_2.15", static_cast<long double (*)(long double)>(sinhl)),
+        SH_FUNCTION("__sqrt_finite", "GLIBC_2.15", static_cast<double (*)(double)>(sqrt)),
+        SH_FUNCTION("__sqrtf_finite", "GLIBC_2.15", static_cast<float (*)(float)>(sqrtf)),
+        SH_FUNCTION("__sqrtl_finite", "GLIBC_2.15", static_cast<long double (*)(long double)>(sqrtl)),
+        SH_FUNCTION("__atan2_finite", "GLIBC_2.15", static_cast<double (*)(double, double)>(atan2)),
+        SH_FUNCTION("__atan2f_finite", "GLIBC_2.15", static_cast<float (*)(float, float)>(atan2f)),
+        SH_FUNCTION("__atan2l_finite", "GLIBC_2.15", static_cast<long double (*)(long double, long double)>(atan2l)),
+        SH_FUNCTION("__fmod_finite", "GLIBC_2.15", static_cast<double (*)(double, double)>(fmod)),
+        SH_FUNCTION("__fmodf_finite", "GLIBC_2.15", static_cast<float (*)(float, float)>(fmodf)),
+        SH_FUNCTION("__fmodl_finite", "GLIBC_2.15", static_cast<long double (*)(long double, long double)>(fmodl)),
+        SH_FUNCTION("__hypot_finite", "GLIBC_2.15", static_cast<double (*)(double, double)>(hypot)),
+        SH_FUNCTION("__hypotf_finite", "GLIBC_2.15", static_cast<float (*)(float, float)>(hypotf)),
+        SH_FUNCTION("__hypotl_finite", "GLIBC_2.15", static_cast<long double (*)(long double, long double)>(hypotl)),
+        SH_FUNCTION("__pow_finite", "GLIBC_2.15", static_cast<double (*)(double, double)>(pow)),
+        SH_FUNCTION("__powf_finite", "GLIBC_2.15", static_cast<float (*)(float, float)>(powf)),
+        SH_FUNCTION("__powl_finite", "GLIBC_2.15", static_cast<long double (*)(long double, long double)>(powl)),
+        SH_FUNCTION("__remainder_finite", "GLIBC_2.15", static_cast<double (*)(double, double)>(remainder)),
+        SH_FUNCTION("__remainderf_finite", "GLIBC_2.15", static_cast<float (*)(float, float)>(remainderf)),
+        SH_FUNCTION("__remainderl_finite", "GLIBC_2.15", static_cast<long double (*)(long double, long double)>(remainderl)),
+        SH_FUNCTION("__scalb_finite", "GLIBC_2.15", static_cast<double (*)(double, double)>(scalb)),
+        SH_FUNCTION("__scalbf_finite", "GLIBC_2.15", static_cast<float (*)(float, float)>(scalbf)),
+        SH_FUNCTION("__scalbl_finite", "GLIBC_2.15", sh_scalbl),
+        SH_FUNCTION("scalbl", "GLIBC_2.2.5", sh_scalbl),
+        SH_FUNCTION("__j0_finite", "GLIBC_2.15", static_cast<double (*)(double)>(j0)),
+        SH_FUNCTION("__j0f_finite", "GLIBC_2.15", static_cast<float (*)(float)>(j0f)),
+        SH_FUNCTION("__j0l_finite", "GLIBC_2.15", sh_j0l),
+        SH_FUNCTION("j0l", "GLIBC_2.2.5", sh_j0l),
+        SH_FUNCTION("__j1_finite", "GLIBC_2.15", static_cast<double (*)(double)>(j1)),
+        SH_FUNCTION("__j1f_finite", "GLIBC_2.15", static_cast<float (*)(float)>(j1f)),
+        SH_FUNCTION("__j1l_finite", "GLIBC_2.15", sh_j1l),
+        SH_FUNCTION("j1l", "GLIBC_2.2.5", sh_j1l),
+        SH_FUNCTION("__y0_finite", "GLIBC_2.15", static_cast<double (*)(double)>(y0)),
+        SH_FUNCTION("__y0f_finite", "GLIBC_2.15", static_cast<float (*)(float)>(y0f)),
+        SH_FUNCTION("__y0l_finite", "GLIBC_2.15", sh_y0l),
+        SH_FUNCTION("y0l", "GLIBC_2.2.5", sh_y0l),
+        SH_FUNCTION("__y1_finite", "GLIBC_2.15", static_cast<double (*)(double)>(y1)),
+        SH_FUNCTION("__y1f_finite", "GLIBC_2.15", static_cast<float (*)(float)>(y1f)),
+        SH_FUNCTION("__y1l_finite", "GLIBC_2.15", sh_y1l),
+        SH_FUNCTION("y1l", "GLIBC_2.2.5", sh_y1l),
+        SH_FUNCTION("__jn_finite", "GLIBC_2.15", static_cast<double (*)(int, double)>(jn)),
+        SH_FUNCTION("__jnf_finite", "GLIBC_2.15", static_cast<float (*)(int, float)>(jnf)),
+        SH_FUNCTION("__jnl_finite", "GLIBC_2.15", sh_jnl),
+        SH_FUNCTION("jnl", "GLIBC_2.2.5", sh_jnl),
+        SH_FUNCTION("__yn_finite", "GLIBC_2.15", static_cast<double (*)(int, double)>(yn)),
+        SH_FUNCTION("__ynf_finite", "GLIBC_2.15", static_cast<float (*)(int, float)>(ynf)),
+        SH_FUNCTION("__ynl_finite", "GLIBC_2.15", sh_ynl),
+        SH_FUNCTION("ynl", "GLIBC_2.2.5", sh_ynl),
+        SH_FUNCTION("__lgamma_r_finite", "GLIBC_2.15", static_cast<double (*)(double, int*)>(lgamma_r)),
+        SH_FUNCTION("__gamma_r_finite", "GLIBC_2.15", static_cast<double (*)(double, int*)>(lgamma_r)),
+        SH_FUNCTION("__lgammaf_r_finite", "GLIBC_2.15", static_cast<float (*)(float, int*)>(lgammaf_r)),
+        SH_FUNCTION("__gammaf_r_finite", "GLIBC_2.15", static_cast<float (*)(float, int*)>(lgammaf_r)),
+        SH_FUNCTION("__lgammal_r_finite", "GLIBC_2.15", static_cast<long double (*)(long double, int*)>(lgammal_r)),
+        SH_FUNCTION("__gammal_r_finite", "GLIBC_2.15", static_cast<long double (*)(long double, int*)>(lgammal_r)),
+        // The classification functions old binaries import as symbols.
+        SH_FUNCTION("__isinf", "GLIBC_2.2.5", sh_isinf),
+        SH_FUNCTION("isinf", "GLIBC_2.2.5", sh_isinf),
+        SH_FUNCTION("__isinff", "GLIBC_2.2.5", sh_isinff),
+        SH_FUNCTION("__isinfl", "GLIBC_2.2.5", sh_isinfl),
+        SH_FUNCTION("isinfl", "GLIBC_2.2.5", sh_isinfl),
+        SH_FUNCTION("__isnan", "GLIBC_2.2.5", sh_isnan),
+        SH_FUNCTION("isnan", "GLIBC_2.2.5", sh_isnan),
+        SH_FUNCTION("__isnanf", "GLIBC_2.2.5", sh_isnanf),
+        SH_FUNCTION("__isnanl", "GLIBC_2.2.5", sh_isnanl),
+        SH_FUNCTION("isnanl", "GLIBC_2.2.5", sh_isnanl),
+        SH_FUNCTION("__finite", "GLIBC_2.2.5", sh_finite),
+        SH_FUNCTION("__finitef", "GLIBC_2.2.5", sh_finitef),
+        SH_FUNCTION("__finitel", "GLIBC_2.2.5", sh_finitel),
+        SH_FUNCTION("finitel", "GLIBC_2.2.5", sh_finitel),
+        // Floating environment traps, for real.
+        SH_FUNCTION("feenableexcept", "GLIBC_2.2.5", sh_feenableexcept),
+        SH_FUNCTION("fedisableexcept", "GLIBC_2.2.5", sh_fedisableexcept),
+        SH_FUNCTION("fegetexcept", "GLIBC_2.2.5", sh_fegetexcept),
+        // The reentrant database readers and the rest of the LSB tail.
+        SH_FUNCTION("fgetpwent_r", "GLIBC_2.2.5", sh_fgetpwent_r),
+        SH_FUNCTION("fgetgrent_r", "GLIBC_2.2.5", sh_fgetgrent_r),
+        SH_FUNCTION("setstate_r", "GLIBC_2.2.5", sh_setstate_r),
+        SH_FUNCTION("getutent_r", "GLIBC_2.2.5", sh_getutent_r),
+        SH_FUNCTION("__dn_expand", "GLIBC_2.2.5", sh_dn_expand),
+        SH_FUNCTION("__res_nquery", "GLIBC_2.2.5", sh_res_nquery),
+        SH_FUNCTION("__res_search", "GLIBC_2.2.5", sh_res_nsearch),
+        SH_FUNCTION("__xpg_sigpause", "GLIBC_2.2.5", sh_xpg_sigpause),
+        SH_FUNCTION("__cmsg_nxthdr", "GLIBC_2.2.5", sh_cmsg_nxthdr),
+        SH_FUNCTION("pthread_yield", "GLIBC_2.2.5", sh_pthread_yield),
+        SH_FUNCTION("pthread_mutexattr_getkind_np", "GLIBC_2.2.5", sh_mutexattr_getkind),
+        SH_FUNCTION("pthread_mutexattr_setkind_np", "GLIBC_2.2.5", sh_mutexattr_setkind),
+        SH_FUNCTION("tmpnam_r", "GLIBC_2.2.5", sh_tmpnam_r),
+        SH_FUNCTION("_IO_feof", "GLIBC_2.2.5", sh_io_feof),
+        SH_FUNCTION("_IO_puts", "GLIBC_2.2.5", sh_io_puts),
+        SH_FUNCTION("group_member", "GLIBC_2.2.5", sh_group_member),
+        SH_FUNCTION("gnu_dev_makedev", "GLIBC_2.3.3", sh_gnu_dev_makedev),
+        SH_FUNCTION("gnu_get_libc_release", "GLIBC_2.2.5", sh_gnu_get_libc_release),
+        SH_FUNCTION("__getlogin_r_chk", "GLIBC_2.4", sh_getlogin_r_chk),
+        SH_FUNCTION("__ttyname_r_chk", "GLIBC_2.4", sh_ttyname_r_chk),
+        SH_FUNCTION("__chk_fail", "GLIBC_2.3.4", sh_fortify_fail),
+        SH_FUNCTION("__fdelt_warn", "GLIBC_2.15", sh_fdelt_chk),
+        SH_FUNCTION("__rawmemchr", "GLIBC_2.2.5", sh_rawmemchr),
+        SH_FUNCTION("__strcspn_c2", "GLIBC_2.2.5", sh_strcspn_c2),
+        SH_FUNCTION("memfrob", "GLIBC_2.2.5", sh_memfrob),
+        SH_FUNCTION("strfry", "GLIBC_2.2.5", sh_strfry),
+        SH_FUNCTION("__strdup", "GLIBC_2.2.5", strdup),
+        SH_FUNCTION("__strndup", "GLIBC_2.2.5", strndup),
+        SH_FUNCTION("__strsep_g", "GLIBC_2.2.5", strsep),
+        SH_FUNCTION("__strtok_r", "GLIBC_2.2.5", strtok_r),
+        SH_FUNCTION("__strtod_internal", "GLIBC_2.2.5", sh_strtod_internal),
+        SH_FUNCTION("__strtof_internal", "GLIBC_2.2.5", sh_strtof_internal),
+        SH_FUNCTION("__strtold_internal", "GLIBC_2.2.5", sh_strtold_internal),
+        SH_FUNCTION("__strtol_internal", "GLIBC_2.2.5", sh_strtol_internal),
+        SH_FUNCTION("__wcstol_internal", "GLIBC_2.2.5", sh_wcstol_internal),
+        SH_FUNCTION("strtoq", "GLIBC_2.2.5", strtoll),
+        SH_FUNCTION("strtouq", "GLIBC_2.2.5", strtoull),
+        SH_FUNCTION("strtoll_l", "GLIBC_2.3.3", sh_strtoll_l),
+        SH_FUNCTION("strtoull_l", "GLIBC_2.3.3", sh_strtoull_l),
+        SH_FUNCTION("wcstod_l", "GLIBC_2.3", sh_wcstod_l),
+        SH_FUNCTION("wcstol_l", "GLIBC_2.3", sh_wcstol_l),
+        SH_FUNCTION("wcstoul_l", "GLIBC_2.3", sh_wcstoul_l),
+        SH_FUNCTION("__secure_getenv", "GLIBC_2.2.5", sh_secure_getenv),
+        SH_FUNCTION("__wcscpy_chk", "GLIBC_2.4", sh_wcscpy_chk),
+        SH_FUNCTION("__wcscat_chk", "GLIBC_2.4", sh_wcscat_chk),
+        SH_FUNCTION("__fwprintf_chk", "GLIBC_2.4", sh_fwprintf_chk),
+        SH_FUNCTION("__vfwprintf_chk", "GLIBC_2.4", sh_vfwprintf_chk),
+        SH_FUNCTION("__libc_malloc", "GLIBC_2.2.5", malloc),
+        SH_FUNCTION("__libc_free", "GLIBC_2.2.5", free),
+        SH_FUNCTION("__libc_calloc", "GLIBC_2.2.5", calloc),
+        SH_FUNCTION("__libc_realloc", "GLIBC_2.2.5", realloc),
+        SH_FUNCTION("__libc_memalign", "GLIBC_2.2.5", memalign),
+        SH_FUNCTION("__sbrk", "GLIBC_2.2.5", sbrk),
+        SH_FUNCTION("__close", "GLIBC_2.2.5", close),
+        SH_FUNCTION("__getpgid", "GLIBC_2.2.5", getpgid),
+        SH_FUNCTION("preadv64v2", "GLIBC_2.26", preadv2),
+        SH_FUNCTION("pwritev64v2", "GLIBC_2.26", pwritev2),
         SH_FUNCTION("setvbuf", "GLIBC_2.2.5", sh_setvbuf),
         SH_FUNCTION("getaddrinfo", "GLIBC_2.2.5", sh_getaddrinfo),
         SH_FUNCTION("fgetpwent", "GLIBC_2.2.5", sh_fgetpwent),

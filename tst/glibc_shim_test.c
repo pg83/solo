@@ -48,6 +48,8 @@
 #include <sys/wait.h>
 #include <argz.h>
 #include <error.h>
+#include <fenv.h>
+#include <math.h>
 #include <execinfo.h>
 #include <glob.h>
 #include <gshadow.h>
@@ -1493,7 +1495,88 @@ static void distributionTail(void) {
     freelocale(c_locale);
 }
 
+/* The gcompat harvest: representatives of every family pulled over from
+ * Adélie's compatibility inventory. */
+static void gcompatTail(void) {
+    double __exp_finite(double);
+    float __log2f_finite(float);
+    double __pow_finite(double, double);
+    CHECK(__exp_finite(0.0) == 1.0);
+    CHECK(__log2f_finite(8.0f) == 3.0f);
+    CHECK(__pow_finite(2.0, 10.0) == 1024.0);
+
+    int __isnan(double);
+    int __isinf(double);
+    int __finite(double);
+    CHECK(__isnan(NAN) == 1 && __isnan(1.0) == 0);
+    CHECK(__isinf(INFINITY) == 1 && __isinf(-INFINITY) == -1 && __isinf(1.0) == 0);
+    CHECK(__finite(1.0) == 1 && __finite(INFINITY) == 0);
+
+    CHECK(j0l(0.0L) == 1.0L);
+    CHECK(scalbl(1.0L, 3.0L) == 8.0L);
+
+#if defined(__x86_64__)
+    CHECK(feenableexcept(FE_DIVBYZERO) >= 0);
+    CHECK(fegetexcept() & FE_DIVBYZERO);
+    CHECK(fedisableexcept(FE_DIVBYZERO) & FE_DIVBYZERO);
+    CHECK((fegetexcept() & FE_DIVBYZERO) == 0);
+#endif
+
+    FILE* users = fmemopen((char*)"alice:x:1000:1000:Alice:/home/alice:/bin/sh\n", 44, "r");
+    struct passwd user_record;
+    struct passwd* user = NULL;
+    char scratch[512];
+    CHECK(fgetpwent_r(users, &user_record, scratch, sizeof(scratch), &user) == 0);
+    CHECK(user != NULL && strcmp(user->pw_name, "alice") == 0 && user->pw_uid == 1000 && strcmp(user->pw_shell, "/bin/sh") == 0);
+    CHECK(fgetpwent_r(users, &user_record, scratch, sizeof(scratch), &user) == ENOENT);
+    fclose(users);
+
+    FILE* groups_db = fmemopen((char*)"wheel:x:10:alice,bob\n", 21, "r");
+    struct group group_record;
+    struct group* group_found = NULL;
+    CHECK(fgetgrent_r(groups_db, &group_record, scratch, sizeof(scratch), &group_found) == 0);
+    CHECK(group_found != NULL && group_found->gr_gid == 10 && strcmp(group_found->gr_mem[0], "alice") == 0 && strcmp(group_found->gr_mem[1], "bob") == 0 && group_found->gr_mem[2] == NULL);
+    fclose(groups_db);
+
+    char frobbed[4] = "abc";
+    memfrob(frobbed, 3);
+    memfrob(frobbed, 3);
+    CHECK(strcmp(frobbed, "abc") == 0);
+    CHECK(strlen(strfry(frobbed)) == 3);
+
+    void* __rawmemchr(const void*, int);
+    const char* straw = "xyz";
+    CHECK(__rawmemchr(straw, 'z') == straw + 2);
+    size_t __strcspn_c2(const char*, int, int);
+    CHECK(__strcspn_c2("hello", 'l', 'x') == 2);
+    CHECK(strtoq("-42", NULL, 10) == -42 && strtouq("42", NULL, 10) == 42);
+    double __strtod_internal(const char*, char**, int);
+    CHECK(__strtod_internal("2.5", NULL, 0) == 2.5);
+
+    struct random_data generator;
+    char generator_state[64];
+    int32_t drawn;
+    memset(&generator, 0, sizeof(generator));
+    CHECK(initstate_r(7, generator_state, sizeof(generator_state), &generator) == 0);
+    CHECK(random_r(&generator, &drawn) == 0);
+    CHECK(setstate_r(generator_state, &generator) == 0);
+    CHECK(random_r(&generator, &drawn) == 0);
+
+    int _IO_feof(FILE*);
+    CHECK(_IO_feof(stdin) == feof(stdin));
+    CHECK(pthread_yield() == 0);
+    CHECK(group_member(getgid()));
+    CHECK(gnu_dev_makedev(8, 1) == makedev(8, 1));
+    const char* gnu_get_libc_release(void);
+    CHECK(strcmp(gnu_get_libc_release(), "stable") == 0);
+
+    struct utmp accounting_record;
+    struct utmp* accounting = NULL;
+    CHECK(getutent_r(&accounting_record, &accounting) == -1 && accounting == NULL);
+}
+
 int glibc_shim_test(void) {
+
     failures = 0;
 
     strings();
@@ -1519,6 +1602,7 @@ int glibc_shim_test(void) {
     schedulingBridge();
     dynamicLinking();
     distributionTail();
+    gcompatTail();
 
     return failures;
 }
