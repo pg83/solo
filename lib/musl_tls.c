@@ -11,7 +11,10 @@
  * The loader carves guest blocks out of that span. On x86-64 the pad is
  * solo's whole PT_TLS and musl's own layout puts it flush against the thread
  * pointer, which is exactly where a guest executable's local-exec offsets
- * point; shared objects pack behind it. Each placed block is then registered
+ * point; libraries consume the pad from the opposite end, so the ABI slot
+ * stays free for the executable wherever in the load order it arrives, and
+ * the pool is exhausted only when the two watermarks meet. Each placed block
+ * is then registered
  * as one more tls_module in libc.tls_head, and musl's __copy_tls seeds it in
  * every thread created afterwards, reading the mapped template after
  * relocations by construction. libc.tls_size grows by one pointer per
@@ -52,9 +55,13 @@ static _Thread_local unsigned char soloTlsPad[SOLO_TLS_PAD] __attribute__((align
 static struct tls_module soloModules[SOLO_TLS_MODULES];
 static size_t soloModuleCount;
 
-/* Occupied bytes of the span, measured from the thread-pointer-proximal end
- * away from it, and the count of reservations handed out. */
-static size_t soloExtent;
+/* Two watermarks growing toward each other: the executable owns the pad's
+ * thread-pointer-proximal end — the ABI slot — whenever in the load order it
+ * arrives, and libraries consume the pad from the distal end. The pool is
+ * exhausted when they meet. */
+static size_t soloExecutableExtent;
+static size_t soloLibraryExtent;
+static int soloExecutablePlaced;
 static size_t soloReserved;
 
 static uintptr_t threadPointer(void) {
@@ -92,40 +99,34 @@ intptr_t soloStaticTls(size_t size, size_t align) {
 		align = sizeof(uintptr_t);
 	}
 
+	/* Libraries pack from the pad's thread-pointer-distal end, whichever
+	 * side that is on the architecture; both ends are aligned relative to
+	 * the thread pointer by the pad itself, so either direction hands out
+	 * aligned blocks. */
 #if defined(__x86_64__)
-	/* Blocks pack downward from the pad's end, which sits at or below the
-	 * thread pointer; the offset itself carries the block's alignment,
-	 * against a thread pointer aligned by the pad. */
-	size_t extent = (soloExtent + size + align - 1) & -align;
-	intptr_t offset = padOffset() + SOLO_TLS_PAD - (intptr_t)extent;
-
-	if (extent > SOLO_TLS_PAD) {
-		return 0;
-	}
-#else
-	/* Blocks pack upward from the pad's start. */
-	size_t start = (soloExtent + align - 1) & -align;
+	/* Distal end = the pad's start; blocks pack upward, toward the thread
+	 * pointer. */
+	size_t start = (soloLibraryExtent + align - 1) & -align;
 	size_t extent = start + size;
 	intptr_t offset = padOffset() + (intptr_t)start;
-
-	if (extent > SOLO_TLS_PAD) {
-		return 0;
-	}
+#else
+	/* Distal end = the pad's end; blocks pack downward, the offset itself
+	 * carrying the alignment. */
+	size_t extent = (soloLibraryExtent + size + align - 1) & -align;
+	intptr_t offset = padOffset() + SOLO_TLS_PAD - (intptr_t)extent;
 #endif
 
-	soloExtent = extent;
+	if (extent + soloExecutableExtent > SOLO_TLS_PAD) {
+		return 0;
+	}
+	soloLibraryExtent = extent;
 	soloReserved++;
 
 	return offset;
 }
 
 intptr_t soloExecutableTls(const void* image, size_t size, size_t align) {
-	if (align > SOLO_TLS_ALIGN || soloReserved == SOLO_TLS_MODULES) {
-		return 0;
-	}
-	/* First reservation only: the ABI slot is adjacent to the thread
-	 * pointer, and anything placed earlier may already occupy it. */
-	if (soloExtent || soloReserved) {
+	if (align > SOLO_TLS_ALIGN || soloReserved == SOLO_TLS_MODULES || soloExecutablePlaced) {
 		return 0;
 	}
 
@@ -141,10 +142,11 @@ intptr_t soloExecutableTls(const void* image, size_t size, size_t align) {
 
 	size += (-size - (uintptr_t)image) & (align - 1);
 
-	if (size > SOLO_TLS_PAD) {
+	if (size + soloLibraryExtent > SOLO_TLS_PAD) {
 		return 0;
 	}
-	soloExtent = size;
+	soloExecutableExtent = size;
+	soloExecutablePlaced = 1;
 	soloReserved++;
 
 	return -(intptr_t)size;
@@ -159,12 +161,16 @@ intptr_t soloExecutableTls(const void* image, size_t size, size_t align) {
 	size_t offset = SOLO_TLS_GAP;
 	offset += (-(size_t)SOLO_TLS_GAP + (uintptr_t)image) & (align - 1);
 
-	if (offset + size > (size_t)padOffset() + SOLO_TLS_PAD) {
+	size_t extent = 0;
+
+	if (offset + size > (size_t)padOffset()) {
+		extent = offset + size - (size_t)padOffset();
+	}
+	if (extent + soloLibraryExtent > SOLO_TLS_PAD) {
 		return 0;
 	}
-	if (offset + size > (size_t)padOffset()) {
-		soloExtent = offset + size - (size_t)padOffset();
-	}
+	soloExecutableExtent = extent;
+	soloExecutablePlaced = 1;
 	soloReserved++;
 
 	return (intptr_t)offset;

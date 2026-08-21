@@ -1272,7 +1272,7 @@ void Loader::allocateStaticTls(LinkMap& image) {
         : soloStaticTls(image.tlsMemorySize, image.tlsAlignment);
 
     if (image.executable && !image.staticTlsOffset) {
-        throwError("%s: the executable's TLS (%zu bytes, %zu-byte alignment) cannot take the ABI slot next to the thread pointer; the slot is occupied, the block does not fit the pad, or a stray thread_local unseated the pad", image.path.c_str(), image.tlsMemorySize, image.tlsAlignment);
+        throwError("%s: the executable's TLS (%zu bytes, %zu-byte alignment) cannot take the ABI slot next to the thread pointer; a stray thread_local unseated the pad, an executable is already placed, or the block does not fit alongside the loaded libraries", image.path.c_str(), image.tlsMemorySize, image.tlsAlignment);
     }
 }
 

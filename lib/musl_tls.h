@@ -21,15 +21,17 @@ extern "C" {
 #endif
 
 // Reserves a block in the pad for a shared object's TLS, initial-exec
-// demands and all.
+// demands and all; libraries consume the pad from its thread-pointer-distal
+// end, leaving the ABI slot at the proximal end to the executable.
 intptr_t soloStaticTls(size_t size, size_t align);
 
 // Reserves the main guest executable's block at the ABI-mandated slot next
 // to the thread pointer, where its local-exec offsets, burned into the
-// instructions by the static linker, expect it. Only valid as the first
-// reservation, in a process whose PT_TLS is exactly the pad — a stray
-// thread_local that unseats the pad from the thread pointer is refused here,
-// loudly, through the loader.
+// instructions by the static linker, expect it. At most one executable, in
+// a process whose PT_TLS is exactly the pad — a stray thread_local that
+// unseats the pad from the thread pointer is refused here, loudly, through
+// the loader; libraries loaded earlier are fine, the pool is exhausted only
+// when the two ends meet.
 intptr_t soloExecutableTls(const void* image, size_t size, size_t align);
 
 // Registers a reserved block's template with musl, after relocations, so
