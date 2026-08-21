@@ -199,32 +199,41 @@ def main():
             stdout=initrd.open("wb"),
         )
 
-        boot = subprocess.run(
-            [
-                qemu,
-                "-nographic",
-                "-no-reboot",
-                "-m", "1024",
-                "-accel", "kvm",
-                "-accel", "tcg",
-                "-kernel", kernel,
-                "-initrd", str(initrd),
-                "-append", f"console=ttyS0 {init} panic=-1 sysrq_always_enabled=1 loglevel=4",
-            ],
-            check=False,
-            text=True,
-            errors="replace",
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=600,
-        )
+        # The serial console goes to a file, not a pipe: a hung boot times
+        # out, and the transcript up to the hang is the whole diagnostic.
+        transcript = Path(temporary) / "console.log"
+        with transcript.open("wb") as console:
+            try:
+                subprocess.run(
+                    [
+                        qemu,
+                        "-nographic",
+                        "-no-reboot",
+                        "-m", "1024",
+                        "-accel", "kvm",
+                        "-accel", "tcg",
+                        "-kernel", kernel,
+                        "-initrd", str(initrd),
+                        "-append", f"console=ttyS0 {init} panic=-1 sysrq_always_enabled=1 loglevel=4",
+                    ],
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                    stdout=console,
+                    stderr=subprocess.STDOUT,
+                    timeout=480,
+                )
+                timed_out = False
+            except subprocess.TimeoutExpired:
+                timed_out = True
+        text = transcript.read_text(errors="replace")
 
-    print(boot.stdout, end="")
+    print(text, end="")
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(boot.stdout)
+    output.write_text(text)
+    if timed_out:
+        raise SystemExit("qemu boot timed out")
     for needle in needles:
-        if needle not in boot.stdout:
+        if needle not in text:
             raise SystemExit(f"qemu boot misses: {needle}")
 
 
