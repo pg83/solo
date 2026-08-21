@@ -24,7 +24,13 @@
 #define weak __attribute__((__weak__))
 #endif
 
-#include "pthread_impl.h"
+/* By relative path, not by include directory: musl's private headers shadow
+ * public names (syscall.h, atomic.h), so their directory must never appear
+ * on the include path of the library's C++ sources. Quoted includes inside
+ * pthread_impl.h find its src/internal neighbors by themselves; the
+ * per-architecture headers it wants come from the arch include paths every
+ * flavor already carries. */
+#include "../bin/vulkan/musl/src/internal/pthread_impl.h"
 
 #include <signal.h>
 #include <stdlib.h>

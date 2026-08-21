@@ -175,14 +175,14 @@ musl_internal_includes = [
     f"{musl_root}/include",
 ]
 
-# What lib/musl_tls.c needs from musl's own tree: the internal structures of
-# src/internal and the matching public headers. Without src/include, whose
-# wrappers are C-only — the loader's C++ sources share these paths.
+# What lib/musl_tls.c needs on the include path: the per-architecture headers
+# pthread_impl.h pulls in, and the public musl headers. Its src/internal home
+# is reached by relative path from musl_tls.c itself and must never be listed
+# here — musl's private headers shadow public names (syscall.h, atomic.h),
+# and the loader's C++ sources share these paths.
 musl_private_includes = [
     f"{musl_root}/arch/{machine}",
     f"{musl_root}/arch/generic",
-    "$(B)/bin/vulkan/musl/internal",
-    f"{musl_root}/src/internal",
     "$(B)/bin/vulkan/musl/include",
     f"{musl_root}/include",
 ]
