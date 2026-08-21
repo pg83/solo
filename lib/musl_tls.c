@@ -172,6 +172,15 @@ intptr_t soloStaticTls(const void* image, size_t length, size_t size, size_t ali
 	return registerModule(image, length, size, offset);
 }
 
+/* Best effort ahead of the dyn::init() contract: priority 101 — the earliest
+ * unreserved slot — sorts before every ordinary constructor regardless of
+ * link order, so the re-planting usually has already happened by the time
+ * main() runs. A link whose earlier constructors spawn threads anyway is
+ * caught by dyn::init()'s loud failure. */
+__attribute__((constructor(101))) static void soloTlsBoot(void) {
+	soloTlsReplant();
+}
+
 intptr_t soloExecutableTls(const void* image, size_t length, size_t size, size_t align) {
 	if (soloTlsReplant() || align > SOLO_TLS_ALIGN || soloModuleCount == SOLO_TLS_MODULES) {
 		return 0;

@@ -154,6 +154,9 @@ process creates its first thread. It re-plants the main thread's TLS with the
 static TLS window guests get their thread-local storage from — the same
 second thread-pointer planting musl's own dynamic linker performs — and that
 is only possible while the thread is alone. Calling it late is a loud error.
+A best-effort early constructor usually gets the re-planting done before any
+of the application's own constructors run, so `dyn::init()` is normally a
+no-op check — but it is the contract, not the constructor.
 
 ## Reproduce the experiment
 
