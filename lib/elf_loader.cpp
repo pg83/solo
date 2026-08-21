@@ -512,16 +512,34 @@ bool dyn::secureExecution() {
     return secure;
 }
 
+bool dyn::debugFlag(std::string_view flag) {
+    static const std::string flags = [] {
+        const auto* debug = secureExecution() ? nullptr : getenv("LD_DEBUG");
+
+        return std::string(debug ? debug : "");
+    }();
+
+    std::string_view remaining(flags);
+
+    while (!remaining.empty()) {
+        auto comma = remaining.find(',');
+        auto entry = remaining.substr(0, comma);
+
+        remaining.remove_prefix(comma == std::string_view::npos ? remaining.size() : comma + 1);
+        if (entry == flag || entry == "all") {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // Registered before any loaded DSO can register its own atexit handlers, so
 // like glibc's _dl_fini it runs after them.
 Loader::Loader() {
     bindNow_ = getenv("LD_BIND_NOW") != nullptr;
-    if (const auto* debug = secureExecution() ? nullptr : getenv("DL_DEBUG"); debug) {
-        std::string_view flags(debug);
-
-        debugLibs_ = flags.find("libs") != std::string_view::npos || flags == "all";
-        debugBindings_ = flags.find("bindings") != std::string_view::npos || flags == "all";
-    }
+    debugLibs_ = debugFlag("libs");
+    debugBindings_ = debugFlag("bindings");
     initializeStaticTls();
     atexit(runAllFinalizers);
 }

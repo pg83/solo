@@ -28,7 +28,7 @@ locale-archive (we stay in C/UTF-8, like musl).
   nodes, the coverage report (lcov to the coverage service), the ABI-diff
   probe (`./build abi_diff`, snapshot in dev/abi-diff.txt) and its driven
   fixes (regex, nftw, sched_param), the corpus-demanded adapters, the
-  link_map facade with dlinfo, lazy binding, `DL_DEBUG=libs,bindings`,
+  link_map facade with dlinfo, lazy binding, `LD_DEBUG=libs,bindings`,
   unlocked initializers, and the per-shim conformance battery in
   tst/glibc_shim_test.c.
 - A rule generator for adapter families waits until the corpus demands more

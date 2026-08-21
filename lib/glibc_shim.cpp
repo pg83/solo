@@ -2792,7 +2792,7 @@ namespace {
     }
 
     static int sh_trace_enabled(void) {
-        return !secureExecution() && getenv("SH_GLIBC_BRIDGE_TRACE") != NULL;
+        return debugFlag("bridge");
     }
 
     static int sh_pthread_once(void* foreign, void (*initialize)(void)) {

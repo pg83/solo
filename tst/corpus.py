@@ -166,7 +166,7 @@ def needs_host_symbols(error):
 
 def run_driver(driver, library, search_path):
     environment = os.environ.copy()
-    environment["DL_GLIBC_STUB_DEBUG"] = "1"
+    environment["LD_DEBUG"] = "stubs"
     environment["LD_LIBRARY_PATH"] = search_path
     result = subprocess.run(
         [driver, str(library)],
@@ -204,7 +204,9 @@ def rerun_under_gdb(command, environment):
     # LD_LIBRARY_PATH (glibc sysroots poison a dynamically linked gdb); only
     # the inferior gets it, through the debugger.
     launch_environment = {
-        key: value for key, value in environment.items() if key != "LD_LIBRARY_PATH"
+        key: value
+        for key, value in environment.items()
+        if key not in ("LD_LIBRARY_PATH", "LD_DEBUG", "LD_DEBUG_OUTPUT")
     }
     setup = []
     if "LD_LIBRARY_PATH" in environment:

@@ -13,6 +13,11 @@ namespace dyn {
     // environment's search paths, debug switches, or $-token expansions.
     bool secureExecution();
 
+    // One comma-separated LD_DEBUG in ld.so's shape. glibc's own flags keep
+    // their meanings (libs, bindings), the bridge adds stubs, dlfcn, and
+    // bridge, and "all" turns everything on. Always false under AT_SECURE.
+    bool debugFlag(std::string_view flag);
+
     struct ElfAddress {
         std::string_view path;
         void* base = nullptr;

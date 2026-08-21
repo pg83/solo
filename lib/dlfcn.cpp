@@ -19,9 +19,9 @@ using namespace dyn;
 
 namespace {
     static int OpenFD() {
-        // A privileged process must not create files at a path the
-        // environment names.
-        if (auto env = dyn::secureExecution() ? nullptr : getenv("DL_STUB_DEBUG"); env && env[0] == '/') {
+        // ld.so's LD_DEBUG_OUTPUT; a privileged process must not create
+        // files at a path the environment names.
+        if (auto env = dyn::secureExecution() ? nullptr : getenv("LD_DEBUG_OUTPUT"); env && env[0] == '/') {
             if (int fd = open(env, O_WRONLY | O_CREAT | O_APPEND, 0644); fd >= 0) {
                 return fd;
             }
@@ -41,7 +41,7 @@ namespace {
     };
 
     static inline bool debugEnabled() {
-        static const bool enabled = !dyn::secureExecution() && getenv("DL_STUB_DEBUG");
+        static const bool enabled = dyn::debugFlag("dlfcn");
 
         return enabled;
     }

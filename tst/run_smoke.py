@@ -427,7 +427,9 @@ def rerun_under_gdb(command, environment):
     # LD_LIBRARY_PATH (glibc sysroots poison a dynamically linked gdb); only
     # the inferior gets it, through the debugger.
     launch_environment = {
-        key: value for key, value in environment.items() if key != "LD_LIBRARY_PATH"
+        key: value
+        for key, value in environment.items()
+        if key not in ("LD_LIBRARY_PATH", "LD_DEBUG", "LD_DEBUG_OUTPUT")
     }
     setup = []
     if "LD_LIBRARY_PATH" in environment:
