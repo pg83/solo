@@ -175,6 +175,18 @@ musl_internal_includes = [
     f"{musl_root}/include",
 ]
 
+# What lib/musl_tls.c needs from musl's own tree: the internal structures of
+# src/internal and the matching public headers. Without src/include, whose
+# wrappers are C-only — the loader's C++ sources share these paths.
+musl_private_includes = [
+    f"{musl_root}/arch/{machine}",
+    f"{musl_root}/arch/generic",
+    "$(B)/bin/vulkan/musl/internal",
+    f"{musl_root}/src/internal",
+    "$(B)/bin/vulkan/musl/include",
+    f"{musl_root}/include",
+]
+
 musl_alltypes = command(
     inputs=[
         f"{vulkan_root}/generate.py",
@@ -245,7 +257,7 @@ runtime_generated = [
 dlfcn = library(
     srcs=dlfcn_srcs,
     deps=[*symbol_headers, musl_alltypes, musl_syscall, musl_version],
-    includes=["$(B)/lib", *musl_internal_includes],
+    includes=["$(B)/lib", *musl_private_includes],
     cppflags=["-DCOMPILE_DLOPEN", "-D_GNU_SOURCE"],
     public_cppflags=["-I$(S)/lib"],
     output="$(B)/libdlfcn.a",
@@ -423,7 +435,7 @@ def runtimeArchives(flavor, out, model_flags):
         name=f"{flavor}_dlfcn",
         srcs=dlfcn_srcs,
         deps=[*runtime_generated, *symbol_headers],
-        includes=["$(B)/lib", *vendored_includes, *musl_internal_includes],
+        includes=["$(B)/lib", *vendored_includes, *musl_private_includes],
         cflags=flags,
         cxxflags=[
             *cxx_runtime_flags,
