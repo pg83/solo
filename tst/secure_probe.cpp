@@ -4,11 +4,13 @@
 // and set-uid root — and asserts the pairing.
 
 #include "dlfcn.h"
+#include "elf_loader.h"
 
 #include <stdio.h>
 #include <sys/auxv.h>
 
 int main(int argumentCount, char** arguments) {
+    dyn::init();
     if (argumentCount != 2) {
         fprintf(stderr, "usage: secure_probe LIBRARY\n");
         return 2;

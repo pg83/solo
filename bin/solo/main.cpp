@@ -113,6 +113,8 @@ namespace {
 }
 
 int main(int argc, char** argv) {
+    init();
+
     auto ldd = false;
     int consumed = 1;
 

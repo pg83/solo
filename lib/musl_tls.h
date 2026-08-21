@@ -21,8 +21,8 @@ extern "C" {
 // reserves a static TLS window next to the thread pointer, exactly what
 // musl's own dynamic linker does between its stage 2 and stage 3 — the
 // thread pointer is planted twice, and the second planting happens when the
-// sizes are known. Runs from a constructor while the process is still
-// single-threaded; idempotent; fails once other threads exist.
+// sizes are known. dyn::init() calls this from the top of main(), by
+// contract before any thread exists; idempotent; fails once threads do.
 int soloTlsReplant(void);
 
 // Places a module's TLS block in the window and registers its template with

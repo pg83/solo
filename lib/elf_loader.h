@@ -8,6 +8,11 @@
 #include <string_view>
 
 namespace dyn {
+    // The loader's startup: re-plants the main thread's TLS with the static
+    // TLS window next to the thread pointer. Call at the top of main(),
+    // before the first thread exists — later is a loud error.
+    void init();
+
     // Secure-execution mode, ld.so's AT_SECURE discipline: a set-uid,
     // set-gid, or capability-elevated process must not honor the
     // environment's search paths, debug switches, or $-token expansions.

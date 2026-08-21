@@ -1,3 +1,4 @@
+#include "elf_loader.h"
 #include "glibc_shim.h"
 
 #include <errno.h>
@@ -419,6 +420,7 @@ namespace {
 }
 
 int main() {
+    init();
     BRIDGE = loadBridge();
     if (!resolved) {
         return 1;

@@ -5,12 +5,12 @@
  * by __copy_tls from the module list in libc.tls_head, and the thread
  * pointer of the main thread is planted by __init_tp — twice in the dynamic
  * linker's own startup, the second time when the program's TLS sizes are
- * known. This file does the same from the static world: a constructor
- * re-plants the main thread onto an allocation with a reserve next to the
- * thread pointer, and the loader registers each placed guest as one more
- * tls_module, after which pthread_create seeds every future thread by
- * itself. The reserve is address space, not memory: __copy_tls touches only
- * the registered templates.
+ * known. This file does the same from the static world: dyn::init(), called
+ * at the top of main() by contract, re-plants the main thread onto an
+ * allocation with a reserve next to the thread pointer, and the loader
+ * registers each placed guest as one more tls_module, after which
+ * pthread_create seeds every future thread by itself. The reserve is address
+ * space, not memory: __copy_tls touches only the registered templates.
  */
 
 #include "musl_tls.h"
@@ -206,8 +206,3 @@ intptr_t soloExecutableTls(const void* image, size_t length, size_t size, size_t
 	return registerModule(image, length, size, offset);
 }
 
-/* Pre-main, while the process cannot have threads yet; a failure here (out
- * of memory) surfaces later as the loader's loud placement error. */
-__attribute__((constructor)) static void soloTlsBoot(void) {
-	soloTlsReplant();
-}

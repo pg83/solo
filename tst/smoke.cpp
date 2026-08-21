@@ -101,6 +101,7 @@ namespace {
 }
 
 int main() {
+    init();
     installFaultReport();
 
 #if defined(__x86_64__)

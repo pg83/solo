@@ -481,6 +481,13 @@ ScopedRequester::~ScopedRequester() {
     slot_ = previous_;
 }
 
+void dyn::init() {
+    if (soloTlsReplant()) {
+        fprintf(stderr, "solo: dyn::init() called after threads were created; static TLS is unavailable\n");
+        abort();
+    }
+}
+
 bool dyn::secureExecution() {
     static const bool secure = [] {
         errno = 0;
