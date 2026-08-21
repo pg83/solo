@@ -27,6 +27,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <ftw.h>
+#include <getopt.h>
 #include <inttypes.h>
 #include <langinfo.h>
 #include <libgen.h>
@@ -1525,6 +1526,88 @@ namespace {
 
     static const char* sh_sigdescr_np(int signal) {
         return strsignal(signal);
+    }
+
+    // getopt's four state variables are ABI, and glibc executables carry
+    // COPY relocations for them: every loaded image binds optind to the
+    // executable's copy while musl's parser advances its own. The wrappers
+    // shuttle the state into musl's variables and back around every call,
+    // through whatever definition the loaded images actually bound; with no
+    // guest definition — the library case — musl's own variables already
+    // are the ABI and nothing needs moving.
+    struct GlibcGetoptState {
+        int* index;
+        char** argument;
+        int* error;
+        int* option;
+    };
+
+    static GlibcGetoptState sh_getopt_state(void) {
+        GlibcGetoptState state;
+
+        state.index = static_cast<int*>(ElfImage::lookupGlobal("optind"));
+        state.argument = static_cast<char**>(ElfImage::lookupGlobal("optarg"));
+        state.error = static_cast<int*>(ElfImage::lookupGlobal("opterr"));
+        state.option = static_cast<int*>(ElfImage::lookupGlobal("optopt"));
+
+        return state;
+    }
+
+    static void sh_getopt_pull(const GlibcGetoptState& state) {
+        if (state.index && state.index != &optind) {
+            optind = *state.index;
+        }
+        if (state.error && state.error != &opterr) {
+            opterr = *state.error;
+        }
+    }
+
+    static void sh_getopt_push(const GlibcGetoptState& state) {
+        if (state.index && state.index != &optind) {
+            *state.index = optind;
+        }
+        if (state.argument && state.argument != &optarg) {
+            *state.argument = optarg;
+        }
+        if (state.option && state.option != &optopt) {
+            *state.option = optopt;
+        }
+    }
+
+    static int sh_getopt(int argc, char* const argv[], const char* options) {
+        auto state = sh_getopt_state();
+
+        sh_getopt_pull(state);
+
+        auto result = getopt(argc, argv, options);
+
+        sh_getopt_push(state);
+
+        return result;
+    }
+
+    static int sh_getopt_long(int argc, char* const argv[], const char* options, const struct option* longOptions, int* longIndex) {
+        auto state = sh_getopt_state();
+
+        sh_getopt_pull(state);
+
+        auto result = getopt_long(argc, argv, options, longOptions, longIndex);
+
+        sh_getopt_push(state);
+
+        return result;
+    }
+
+    static int sh_getopt_long_only(int argc, char* const argv[], const char* options, const struct option* longOptions, int* longIndex) {
+        auto state = sh_getopt_state();
+
+        sh_getopt_pull(state);
+
+        auto result = getopt_long_only(argc, argv, options, longOptions, longIndex);
+
+        sh_getopt_push(state);
+
+        return result;
     }
 
     // glibc's own message catalog name, referenced by its gettext callers.
@@ -4522,6 +4605,9 @@ namespace {
         SH_FUNCTION("obstack_free", "GLIBC_2.2.5", sh_obstack_free),
         SH_FUNCTION("_obstack_memory_used", "GLIBC_2.2.5", sh_obstack_memory_used),
         SH_FUNCTION("error_at_line", "GLIBC_2.2.5", sh_error_at_line),
+        SH_FUNCTION("getopt", "GLIBC_2.2.5", sh_getopt),
+        SH_FUNCTION("getopt_long", "GLIBC_2.2.5", sh_getopt_long),
+        SH_FUNCTION("getopt_long_only", "GLIBC_2.2.5", sh_getopt_long_only),
         SH_OBJECT("_libc_intl_domainname", "GLIBC_2.2.5", sh_libc_intl_domainname),
         SH_FUNCTION("sigsetmask", "GLIBC_2.2.5", sh_sigsetmask),
         SH_FUNCTION("sigabbrev_np", "GLIBC_2.32", sh_sigabbrev_np),
@@ -4874,6 +4960,9 @@ GlibcAdapter::GlibcAdapter()
 
     static constexpr std::string_view overrideNames[] = {
         "__cxa_atexit",
+        "getopt",
+        "getopt_long",
+        "getopt_long_only",
         "__cxa_finalize",
         "__cxa_thread_atexit_impl",
         "_dl_find_object",

@@ -29,8 +29,21 @@ liblsan0 (56К IE) из SKIP.
 `__init_tls` в musl_tls.c (weak-alias musl оставлен ровно для этого)
 читает собственные phdr через `__ehdr_start` — иначе гостевой PT_TLS
 вытеснил бы pad. `LD_TRACE_LOADED_OBJECTS` работает и так — путь к
-настоящему ldd. Дальше: rootfs-тулза (Ubuntu/Fedora слой, вырезать glibc,
-подложить solo под путями ld-linux) + chroot-smoke в CI, затем qemu.
+настоящему ldd.
+Этап 5 [сделано]: chroot Ubuntu/Fedora с целиком удалённым glibc.
+tst/rootfs_smoke.py в CI: скачанный слой (ubuntu-base tarball /
+Fedora OCI), glibc вырезан, solo лежит по PT_INTERP-пути, батарея
+через `unshare -r chroot` — coreutils, grep/sed/find, dpkg -l,
+apt-get check, rpm -q, dnf --version. По дороге бридж догнал ld.so:
+exe первым в глобальном скоупе уже при релокации зависимостей
+(COPY-глобалы rpm), инициализаторы ждут релокации всего замыкания
+(vague-linkage typeinfo в exe), dl_iterate_phdr отдаёт образ самого
+интерпретатора (unwind гостевых исключений через наши фреймы),
+glibc-шейповый `__locale_struct` с ctype-таблицами (libstdc++ читает
+их из структуры — std::regex у dnf5), getopt-обёртки, синхронизирующие
+optind/optarg с COPY-копиями гостя, GNU regex/obstack-хвост.
+Долг: argp_parse (glibc-шные locale/getent/iconv его хотят).
+Дальше: qemu — полный boot с solo вместо ld.so.
 
 **2. [сделано] `LD_TRACE_LOADED_OBJECTS` — ldd-эмуляция (день работы).** Прямое
 продолжение вчерашнего «говорим на языке ld.so»:

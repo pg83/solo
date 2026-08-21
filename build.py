@@ -1236,7 +1236,59 @@ corpus = command(
     color="green",
 )
 
+# Whole-distribution rootfs layers: glibc is deleted outright and solo
+# becomes the dynamic linker at the PT_INTERP path, so every binary in the
+# chroot runs kernel-loaded on the bridge. Containerized machines without
+# user namespaces skip inside the script.
+rootfs_packages = {
+    "x86_64": [
+        (
+            "ubuntu_rootfs",
+            "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-amd64.tar.gz",
+            "ubuntu-base-24.04.3-base-amd64.tar.gz",
+            "6bc2cde3930ad088b3bb46fa45279e96d25bc3810f209850ecbe4722711874f9",
+        ),
+        (
+            "fedora_rootfs",
+            "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Container/x86_64/images/Fedora-Container-Base-Generic-44-1.7.x86_64.oci.tar.xz",
+            "Fedora-Container-Base-Generic-44-1.7.x86_64.oci.tar.xz",
+            "75200f5752a74a21a616ca9a75e25beb594e2e117a0195c54f87c0b3e3974d1b",
+        ),
+    ],
+    "aarch64": [
+        (
+            "ubuntu_rootfs",
+            "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-arm64.tar.gz",
+            "ubuntu-base-24.04.3-base-arm64.tar.gz",
+            "7b2dced6dd56ad5e4a813fa25c8de307b655fdabc6ea9213175a92c48dabb048",
+        ),
+        (
+            "fedora_rootfs",
+            "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Container/aarch64/images/Fedora-Container-Base-Generic-44-1.7.aarch64.oci.tar.xz",
+            "Fedora-Container-Base-Generic-44-1.7.aarch64.oci.tar.xz",
+            "eca19542a48a8e39b84e869713a1fa2408cbcc578de26c25ae72e3334ef968c1",
+        ),
+    ],
+}[machine]
+rootfs_archives = [downloadPackage(*package) for package in rootfs_packages]
+
+rootfs_smoke = command(
+    name="rootfs_smoke",
+    inputs=["$(S)/tst/rootfs_smoke.py", *rootfs_archives],
+    outputs=["$(B)/tst/rootfs-smoke.log"],
+    deps=[solo_cli, *(downloadTargets[name] for name, *_ in rootfs_packages)],
+    cmd=[
+        "python3",
+        "$(S)/tst/rootfs_smoke.py",
+        "$(B)/tst/rootfs-smoke.log",
+        *rootfs_archives,
+    ],
+    env={"DLFCN_SOLO": "$(B)/bin/solo/solo"},
+    descr="TS",
+    color="green",
+)
+
 install(dlfcn)
-group("test", pthread_test, arch_smoke)
+group("test", pthread_test, arch_smoke, rootfs_smoke)
 # Everything the tests download, for warming a package mirror in one pass.
 group("fetch", *downloadTargets.values())
