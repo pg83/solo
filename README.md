@@ -169,8 +169,8 @@ CI performs the native build and test on Alpine/musl with GCC, Fedora with GCC,
 and Ubuntu with Clang. The Vulkan test installs each distribution's own
 Lavapipe package; it does not run the driver from an Arch sysroot.
 
-Every build input for the standalone Vulkan executable is vendored under
-`bin/vulkan`. [`build.py`](build.py) compiles those sources directly: upstream
+Every third-party build input is vendored under `ext/`.
+[`build.py`](build.py) compiles those sources directly: upstream
 CMake, Meson, configure, and Make build systems are not invoked.
 
 <details>

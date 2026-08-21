@@ -94,7 +94,7 @@ def vendorPaths(root, names):
 
 
 def muslSources():
-    root = "$(S)/bin/vulkan/musl"
+    root = "$(S)/ext/musl"
     replacedDlfcn = {
         f"{root}/src/ldso/__dlsym.c",
         f"{root}/src/ldso/dladdr.c",
@@ -126,15 +126,17 @@ def muslSources():
     ]
 
 
+# The vendored third-party trees; bin/vulkan keeps only the demo itself.
+ext_root = "$(S)/ext"
 vulkan_root = "$(S)/bin/vulkan"
-musl_root = f"{vulkan_root}/musl"
-llvm_root = f"{vulkan_root}/llvm"
+musl_root = f"{ext_root}/musl"
+llvm_root = f"{ext_root}/llvm"
 libcxx_root = f"{llvm_root}/libcxx"
 libcxxabi_root = f"{llvm_root}/libcxxabi"
 libunwind_root = f"{llvm_root}/libunwind"
 compiler_rt_root = f"{llvm_root}/compiler-rt/builtins"
-vulkan_headers_root = f"{vulkan_root}/vulkan/headers/include"
-vulkan_loader_root = f"{vulkan_root}/vulkan/loader/loader"
+vulkan_headers_root = f"{ext_root}/vulkan/headers/include"
+vulkan_loader_root = f"{ext_root}/vulkan/loader/loader"
 
 # The tests and the vulkan demo link the vendored musl and libc++; the host
 # library must never see those headers. Include paths are therefore per-target:
@@ -142,36 +144,36 @@ vulkan_loader_root = f"{vulkan_root}/vulkan/loader/loader"
 # the host toolchain alone, so one invocation can build both worlds.
 vendored_includes = [
     "$(S)/lib",
-    "$(B)/bin/vulkan/libcxx/include",
+    "$(B)/ext/libcxx/include",
     f"{libcxx_root}/include",
     f"{libcxxabi_root}/include",
     f"{libunwind_root}/include",
     f"{musl_root}/arch/{machine}",
     f"{musl_root}/arch/generic",
-    "$(B)/bin/vulkan/musl/include",
+    "$(B)/ext/musl/include",
     f"{musl_root}/include",
     f"{compiler_rt_root}",
     f"{libcxx_root}/src",
     f"{libcxx_root}/src/include",
     f"{libcxxabi_root}/src",
     f"{libunwind_root}/src",
-    "$(B)/bin/vulkan/zlib",
-    f"{vulkan_root}/zlib",
-    "$(B)/bin/vulkan/png",
-    f"{vulkan_root}/png",
+    "$(B)/ext/zlib",
+    f"{ext_root}/zlib",
+    "$(B)/ext/png",
+    f"{ext_root}/png",
     f"{vulkan_loader_root}",
     f"{vulkan_loader_root}/generated",
     f"{vulkan_headers_root}",
-    f"{vulkan_root}",
+    f"{ext_root}",
 ]
 
 musl_internal_includes = [
     f"{musl_root}/arch/{machine}",
     f"{musl_root}/arch/generic",
-    "$(B)/bin/vulkan/musl/internal",
+    "$(B)/ext/musl/internal",
     f"{musl_root}/src/include",
     f"{musl_root}/src/internal",
-    "$(B)/bin/vulkan/musl/include",
+    "$(B)/ext/musl/include",
     f"{musl_root}/include",
 ]
 
@@ -183,22 +185,22 @@ musl_internal_includes = [
 musl_private_includes = [
     f"{musl_root}/arch/{machine}",
     f"{musl_root}/arch/generic",
-    "$(B)/bin/vulkan/musl/include",
+    "$(B)/ext/musl/include",
     f"{musl_root}/include",
 ]
 
 musl_alltypes = command(
     inputs=[
-        f"{vulkan_root}/generate.py",
+        f"{ext_root}/generate.py",
         f"{musl_root}/arch/{machine}/bits/alltypes.h.in",
         f"{musl_root}/include/alltypes.h.in",
     ],
-    outputs=["$(B)/bin/vulkan/musl/include/bits/alltypes.h"],
+    outputs=["$(B)/ext/musl/include/bits/alltypes.h"],
     cmd=[
         "python3",
-        f"{vulkan_root}/generate.py",
+        f"{ext_root}/generate.py",
         "alltypes",
-        "$(B)/bin/vulkan/musl/include/bits/alltypes.h",
+        "$(B)/ext/musl/include/bits/alltypes.h",
         f"{musl_root}/arch/{machine}/bits/alltypes.h.in",
         f"{musl_root}/include/alltypes.h.in",
     ],
@@ -206,43 +208,43 @@ musl_alltypes = command(
 
 musl_syscall = command(
     inputs=[
-        f"{vulkan_root}/generate.py",
+        f"{ext_root}/generate.py",
         f"{musl_root}/arch/{machine}/bits/syscall.h.in",
     ],
-    outputs=["$(B)/bin/vulkan/musl/include/bits/syscall.h"],
+    outputs=["$(B)/ext/musl/include/bits/syscall.h"],
     cmd=[
         "python3",
-        f"{vulkan_root}/generate.py",
+        f"{ext_root}/generate.py",
         "syscall",
-        "$(B)/bin/vulkan/musl/include/bits/syscall.h",
+        "$(B)/ext/musl/include/bits/syscall.h",
         f"{musl_root}/arch/{machine}/bits/syscall.h.in",
     ],
 )
 
 musl_version = command(
-    inputs=[f"{vulkan_root}/generate.py", f"{musl_root}/VERSION"],
-    outputs=["$(B)/bin/vulkan/musl/internal/version.h"],
+    inputs=[f"{ext_root}/generate.py", f"{musl_root}/VERSION"],
+    outputs=["$(B)/ext/musl/internal/version.h"],
     cmd=[
         "python3",
-        f"{vulkan_root}/generate.py",
+        f"{ext_root}/generate.py",
         "version",
-        "$(B)/bin/vulkan/musl/internal/version.h",
+        "$(B)/ext/musl/internal/version.h",
         f"{musl_root}/VERSION",
     ],
 )
 
-libcxx_config_path = "$(B)/bin/vulkan/libcxx/include/__config_site"
+libcxx_config_path = "$(B)/ext/libcxx/include/__config_site"
 libcxx_config = command(
     inputs=[
-        f"{vulkan_root}/generate.py",
+        f"{ext_root}/generate.py",
         f"{libcxx_root}/include/__config_site.in",
     ],
     outputs=[libcxx_config_path],
     cmd=[
         "python3",
-        f"{vulkan_root}/generate.py",
+        f"{ext_root}/generate.py",
         "libcxx-config",
-        "$(B)/bin/vulkan/libcxx/include/__config_site",
+        "$(B)/ext/libcxx/include/__config_site",
         f"{libcxx_root}/include/__config_site.in",
     ],
 )
@@ -461,12 +463,12 @@ solo_runtime = runtimeArchives("solo", "$(B)/bin/solo", ["-fPIE"])
 
 zconf = command(
     name="vulkan_zconf",
-    inputs=[f"{vulkan_root}/zlib/zconf.h.in"],
-    outputs=["$(B)/bin/vulkan/zlib/zconf.h"],
+    inputs=[f"{ext_root}/zlib/zconf.h.in"],
+    outputs=["$(B)/ext/zlib/zconf.h"],
     cmd=[
         "cp",
-        f"{vulkan_root}/zlib/zconf.h.in",
-        "$(B)/bin/vulkan/zlib/zconf.h",
+        f"{ext_root}/zlib/zconf.h.in",
+        "$(B)/ext/zlib/zconf.h",
     ],
 )
 
@@ -476,13 +478,13 @@ zlib = library(
         {
             "src": source,
             "inputs": [
-                "$(B)/bin/vulkan/musl/include/bits/alltypes.h",
+                "$(B)/ext/musl/include/bits/alltypes.h",
                 libcxx_config_path,
-                "$(B)/bin/vulkan/zlib/zconf.h",
+                "$(B)/ext/zlib/zconf.h",
             ],
         }
         for source in vendorPaths(
-            f"{vulkan_root}/zlib",
+            f"{ext_root}/zlib",
             [
                 "adler32.c",
                 "compress.c",
@@ -509,14 +511,14 @@ zlib = library(
     output="$(B)/bin/vulkan/lib/libz.a",
 )
 
-pnglibconf_path = "$(B)/bin/vulkan/png/pnglibconf.h"
+pnglibconf_path = "$(B)/ext/png/pnglibconf.h"
 pnglibconf = command(
     name="vulkan_pnglibconf",
-    inputs=[f"{vulkan_root}/png/scripts/pnglibconf.h.prebuilt"],
+    inputs=[f"{ext_root}/png/scripts/pnglibconf.h.prebuilt"],
     outputs=[pnglibconf_path],
     cmd=[
         "cp",
-        f"{vulkan_root}/png/scripts/pnglibconf.h.prebuilt",
+        f"{ext_root}/png/scripts/pnglibconf.h.prebuilt",
         pnglibconf_path,
     ],
 )
@@ -532,7 +534,7 @@ png = library(
             ],
         }
         for source in vendorPaths(
-            f"{vulkan_root}/png",
+            f"{ext_root}/png",
             [
                 "png.c",
                 "pngerror.c",
@@ -1170,7 +1172,7 @@ if machine == "x86_64":
             "$(S)/dev/abi_probe.c",
             downloadOutputs["glibc"],
             downloadOutputs["linux-api-headers"],
-            f"{musl_root}/arch/{machine}:{musl_root}/arch/generic:$(B)/bin/vulkan/musl/include:{musl_root}/include",
+            f"{musl_root}/arch/{machine}:{musl_root}/arch/generic:$(B)/ext/musl/include:{musl_root}/include",
         ],
         descr="TS",
         color="green",

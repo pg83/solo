@@ -30,7 +30,7 @@
  * pthread_impl.h find its src/internal neighbors by themselves; the
  * per-architecture headers it wants come from the arch include paths every
  * flavor already carries. */
-#include "../bin/vulkan/musl/src/internal/pthread_impl.h"
+#include "../ext/musl/src/internal/pthread_impl.h"
 
 #include <signal.h>
 #include <stdlib.h>
