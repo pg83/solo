@@ -316,6 +316,15 @@ namespace {
         LinkMap& image_;
     };
 
+    // Held under the loader lock for the whole of a load; the counter tells
+    // reentered public entries that the closure is not complete yet.
+    struct LoadDepth {
+        explicit LoadDepth(size_t& depth);
+        ~LoadDepth();
+
+        size_t& depth_;
+    };
+
     // The image whose DT_NEEDED list is being resolved, for its search paths.
     // Nested loads save and restore the previous requester.
     struct ScopedRequester {
@@ -394,6 +403,9 @@ namespace {
         // Consumed by the next load(): it is loading the main guest
         // executable, not a shared object.
         bool loadingExecutable_ = false;
+        // Loads in flight on this thread's recursive lock; initializers wait
+        // for the outermost one to finish relocating the whole closure.
+        size_t loadDepth_ = 0;
         LinkMap* mainExecutable_ = nullptr;
         std::vector<LinkMap*> pendingInitializers_;
         bool bindNow_ = false;
@@ -470,6 +482,16 @@ MarkFailed::~MarkFailed() {
     if (image_.state == LinkMap::State::Loading) {
         image_.state = LinkMap::State::Failed;
     }
+}
+
+LoadDepth::LoadDepth(size_t& depth)
+    : depth_(depth)
+{
+    ++depth_;
+}
+
+LoadDepth::~LoadDepth() {
+    --depth_;
 }
 
 ScopedRequester::ScopedRequester(LinkMap*& slot, LinkMap& image)
@@ -562,6 +584,7 @@ Loader& Loader::instance() {
 
 LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap* dlopenCaller) {
     std::lock_guard lock(mutex_);
+    LoadDepth depth(loadDepth_);
 
     // The flag names only the outermost load; the dependencies this load
     // pulls in are ordinary shared objects.
@@ -762,6 +785,7 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
 // everything after the mapping is the same back half a loaded image takes.
 LinkMap* Loader::adopt(const char* path, const Elf64_Phdr* headers, size_t count, uintptr_t entry) {
     std::lock_guard lock(mutex_);
+    LoadDepth depth(loadDepth_);
 
     if (!headers || !count) {
         throwError("the auxiliary vector describes no program headers to adopt");
@@ -854,6 +878,14 @@ void Loader::linkImage(LinkMap& image, int flags, bool adopted) {
     if (!image.soname.empty()) {
         imagesByName_.emplace(image.soname, &image);
     }
+    // The executable leads every scope ld.so would build, and it must lead
+    // it already while the dependencies below relocate: their references to
+    // a COPY-relocated global — rpm's option state, glibc's stdout — have to
+    // bind to the executable's copy, not to the library's own definition.
+    // Symbol addresses are load-base arithmetic, valid before relocations.
+    if (image.executable && std::find(globalImages_.begin(), globalImages_.end(), &image) == globalImages_.end()) {
+        globalImages_.push_back(&image);
+    }
     loadDependencies(image);
 
     image.deepBind = (flags & RTLD_DEEPBIND) != 0;
@@ -890,18 +922,25 @@ void Loader::linkImage(LinkMap& image, int flags, bool adopted) {
 
 // Initializers run without the loader mutex, so a thread an initializer
 // spawns can enter the loader; the queue is drained by the public entry once
-// the outermost load released the lock.
+// the outermost load released the lock. While any load is still in flight —
+// the recursive mutex lets a dependency's dlopen reenter here — the queue
+// waits: ld.so relocates the entire closure, the executable included,
+// before the first initializer runs, and a vague-linkage object the
+// executable won is all zeroes until its relocations land.
 void Loader::runPendingInitializers() {
     for (;;) {
         LinkMap* image = nullptr;
         {
             std::lock_guard lock(mutex_);
 
-            if (pendingInitializers_.empty()) {
+            if (loadDepth_ || pendingInitializers_.empty()) {
                 return;
             }
             image = pendingInitializers_.front();
             pendingInitializers_.erase(pendingInitializers_.begin());
+        }
+        if (debugLibs_) {
+            fprintf(stderr, "solo: init %s\n", image->path.c_str());
         }
         image->runInitializers();
     }
@@ -2481,6 +2520,28 @@ ElfMainProgram dyn::elfMainProgram() {
     }
 
     return program;
+}
+
+ElfMainProgram dyn::elfInterpreterImage() {
+    // A nonzero AT_BASE is the kernel's word that this image was loaded as
+    // an interpreter; its own ELF header sits at that base.
+    if (!getauxval(AT_BASE)) {
+        return {};
+    }
+
+    const auto* mapped = reinterpret_cast<const Elf64_Ehdr*>(__ehdr_start);
+
+    if (!mapped || memcmp(mapped->e_ident, ELFMAG, SELFMAG) != 0) {
+        return {};
+    }
+
+    ElfMainProgram image;
+
+    image.headers = reinterpret_cast<const Elf64_Phdr*>(__ehdr_start + mapped->e_phoff);
+    image.count = mapped->e_phnum;
+    image.base = reinterpret_cast<uintptr_t>(__ehdr_start);
+
+    return image;
 }
 
 void* ElfImage::lookupGlobal(std::string_view symbol) {

@@ -1461,6 +1461,26 @@ static void distributionTail(void) {
     wchar_t wide_buffer[8];
     memset(&shift_state, 0, sizeof(shift_state));
     CHECK(__mbsnrtowcs_chk(wide_buffer, &narrow_text, 3, 8, &shift_state, sizeof(wide_buffer)) == 3);
+
+    /* The __locale_struct ABI: libstdc++ reads the three ctype tables
+     * straight out of the locale object at their fixed offsets to build its
+     * classic-locale facets, so the bridge's locale_t must be the glibc
+     * struct, not musl's opaque object. */
+    locale_t c_locale = newlocale(LC_ALL_MASK, "C", (locale_t)0);
+    CHECK(c_locale != (locale_t)0);
+    const unsigned short* class_table = *(const unsigned short**)((char*)c_locale + 13 * sizeof(void*));
+    const int* lower_table = *(const int**)((char*)c_locale + 14 * sizeof(void*));
+    const int* upper_table = *(const int**)((char*)c_locale + 15 * sizeof(void*));
+    CHECK(class_table != NULL && (class_table[' '] & 0x2000) && (class_table['A'] & 0x0100));
+    CHECK(!(class_table['s'] & 0x2000) && (class_table['s'] & 0x0200));
+    CHECK(lower_table != NULL && lower_table['S'] == 's' && lower_table['s'] == 's');
+    CHECK(upper_table != NULL && upper_table['s'] == 'S');
+    CHECK(nl_langinfo_l(CODESET, c_locale) != NULL);
+    CHECK(strtod_l("2.5", NULL, c_locale) == 2.5);
+    CHECK(iswctype_l(L'x', wctype_l("alpha", c_locale), c_locale));
+    locale_t previous_locale = uselocale(c_locale);
+    CHECK(uselocale(previous_locale) == c_locale);
+    freelocale(c_locale);
 }
 
 int glibc_shim_test(void) {

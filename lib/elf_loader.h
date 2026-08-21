@@ -59,6 +59,12 @@ namespace dyn {
     };
 
     ElfMainProgram elfMainProgram();
+    // The interpreter's own image — this code, solo — when the kernel loaded
+    // it as a guest's PT_INTERP: the guest's unwinder walks the loader's
+    // frames through dl_iterate_phdr, so the image must be reported even
+    // though no auxiliary vector entry and no loader list carries it. Empty
+    // outside interpreter mode.
+    ElfMainProgram elfInterpreterImage();
 
     // A guest executable mapped and relocated through the loader: everything
     // its auxiliary vector must describe. Its dependencies are initialized;

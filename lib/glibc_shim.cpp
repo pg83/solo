@@ -3116,24 +3116,39 @@ namespace {
     static int iterateMainProgramHeaders(int (*callback)(dl_phdr_info*, size_t, void*), void* data) {
         const auto program = elfMainProgram();
 
-        if (!program.count || program.adopted) {
-            return 0;
-        }
+        if (program.count && !program.adopted) {
+            const Elf64_Phdr* tls = nullptr;
+            for (Elf64_Half index = 0; index < program.count; ++index) {
+                if (program.headers[index].p_type == PT_TLS) {
+                    tls = &program.headers[index];
+                }
+            }
 
-        const Elf64_Phdr* tls = nullptr;
-        for (Elf64_Half index = 0; index < program.count; ++index) {
-            if (program.headers[index].p_type == PT_TLS) {
-                tls = &program.headers[index];
+            dl_phdr_info info{};
+            info.dlpi_addr = program.base;
+            info.dlpi_name = "/proc/self/exe";
+            info.dlpi_phdr = program.headers;
+            info.dlpi_phnum = program.count;
+            info.dlpi_tls_modid = tls ? 1 : 0;
+            if (const int result = callback(&info, sizeof(info), data); result) {
+                return result;
             }
         }
 
-        dl_phdr_info info{};
-        info.dlpi_addr = program.base;
-        info.dlpi_name = "/proc/self/exe";
-        info.dlpi_phdr = program.headers;
-        info.dlpi_phnum = program.count;
-        info.dlpi_tls_modid = tls ? 1 : 0;
-        return callback(&info, sizeof(info), data);
+        // In interpreter mode the auxiliary vector's program is the adopted
+        // guest, walked with the loader's images; the interpreter itself —
+        // this code — is what no list carries, and the guest's unwinder
+        // needs its frames.
+        if (const auto interpreter = elfInterpreterImage(); interpreter.count) {
+            dl_phdr_info info{};
+            info.dlpi_addr = interpreter.base;
+            info.dlpi_name = "solo";
+            info.dlpi_phdr = interpreter.headers;
+            info.dlpi_phnum = interpreter.count;
+            return callback(&info, sizeof(info), data);
+        }
+
+        return 0;
     }
 
     static int findObjectProgramHeaders(dl_phdr_info* info, size_t size, void* data) {
@@ -4080,48 +4095,174 @@ namespace {
         return -1;
     }
 
+    // glibc's locale_t points at a public struct — the old xlocale.h
+    // __locale_struct: thirteen per-category data pointers, the three ctype
+    // tables, and the category names. libstdc++ builds its classic-locale
+    // ctype facets by reading the table pointers straight out of the
+    // struct, so the bridge cannot hand guests musl's opaque locale
+    // objects: every locale a guest sees is this wrapper, the musl locale
+    // riding in the first category slot and the bridge's tables — the same
+    // ones __ctype_b_loc serves — in their ABI positions. musl speaks the C
+    // locales only, so one set of tables fits every wrapper.
+    struct GlibcLocale {
+        void* categories[13];
+        const unsigned short* ctypeClass;
+        const int* ctypeToLower;
+        const int* ctypeToUpper;
+        const char* names[13];
+    };
+
+    static std::mutex localesMutex;
+    static std::unordered_map<locale_t, GlibcLocale*>& localeWrappers() {
+        static auto* wrappers = new std::unordered_map<locale_t, GlibcLocale*>();
+
+        return *wrappers;
+    }
+
+    static locale_t sh_wrap_locale(locale_t locale) {
+        if (!locale || locale == LC_GLOBAL_LOCALE) {
+            return locale;
+        }
+
+        std::lock_guard lock(localesMutex);
+        auto& wrapper = localeWrappers()[locale];
+
+        if (!wrapper) {
+            wrapper = new GlibcLocale{};
+            wrapper->categories[0] = locale;
+            wrapper->ctypeClass = *GlibcAdapter::instance().ctypeFlags();
+            wrapper->ctypeToLower = *GlibcAdapter::instance().ctypeTolower();
+            wrapper->ctypeToUpper = *GlibcAdapter::instance().ctypeToupper();
+            for (auto& name : wrapper->names) {
+                name = "C";
+            }
+        }
+
+        return reinterpret_cast<locale_t>(wrapper);
+    }
+
+    static locale_t sh_unwrap_locale(locale_t locale) {
+        if (!locale || locale == LC_GLOBAL_LOCALE) {
+            return locale;
+        }
+
+        auto* wrapper = reinterpret_cast<GlibcLocale*>(locale);
+        std::lock_guard lock(localesMutex);
+
+        for (const auto& entry : localeWrappers()) {
+            if (entry.second == wrapper) {
+                return entry.first;
+            }
+        }
+
+        return locale;
+    }
+
     static locale_t sh_newlocale(int mask, const char* name, locale_t base) {
-        return newlocale(mask, name, base);
+        auto unwrapped = sh_unwrap_locale(base);
+        auto fresh = newlocale(mask, name, unwrapped);
+
+        // glibc absorbs the base object; a reallocation strands its wrapper.
+        if (fresh && unwrapped && unwrapped != LC_GLOBAL_LOCALE && fresh != unwrapped) {
+            std::lock_guard lock(localesMutex);
+
+            if (auto wrapper = localeWrappers().find(unwrapped); wrapper != localeWrappers().end()) {
+                delete wrapper->second;
+                localeWrappers().erase(wrapper);
+            }
+        }
+
+        return sh_wrap_locale(fresh);
     }
 
     static locale_t sh_duplocale(locale_t locale) {
-        return duplocale(locale);
+        return sh_wrap_locale(duplocale(sh_unwrap_locale(locale)));
     }
 
     static void sh_freelocale(locale_t locale) {
-        freelocale(locale);
+        auto unwrapped = sh_unwrap_locale(locale);
+
+        if (unwrapped && unwrapped != LC_GLOBAL_LOCALE) {
+            std::lock_guard lock(localesMutex);
+
+            if (auto wrapper = localeWrappers().find(unwrapped); wrapper != localeWrappers().end()) {
+                delete wrapper->second;
+                localeWrappers().erase(wrapper);
+            }
+        }
+        freelocale(unwrapped);
     }
 
     static locale_t sh_uselocale(locale_t locale) {
-        return uselocale(locale);
+        return sh_wrap_locale(uselocale(sh_unwrap_locale(locale)));
     }
 
     static char* sh_nl_langinfo_l(nl_item item, locale_t locale) {
-        return nl_langinfo_l(item, locale);
+        return nl_langinfo_l(item, sh_unwrap_locale(locale));
     }
 
     static wctype_t sh_wctype_l(const char* name, locale_t locale) {
-        return wctype_l(name, locale);
+        return wctype_l(name, sh_unwrap_locale(locale));
     }
 
     static int sh_iswctype_l(wint_t character, wctype_t type, locale_t locale) {
-        return iswctype_l(character, type, locale);
+        return iswctype_l(character, type, sh_unwrap_locale(locale));
     }
 
     static wint_t sh_towlower_l(wint_t character, locale_t locale) {
-        return towlower_l(character, locale);
+        return towlower_l(character, sh_unwrap_locale(locale));
     }
 
     static wint_t sh_towupper_l(wint_t character, locale_t locale) {
-        return towupper_l(character, locale);
+        return towupper_l(character, sh_unwrap_locale(locale));
     }
 
     static wctrans_t sh_wctrans_l(const char* name, locale_t locale) {
-        return wctrans_l(name, locale);
+        return wctrans_l(name, sh_unwrap_locale(locale));
     }
 
     static wint_t sh_towctrans_l(wint_t character, wctrans_t transform, locale_t locale) {
-        return towctrans_l(character, transform, locale);
+        return towctrans_l(character, transform, sh_unwrap_locale(locale));
+    }
+
+    static float sh_strtof_l(const char* text, char** end, locale_t locale) {
+        return strtof_l(text, end, sh_unwrap_locale(locale));
+    }
+
+    static double sh_strtod_l(const char* text, char** end, locale_t locale) {
+        return strtod_l(text, end, sh_unwrap_locale(locale));
+    }
+
+    static long double sh_strtold_l(const char* text, char** end, locale_t locale) {
+        return strtold_l(text, end, sh_unwrap_locale(locale));
+    }
+
+    static int sh_strcoll_l(const char* left, const char* right, locale_t locale) {
+        return strcoll_l(left, right, sh_unwrap_locale(locale));
+    }
+
+    static size_t sh_strxfrm_l(char* destination, const char* source, size_t count, locale_t locale) {
+        return strxfrm_l(destination, source, count, sh_unwrap_locale(locale));
+    }
+
+    static size_t sh_strftime_l(char* destination, size_t count, const char* format, const struct tm* time, locale_t locale) {
+        return strftime_l(destination, count, format, time, sh_unwrap_locale(locale));
+    }
+
+    static int sh_wcscoll_l(const wchar_t* left, const wchar_t* right, locale_t locale) {
+        return wcscoll_l(left, right, sh_unwrap_locale(locale));
+    }
+
+    static size_t sh_wcsxfrm_l(wchar_t* destination, const wchar_t* source, size_t count, locale_t locale) {
+        return wcsxfrm_l(destination, source, count, sh_unwrap_locale(locale));
+    }
+
+    static size_t sh_wcsftime_l(wchar_t* destination, size_t count, const wchar_t* format, const struct tm* time, locale_t locale) {
+        return wcsftime_l(destination, count, format, time, sh_unwrap_locale(locale));
+    }
+
+    static char* sh_strerror_l(int error, locale_t locale) {
+        return strerror_l(error, sh_unwrap_locale(locale));
     }
 
     static int sh_glibc_dladdr(const void* address, GlibcDlInfo* glibc_info) {
@@ -4159,14 +4300,26 @@ namespace {
         SH_FUNCTION("fdopen", "GLIBC_2.2.5", fdopen),
         SH_FUNCTION("fseeko", "GLIBC_2.2.5", fseeko),
         SH_FUNCTION("qsort_r", "GLIBC_2.8", qsort_r),
-        SH_FUNCTION("__strtof_l", "GLIBC_2.2.5", strtof_l),
-        SH_FUNCTION("__strtod_l", "GLIBC_2.2.5", strtod_l),
-        SH_FUNCTION("__strcoll_l", "GLIBC_2.2.5", strcoll_l),
-        SH_FUNCTION("__strftime_l", "GLIBC_2.3", strftime_l),
-        SH_FUNCTION("__strxfrm_l", "GLIBC_2.2.5", strxfrm_l),
-        SH_FUNCTION("__wcsxfrm_l", "GLIBC_2.2.5", wcsxfrm_l),
-        SH_FUNCTION("__wcscoll_l", "GLIBC_2.2.5", wcscoll_l),
-        SH_FUNCTION("__wcsftime_l", "GLIBC_2.3", wcsftime_l),
+        SH_FUNCTION("__strtof_l", "GLIBC_2.2.5", sh_strtof_l),
+        SH_FUNCTION("__strtod_l", "GLIBC_2.2.5", sh_strtod_l),
+        SH_FUNCTION("__strtold_l", "GLIBC_2.2.5", sh_strtold_l),
+        SH_FUNCTION("__strcoll_l", "GLIBC_2.2.5", sh_strcoll_l),
+        SH_FUNCTION("__strftime_l", "GLIBC_2.3", sh_strftime_l),
+        SH_FUNCTION("__strxfrm_l", "GLIBC_2.2.5", sh_strxfrm_l),
+        SH_FUNCTION("__wcsxfrm_l", "GLIBC_2.2.5", sh_wcsxfrm_l),
+        SH_FUNCTION("__wcscoll_l", "GLIBC_2.2.5", sh_wcscoll_l),
+        SH_FUNCTION("__wcsftime_l", "GLIBC_2.3", sh_wcsftime_l),
+        SH_FUNCTION("strtof_l", "GLIBC_2.3", sh_strtof_l),
+        SH_FUNCTION("strtod_l", "GLIBC_2.3", sh_strtod_l),
+        SH_FUNCTION("strtold_l", "GLIBC_2.3", sh_strtold_l),
+        SH_FUNCTION("strcoll_l", "GLIBC_2.3", sh_strcoll_l),
+        SH_FUNCTION("strftime_l", "GLIBC_2.3", sh_strftime_l),
+        SH_FUNCTION("strxfrm_l", "GLIBC_2.3", sh_strxfrm_l),
+        SH_FUNCTION("wcsxfrm_l", "GLIBC_2.3", sh_wcsxfrm_l),
+        SH_FUNCTION("wcscoll_l", "GLIBC_2.3", sh_wcscoll_l),
+        SH_FUNCTION("wcsftime_l", "GLIBC_2.3", sh_wcsftime_l),
+        SH_FUNCTION("strerror_l", "GLIBC_2.6", sh_strerror_l),
+        SH_FUNCTION("__strerror_l", "GLIBC_2.6", sh_strerror_l),
         SH_FUNCTION("tzset", "GLIBC_2.2.5", tzset),
         SH_FUNCTION("localtime_r", "GLIBC_2.2.5", localtime_r),
         SH_FUNCTION("gmtime_r", "GLIBC_2.2.5", gmtime_r),
@@ -4724,6 +4877,26 @@ GlibcAdapter::GlibcAdapter()
         "__cxa_finalize",
         "__cxa_thread_atexit_impl",
         "_dl_find_object",
+        "__duplocale",
+        "__freelocale",
+        "__iswctype_l",
+        "__newlocale",
+        "__nl_langinfo_l",
+        "__strcoll_l",
+        "__strerror_l",
+        "__strftime_l",
+        "__strtod_l",
+        "__strtof_l",
+        "__strtold_l",
+        "__strxfrm_l",
+        "__towctrans_l",
+        "__towlower_l",
+        "__towupper_l",
+        "__uselocale",
+        "__wcscoll_l",
+        "__wcsftime_l",
+        "__wcsxfrm_l",
+        "__wctype_l",
         "_Unwind_DeleteException",
         "_Unwind_GetDataRelBase",
         "_Unwind_GetIPInfo",
@@ -4794,6 +4967,27 @@ GlibcAdapter::GlibcAdapter()
         "pthread_setaffinity_np",
         "pthread_setname_np",
         "pthread_setschedparam",
+        "duplocale",
+        "freelocale",
+        "iswctype_l",
+        "newlocale",
+        "nl_langinfo_l",
+        "strcoll_l",
+        "strerror_l",
+        "strftime_l",
+        "strtod_l",
+        "strtof_l",
+        "strtold_l",
+        "strxfrm_l",
+        "towctrans_l",
+        "towlower_l",
+        "towupper_l",
+        "uselocale",
+        "wcscoll_l",
+        "wcsftime_l",
+        "wcsxfrm_l",
+        "wctrans_l",
+        "wctype_l",
         "readdir64",
         "regcomp",
         "regerror",
