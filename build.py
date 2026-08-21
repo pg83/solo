@@ -1289,19 +1289,44 @@ rootfs_smoke = command(
 )
 
 # The same stripped rootfs booted whole under qemu: PID 1 and everything
-# after it runs kernel-loaded with solo as the interpreter. Not part of the
-# test group — it needs a qemu and a kernel image, which the CI job that
-# invokes it provides through DLFCN_QEMU and DLFCN_KERNEL.
+# after it runs kernel-loaded with solo as the interpreter. On x86-64 the
+# rootfs is overlaid with systemd and dbus, so PID 1 is the real systemd
+# bringing up journald, sysusers, the serial getty, and the battery unit.
+# Not part of the test group — it needs a qemu and a kernel image, which
+# the CI job that invokes it provides through DLFCN_QEMU and DLFCN_KERNEL.
+qemu_ubuntu_pool = "https://archive.ubuntu.com/ubuntu/pool/main"
+qemu_systemd_packages = {
+    "x86_64": [
+        ("systemd_deb", f"{qemu_ubuntu_pool}/s/systemd/systemd_255.4-1ubuntu8.17_amd64.deb", "systemd_255.4-1ubuntu8.17_amd64.deb", "250345b73e42a97ee71cae7c1e470897dfad3c639eb0a7aafe4f9a3a29871cb2"),
+        ("libsystemd_shared_deb", f"{qemu_ubuntu_pool}/s/systemd/libsystemd-shared_255.4-1ubuntu8.17_amd64.deb", "libsystemd-shared_255.4-1ubuntu8.17_amd64.deb", "8722a69d99c1a7e6f72c5389e9c6d8053d95d2f5f4fede5dc83118f735812518"),
+        ("libsystemd0_deb", f"{qemu_ubuntu_pool}/s/systemd/libsystemd0_255.4-1ubuntu8.17_amd64.deb", "libsystemd0_255.4-1ubuntu8.17_amd64.deb", "4776d2ac7e21efe2ae31f3f7955a7ccd97277225eecf36910a26faf4544979ae"),
+        ("libapparmor1_deb", f"{qemu_ubuntu_pool}/a/apparmor/libapparmor1_4.0.1really4.0.1-0ubuntu0.24.04.7_amd64.deb", "libapparmor1_4.0.1really4.0.1-0ubuntu0.24.04.7_amd64.deb", "4205351c37f4e813f1ca81b6d59a00071f0f70869e652f4ab9e5ba7e5e895d34"),
+        ("libcryptsetup12_deb", f"{qemu_ubuntu_pool}/c/cryptsetup/libcryptsetup12_2.7.0-1ubuntu4.2_amd64.deb", "libcryptsetup12_2.7.0-1ubuntu4.2_amd64.deb", "f6f6a7f35104da711997b52c92ab91ce1f47dd039d276d5beb797d713447c9f2"),
+        ("libfdisk1_deb", f"{qemu_ubuntu_pool}/u/util-linux/libfdisk1_2.39.3-9ubuntu6.5_amd64.deb", "libfdisk1_2.39.3-9ubuntu6.5_amd64.deb", "a67f2ed8b8a0323ab3c1e33a8caf81b9bf8ceb1d3586ec5600f40e1406c48f6a"),
+        ("libkmod2_deb", f"{qemu_ubuntu_pool}/k/kmod/libkmod2_31+20240202-2ubuntu7.2_amd64.deb", "libkmod2_31+20240202-2ubuntu7.2_amd64.deb", "a9cbdc424bc0a5c8af3d6445488a48de76df5ff4d76b7dab8aaf88f712358bbc"),
+        ("dbus_deb", f"{qemu_ubuntu_pool}/d/dbus/dbus_1.14.10-4ubuntu4.1_amd64.deb", "dbus_1.14.10-4ubuntu4.1_amd64.deb", "0d59be1393d5b01552edbf16c7b9357c473bf625aa47365ce2e8eef6da1dd2e1"),
+        ("dbus_bin_deb", f"{qemu_ubuntu_pool}/d/dbus/dbus-bin_1.14.10-4ubuntu4.1_amd64.deb", "dbus-bin_1.14.10-4ubuntu4.1_amd64.deb", "0d2c7e425967039594ea099f6128231769e1ed2cc2f6fd7d895fea135c9e1964"),
+        ("dbus_daemon_deb", f"{qemu_ubuntu_pool}/d/dbus/dbus-daemon_1.14.10-4ubuntu4.1_amd64.deb", "dbus-daemon_1.14.10-4ubuntu4.1_amd64.deb", "785ad36aafc8912300e44a1cea438e28ea36fb94c631f5849408aea85d2ab2bf"),
+        ("dbus_session_bus_common_deb", f"{qemu_ubuntu_pool}/d/dbus/dbus-session-bus-common_1.14.10-4ubuntu4.1_all.deb", "dbus-session-bus-common_1.14.10-4ubuntu4.1_all.deb", "aa88bf2f2107e7d948d0e01001b447fc6cae81b285a6e7daf33dcb62737de62f"),
+        ("dbus_system_bus_common_deb", f"{qemu_ubuntu_pool}/d/dbus/dbus-system-bus-common_1.14.10-4ubuntu4.1_all.deb", "dbus-system-bus-common_1.14.10-4ubuntu4.1_all.deb", "4db2e3e18c6abee1a1d1e2f91289e229dd862e6e1ef00463c5533c612c4f1809"),
+        ("libdbus_1_3_deb", f"{qemu_ubuntu_pool}/d/dbus/libdbus-1-3_1.14.10-4ubuntu4.1_amd64.deb", "libdbus-1-3_1.14.10-4ubuntu4.1_amd64.deb", "5d630480f04b4b442300ce847a3fa705ea4d14d80ba6de91f99b51a4e4953b08"),
+        ("libexpat1_deb", f"{qemu_ubuntu_pool}/e/expat/libexpat1_2.6.1-2ubuntu0.4_amd64.deb", "libexpat1_2.6.1-2ubuntu0.4_amd64.deb", "126a5612e652bdc2edee19ae8fe4308db72b5b3b0a5581bf885b44a093baf3e5"),
+    ],
+    "aarch64": [],
+}[machine]
+qemu_systemd_debs = [downloadPackage(*package) for package in qemu_systemd_packages]
+
 qemu_smoke = command(
     name="qemu_smoke",
-    inputs=["$(S)/tst/qemu_smoke.py", "$(S)/tst/rootfs_smoke.py", rootfs_archives[0]],
+    inputs=["$(S)/tst/qemu_smoke.py", "$(S)/tst/rootfs_smoke.py", rootfs_archives[0], *qemu_systemd_debs],
     outputs=["$(B)/tst/qemu-smoke.log"],
-    deps=[solo_cli, downloadTargets["ubuntu_rootfs"]],
+    deps=[solo_cli, downloadTargets["ubuntu_rootfs"], *(downloadTargets[name] for name, *_ in qemu_systemd_packages)],
     cmd=[
         "python3",
         "$(S)/tst/qemu_smoke.py",
         "$(B)/tst/qemu-smoke.log",
         rootfs_archives[0],
+        *qemu_systemd_debs,
     ],
     env={"DLFCN_SOLO": "$(B)/bin/solo/solo"},
     descr="TS",

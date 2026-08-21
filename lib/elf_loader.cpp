@@ -207,8 +207,13 @@ namespace {
     };
 
     struct LinkMap {
+        // Loading covers the mapping and parsing of the image itself; Mapped
+        // means the image sits in the current closure, symbols findable,
+        // relocations still pending — ld.so maps a whole dependency closure
+        // breadth-first before relocating any of it.
         enum class State {
             Loading,
+            Mapped,
             Ready,
             Failed,
         };
@@ -287,6 +292,11 @@ namespace {
         std::unique_ptr<ElfImage> wrapper;
 
         State state = State::Loading;
+        // How the image was requested, for the relocation phase: the dlopen
+        // flags, and whether the kernel mapped the segments (an adopted
+        // executable keeps the kernel's protections).
+        int requestFlags = 0;
+        bool adopted = false;
 
         void parseDynamic();
         void parseVersions(uintptr_t needAddress, size_t needCount, uintptr_t definitionAddress, size_t definitionCount);
@@ -351,7 +361,9 @@ namespace {
 
         LinkMap* load(const std::string_view& requestedPath, int flags, LinkMap* dlopenCaller);
         LinkMap* adopt(const char* path, const Elf64_Phdr* headers, size_t count, uintptr_t entry);
-        void linkImage(LinkMap& image, int flags, bool adopted);
+        void prepareImage(LinkMap& image, int flags, bool adopted);
+        void completeImage(LinkMap& image);
+        void linkClosure();
         void runPendingInitializers();
 
         void* lookup(LinkMap& image, std::string_view name, std::string_view version);
@@ -406,6 +418,9 @@ namespace {
         // Loads in flight on this thread's recursive lock; initializers wait
         // for the outermost one to finish relocating the whole closure.
         size_t loadDepth_ = 0;
+        // The closure the outermost load is assembling, in breadth-first
+        // mapping order; relocated back-to-front once complete.
+        std::vector<LinkMap*> closure_;
         LinkMap* mainExecutable_ = nullptr;
         std::vector<LinkMap*> pendingInitializers_;
         bool bindNow_ = false;
@@ -774,7 +789,10 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
         }
     }
 
-    linkImage(image, flags, false);
+    prepareImage(image, flags, false);
+    if (loadDepth_ == 1) {
+        linkClosure();
+    }
 
     return imagePointer;
 }
@@ -858,16 +876,19 @@ LinkMap* Loader::adopt(const char* path, const Elf64_Phdr* headers, size_t count
 
     MarkFailed markFailed(image);
 
-    linkImage(image, RTLD_GLOBAL, true);
+    prepareImage(image, RTLD_GLOBAL, true);
+    if (loadDepth_ == 1) {
+        linkClosure();
+    }
 
     return imagePointer;
 }
 
-// The back half every image goes through, mapped by us or adopted from the
-// kernel: dependencies, relocations, protections, TLS, and the initializer
-// queue. An adopted image keeps the kernel's segment protections — they are
-// already final — but RELRO stays ours to seal; the kernel never applies it.
-void Loader::linkImage(LinkMap& image, int flags, bool adopted) {
+// The mapped image's front half: parsed, named, and queued into the current
+// closure. Its dependencies are not touched here — the closure maps
+// breadth-first, so every requester's DT_NEEDED list lands before any
+// dependency's own list resolves.
+void Loader::prepareImage(LinkMap& image, int flags, bool adopted) {
     if (!image.dynamic) {
         throwError("%s: missing PT_DYNAMIC", image.path.c_str());
     }
@@ -879,22 +900,33 @@ void Loader::linkImage(LinkMap& image, int flags, bool adopted) {
         imagesByName_.emplace(image.soname, &image);
     }
     // The executable leads every scope ld.so would build, and it must lead
-    // it already while the dependencies below relocate: their references to
-    // a COPY-relocated global — rpm's option state, glibc's stdout — have to
+    // it already while the dependencies relocate: their references to a
+    // COPY-relocated global — rpm's option state, glibc's stdout — have to
     // bind to the executable's copy, not to the library's own definition.
     // Symbol addresses are load-base arithmetic, valid before relocations.
     if (image.executable && std::find(globalImages_.begin(), globalImages_.end(), &image) == globalImages_.end()) {
         globalImages_.push_back(&image);
     }
-    loadDependencies(image);
-
+    image.requestFlags = flags;
+    image.adopted = adopted;
     image.deepBind = (flags & RTLD_DEEPBIND) != 0;
+    // The dlfcn wrapper exists as soon as the image is findable: a
+    // dependency's stub_dlopen returns it while the closure is still
+    // assembling.
+    image.wrapper.reset(new LoadedElf(image));
+    image.state = LinkMap::State::Mapped;
+    closure_.push_back(&image);
+}
 
+// The back half: relocations, protections, TLS seeding, and the initializer
+// queue. An adopted image keeps the kernel's segment protections — they are
+// already final — but RELRO stays ours to seal; the kernel never applies it.
+void Loader::completeImage(LinkMap& image) {
     std::vector<DeferredRelocation> deferred;
-    auto lazy = !(flags & RTLD_NOW) && !image.bindNow && !bindNow_;
+    auto lazy = !(image.requestFlags & RTLD_NOW) && !image.bindNow && !bindNow_;
 
     applyRelocations(image, deferred, lazy);
-    if (!adopted) {
+    if (!image.adopted) {
         image.protect();
     }
 
@@ -906,18 +938,42 @@ void Loader::linkImage(LinkMap& image, int flags, bool adopted) {
         seedStaticTls(image);
     }
 
-    image.wrapper.reset(new LoadedElf(image));
     image.state = LinkMap::State::Ready;
     if (image.executable) {
         mainExecutable_ = &image;
     }
-    if (flags & RTLD_GLOBAL) {
+    if (image.requestFlags & RTLD_GLOBAL) {
         makeGlobal(image);
     }
     if (debugLibs_) {
         fprintf(stderr, "solo: loaded %s at %#lx%s\n", image.path.c_str(), image.base, lazy ? " (lazy)" : "");
     }
     pendingInitializers_.push_back(&image);
+}
+
+// ld.so's two phases over the whole closure, run by the outermost load.
+// First the dependency lists, breadth-first: each image's stub_dlopen either
+// finds its dependency already mapped or maps and appends it, growing the
+// queue this loop is walking. Then relocations, back to front, so an image
+// relocates after everything it depends on.
+void Loader::linkClosure() {
+    try {
+        for (size_t index = 0; index < closure_.size(); ++index) {
+            loadDependencies(*closure_[index]);
+        }
+        for (auto image = closure_.rbegin(); image != closure_.rend(); ++image) {
+            completeImage(**image);
+        }
+    } catch (...) {
+        for (auto* image : closure_) {
+            if (image->state == LinkMap::State::Mapped) {
+                image->state = LinkMap::State::Failed;
+            }
+        }
+        closure_.clear();
+        throw;
+    }
+    closure_.clear();
 }
 
 // Initializers run without the loader mutex, so a thread an initializer
