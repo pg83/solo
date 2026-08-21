@@ -57,6 +57,23 @@ namespace dyn {
 
     ElfMainProgram elfMainProgram();
 
+    // A guest executable mapped and relocated through the loader: everything
+    // its auxiliary vector must describe. Its dependencies are initialized;
+    // its own initializers wait for the bridge's __libc_start_main, which the
+    // executable's own _start calls with the real argc/argv/envp.
+    struct ElfExecutable {
+        uintptr_t entry = 0;
+        uintptr_t programHeaders = 0;
+        size_t programHeaderCount = 0;
+        uintptr_t base = 0;
+    };
+
+    ElfExecutable loadExecutable(std::string_view path);
+    // The executable's DT_PREINIT_ARRAY, DT_INIT, and DT_INIT_ARRAY, with
+    // glibc's initializer arguments; the bridge's __libc_start_main calls
+    // this when the guest's crt passes no init function of its own.
+    void runExecutableInitializers(int argc, char** argv, char** envp);
+
     struct ElfImage: public IfaceHandle {
         static constexpr Kind kind = Kind::Image;
 

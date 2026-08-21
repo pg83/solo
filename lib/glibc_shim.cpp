@@ -1792,6 +1792,32 @@ namespace {
         return reinterpret_cast<void*>(end);
     }
 
+    // The startup call of a guest executable's own _start. The crt has read
+    // argc and argv off the process stack solo built; running the guest's
+    // initializers and main from here means the whole startup protocol of
+    // glibc's libc.so.6 collapses into one adapter. Pre-2.34 crts pass their
+    // __libc_csu_init, which runs the executable's init arrays itself; 2.34+
+    // crts pass null and leave that to libc. The executable's fini arrays
+    // need no registration here: the loader's exit hook runs every image's
+    // finalizers, the guest's included.
+    static int sh_libc_start_main(int (*guestMain)(int, char**, char**), int argc, char** argv, void (*init)(int, char**, char**), void (*fini)(), void (*rtldFini)(), void* stackEnd) {
+        (void)fini;
+        (void)rtldFini;
+
+        auto** envp = argv + argc + 1;
+
+        if (stackEnd) {
+            sh_libc_stack_end = stackEnd;
+        }
+        if (init) {
+            init(argc, argv, envp);
+        } else {
+            runExecutableInitializers(argc, argv, envp);
+        }
+
+        exit(guestMain(argc, argv, envp));
+    }
+
     // makecontext against the same glibc ucontext_t the assembly reads: the
     // caller has already run getcontext on it, per the contract, so only the
     // stack, the entry point, the register arguments, and the trampoline's
@@ -3842,6 +3868,10 @@ namespace {
         SH_FUNCTION("dladdr1", "GLIBC_2.34", sh_dladdr1),
         SH_FUNCTION("dladdr1", "GLIBC_2.3.3", sh_dladdr1),
         SH_OBJECT("__libc_stack_end", "GLIBC_2.2.5", sh_libc_stack_end),
+        // Both generations by hand: the 2.34 unification split this name in
+        // the inventory, and a single entry would register only one of them.
+        SH_FUNCTION("__libc_start_main", "GLIBC_2.34", sh_libc_start_main),
+        SH_FUNCTION("__libc_start_main", "GLIBC_2.2.5", sh_libc_start_main),
         SH_OBJECT("_nl_msg_cat_cntr", "GLIBC_2.2.5", sh_nl_msg_cat_cntr),
         SH_FUNCTION("register_printf_function", "GLIBC_2.2.5", sh_register_printf_failure),
         SH_FUNCTION("register_printf_specifier", "GLIBC_2.10", sh_register_printf_failure),

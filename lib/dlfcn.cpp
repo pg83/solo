@@ -282,13 +282,22 @@ static void* dlopenImpl(unsigned caller, const char* filename, int mode) {
             return Handles::instance();
         }
 
+        // The bridge's own lookups pass the provider tables' bare names
+        // ("c", "dl"); the trace lists only what loaded code asked for by a
+        // library name, like ldd.
+        auto traceStatic = [filename] {
+            if (strchr(filename, '/') || strstr(filename, ".so")) {
+                dyn::traceProvider(filename, "a static provider linked into the executable");
+            }
+        };
+
         if (auto res = Handles::instance()->findHandle(filename); res) {
-            dyn::traceProvider(filename, "a static provider linked into the executable");
+            traceStatic();
             return res;
         }
 
         if (auto res = Handles::instance()->findHandle(calcName(filename)); res) {
-            dyn::traceProvider(filename, "a static provider linked into the executable");
+            traceStatic();
             return res;
         }
 

@@ -428,12 +428,83 @@ def main():
                     raise SystemExit(f"LD_TRACE_LOADED_OBJECTS misses: {needle}")
             if trace.returncode:
                 raise SystemExit(f"traced run failed: {trace.returncode}")
+            run_solo_checks(root, sysroot_lib, environment)
 
     print(result.stdout, end="")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(result.stdout)
     if result.returncode:
         raise SystemExit(result.returncode)
+
+
+def run_solo_checks(root, sysroot_lib, environment):
+    """A whole glibc executable through the solo command: linked against the
+    sysroot's own crt objects and libc.so.6, so its _start is glibc's crt and
+    startup runs through the bridge's __libc_start_main."""
+    solo = os.environ["DLFCN_SOLO"]
+    guest = root / "dlfcn-test-guest"
+    subprocess.run(
+        [
+            *shlex.split(os.environ["DLFCN_CC"]),
+            "-O2",
+            "-fPIE",
+            "-pie",
+            "-fno-stack-protector",
+            "-nostdlib",
+            "-Wl,--no-as-needed",
+            str(root / sysroot_lib / "Scrt1.o"),
+            str(root / sysroot_lib / "crti.o"),
+            os.environ["DLFCN_GLIBC_GUEST_TEST_SOURCE"],
+            str(root / sysroot_lib / "libc.so.6"),
+            str(root / sysroot_lib / "crtn.o"),
+            "-o",
+            str(guest),
+        ],
+        check=True,
+    )
+
+    guest_environment = {**environment, "SOLO_GUEST_ENV": "smoke-value"}
+    for command in ([solo, "run", str(guest), "alpha", "beta"], [solo, str(guest), "alpha", "beta"]):
+        run = subprocess.run(
+            command,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=guest_environment,
+        )
+        for needle in (
+            "guest init",
+            "guest main argc=3",
+            "guest argv alpha",
+            "guest argv beta",
+            "guest stdout env=smoke-value",
+            "guest environ present",
+            "guest atexit",
+        ):
+            if needle not in run.stdout:
+                print(run.stdout, file=sys.stderr)
+                raise SystemExit(f"solo run misses: {needle}")
+        if run.returncode != 42:
+            print(run.stdout, file=sys.stderr)
+            raise SystemExit(f"solo run exited {run.returncode}, wanted the guest's 42")
+
+    ldd = subprocess.run(
+        [solo, "ldd", str(guest)],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=guest_environment,
+    )
+    if "libc.so.6 => the glibc ABI bridge" not in ldd.stdout:
+        print(ldd.stdout, file=sys.stderr)
+        raise SystemExit("solo ldd misses the bridged libc.so.6 line")
+    if "guest main" in ldd.stdout:
+        raise SystemExit("solo ldd ran the guest instead of only tracing it")
+    if ldd.returncode:
+        print(ldd.stdout, file=sys.stderr)
+        raise SystemExit(f"solo ldd exited {ldd.returncode}")
 
 
 def rerun_under_gdb(command, environment):

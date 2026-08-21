@@ -70,6 +70,7 @@ using namespace dyn;
 #if defined(__x86_64__)
     #define ELF_MACHINE EM_X86_64
     #define R_ARCH_ABS64 1 /* R_ARCH_ABS64 */
+    #define R_ARCH_COPY 5
     #define R_ARCH_GLOB_DAT 6
     #define R_ARCH_JUMP_SLOT 7
     #define R_ARCH_RELATIVE 8
@@ -81,6 +82,7 @@ using namespace dyn;
 #elif defined(__aarch64__)
     #define ELF_MACHINE EM_AARCH64
     #define R_ARCH_ABS64 257 /* R_AARCH64_ABS64 */
+    #define R_ARCH_COPY 1024
     #define R_ARCH_GLOB_DAT 1025
     #define R_ARCH_JUMP_SLOT 1026
     #define R_ARCH_RELATIVE 1027
@@ -277,6 +279,15 @@ namespace {
         // global scope instead of after it.
         bool deepBind = false;
 
+        // The main guest executable: its entry point and mapped program
+        // headers feed the auxiliary vector, and its initializers wait for
+        // the bridge's __libc_start_main instead of the load-time queue.
+        bool executable = false;
+        uintptr_t entry = 0;
+        uintptr_t programHeadersAddress = 0;
+
+        uintptr_t preinitializerArray = 0;
+        size_t preinitializerCount = 0;
         uintptr_t initializer = 0;
         uintptr_t initializerArray = 0;
         size_t initializerCount = 0;
@@ -385,7 +396,7 @@ namespace {
         static bool isGlibcDependency(const std::string_view& name) noexcept;
         void loadDependencies(LinkMap& image);
 
-        static Definition searchScope(LinkMap& image, const std::string_view& name, const std::string_view& version);
+        static Definition searchScope(LinkMap& image, const std::string_view& name, const std::string_view& version, bool skipSelf);
         Definition resolveSymbol(LinkMap& image, size_t symbolIndex);
         void debugBinding(const LinkMap& image, const std::string_view& name, const char* provider) const;
         static void* materialize(Definition definition);
@@ -407,6 +418,10 @@ namespace {
         size_t staticTlsUsed_ = 0;
         std::string libraryDirectory_;
         LinkMap* requester_ = nullptr;
+        // Consumed by the next load(): it is loading the main guest
+        // executable, not a shared object.
+        bool loadingExecutable_ = false;
+        LinkMap* mainExecutable_ = nullptr;
         std::vector<LinkMap*> pendingInitializers_;
         bool bindNow_ = false;
         bool debugLibs_ = false;
@@ -576,6 +591,10 @@ Loader& Loader::instance() {
 LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap* dlopenCaller) {
     std::lock_guard lock(mutex_);
 
+    // The flag names only the outermost load; the dependencies this load
+    // pulls in are ordinary shared objects.
+    auto asExecutable = std::exchange(loadingExecutable_, false);
+
     if (requestedPath.empty()) {
         throwError("empty ELF image path");
     }
@@ -620,6 +639,9 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
 
     file.read(&header, sizeof(header), 0);
     if (memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 || header.e_ident[EI_CLASS] != ELFCLASS64 || header.e_ident[EI_DATA] != ELFDATA2LSB || header.e_machine != ELF_MACHINE || header.e_type != ET_DYN || header.e_phentsize != sizeof(Elf64_Phdr)) {
+        if (asExecutable && header.e_type == ET_EXEC) {
+            throwError("%s: a non-PIE executable loads at fixed addresses this process already occupies; only PIE executables run for now", resolved->c_str());
+        }
         throwError("%s: not an ET_DYN ELF for this machine", resolved->c_str());
     }
 
@@ -673,7 +695,9 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
     imagesByName_.emplace(std::string(requestedPath), &image);
     imagesByAddress_.emplace(image.mapStart, &image);
 
-    if (traceLoadedObjects()) {
+    // ldd lists the objects an executable pulls in, never the executable
+    // itself.
+    if (traceLoadedObjects() && !asExecutable) {
         fprintf(stdout, "\t%.*s => %s (0x%zx)\n", static_cast<int>(requestedPath.size()), requestedPath.data(), image.path.c_str(), image.mapStart);
     }
 
@@ -728,6 +752,20 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
         }
     }
 
+    if (asExecutable) {
+        image.executable = true;
+        image.entry = image.base + header.e_entry;
+        // What the kernel would publish as AT_PHDR: the program header table
+        // inside the mapped image, by PT_PHDR when the link editor recorded
+        // one, by the ELF header's table offset otherwise.
+        image.programHeadersAddress = image.base + header.e_phoff;
+        for (const auto& programHeader : image.programHeaders) {
+            if (programHeader.p_type == PT_PHDR) {
+                image.programHeadersAddress = image.base + programHeader.p_vaddr;
+            }
+        }
+    }
+
     if (!image.dynamic) {
         throwError("%s: missing PT_DYNAMIC", image.path.c_str());
     }
@@ -755,6 +793,9 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
 
     image.wrapper.reset(new LoadedElf(image));
     image.state = LinkMap::State::Ready;
+    if (asExecutable) {
+        mainExecutable_ = &image;
+    }
     if (flags & RTLD_GLOBAL) {
         makeGlobal(image);
     }
@@ -842,15 +883,19 @@ void* Loader::lookupNext(const void* caller, std::string_view name, std::string_
 void* Loader::lookup(LinkMap& image, std::string_view name, std::string_view version) {
     std::lock_guard lock(mutex_);
 
-    return materialize(searchScope(image, name, version));
+    return materialize(searchScope(image, name, version, false));
 }
 
 // Breadth-first over the image and its dependency closure, in load order at
 // each depth, matching the search order of ld.so. A dependency backed by a
 // static provider is probed at its depth through its handle.
-Definition Loader::searchScope(LinkMap& image, const std::string_view& name, const std::string_view& version) {
-    if (auto definition = image.findSymbol(name, version); definition) {
-        return definition;
+Definition Loader::searchScope(LinkMap& image, const std::string_view& name, const std::string_view& version, bool skipSelf) {
+    // glibc's COPY discipline searches everything but the requesting image:
+    // its own symbol table holds the copy's destination, not a definition.
+    if (!skipSelf) {
+        if (auto definition = image.findSymbol(name, version); definition) {
+            return definition;
+        }
     }
 
     std::unordered_set<LinkMap*> visited({&image});
@@ -1511,6 +1556,12 @@ void LinkMap::parseDynamic() {
             case DT_RELRENT:
                 relativeRelocationEntrySize = entry->d_un.d_val;
                 break;
+            case DT_PREINIT_ARRAY:
+                preinitializerArray = base + entry->d_un.d_ptr;
+                break;
+            case DT_PREINIT_ARRAYSZ:
+                preinitializerCount = entry->d_un.d_val / sizeof(uintptr_t);
+                break;
             case DT_INIT:
                 initializer = base + entry->d_un.d_ptr;
                 break;
@@ -1816,7 +1867,7 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
             return {};
         };
         auto locally = [&]() {
-            return searchScope(image, name, wanted);
+            return searchScope(image, name, wanted, false);
         };
 
         auto definition = image.deepBind ? locally() : globally();
@@ -1965,6 +2016,32 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
             *where = static_cast<uintptr_t>(image.staticTlsOffset) + relocation.r_addend;
             return false;
         }
+    }
+
+    if (type == R_ARCH_COPY) {
+        // The executable reserved writable storage for a dependency's data
+        // object; the definition is taken from anywhere but the executable
+        // itself, whose own symbol table names the copy's destination.
+        auto* symbol = &image.symbols[symbolIndex];
+
+        if (symbol->st_name >= image.stringsSize) {
+            throwError("%s: symbol name outside the string table", image.path.c_str());
+        }
+
+        std::string_view name(image.strings + symbol->st_name);
+        auto version = image.symbolVersion(symbolIndex);
+        auto* source = materialize(searchScope(image, name, version, true));
+
+        if (!source) {
+            source = image.glibcAbi    ? resolveGlibcSymbol(name, version, false)
+                     : image.bionicAbi ? resolveBionicSymbol(name, false)
+                                       : nullptr;
+        }
+        if (!source) {
+            throwError("%s: unresolved copy relocation %.*s", image.path.c_str(), static_cast<int>(name.size()), name.data());
+        }
+        memcpy(where, source, symbol->st_size);
+        return false;
     }
 
     auto definition = resolveSymbol(image, symbolIndex);
@@ -2135,6 +2212,12 @@ void LinkMap::applyRelro() {
 }
 
 void LinkMap::runInitializers() {
+    // The main executable's initializers run under __libc_start_main with
+    // the real argc/argv/envp, after every dependency's; see
+    // dyn::runExecutableInitializers.
+    if (executable) {
+        return;
+    }
     if (initializer) {
         reinterpret_cast<void (*)()>(initializer)();
     }
@@ -2219,6 +2302,57 @@ ElfImage* ElfImage::loadElf(std::string_view path, int flags) {
     loader.runPendingInitializers();
 
     return image ? image->wrapper.get() : nullptr;
+}
+
+ElfExecutable dyn::loadExecutable(std::string_view path) {
+    auto& loader = Loader::instance();
+    LinkMap* image = nullptr;
+    {
+        std::lock_guard lock(loader.mutex_);
+
+        loader.loadingExecutable_ = true;
+        image = loader.load(path, RTLD_GLOBAL, nullptr);
+    }
+    // Under LD_TRACE_LOADED_OBJECTS nothing runs, like ld.so's trace mode:
+    // the closure is mapped and printed, and the caller exits.
+    if (!traceLoadedObjects()) {
+        loader.runPendingInitializers();
+    }
+
+    return {
+        image->entry,
+        image->programHeadersAddress,
+        image->programHeaders.size(),
+        image->base,
+    };
+}
+
+void dyn::runExecutableInitializers(int argc, char** argv, char** envp) {
+    auto* image = Loader::instance().mainExecutable_;
+
+    if (!image) {
+        return;
+    }
+
+    using Initializer = void (*)(int, char**, char**);
+    auto* preinitializers = reinterpret_cast<uintptr_t*>(image->preinitializerArray);
+
+    for (size_t index = 0; index < image->preinitializerCount; ++index) {
+        if (preinitializers[index] && preinitializers[index] != UINTPTR_MAX) {
+            reinterpret_cast<Initializer>(preinitializers[index])(argc, argv, envp);
+        }
+    }
+    if (image->initializer) {
+        reinterpret_cast<Initializer>(image->initializer)(argc, argv, envp);
+    }
+
+    auto* initializers = reinterpret_cast<uintptr_t*>(image->initializerArray);
+
+    for (size_t index = 0; index < image->initializerCount; ++index) {
+        if (initializers[index] && initializers[index] != UINTPTR_MAX) {
+            reinterpret_cast<Initializer>(initializers[index])(argc, argv, envp);
+        }
+    }
 }
 
 ElfImage* ElfImage::loadElfForCaller(unsigned callerIndex, std::string_view path, int flags) {

@@ -14,5 +14,6 @@
 /secure_target
 /secure_test
 /smoke
+/solo
 /test
 /vulkan_test

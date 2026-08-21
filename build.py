@@ -674,7 +674,7 @@ vulkan = command(
 )
 
 
-def vendoredTest(name, source):
+def vendoredBinary(name, source, prefix):
     application = library(
         name=f"{name}_app",
         srcs=[{"src": source, "inputs": [libcxx_config_path]}],
@@ -682,7 +682,7 @@ def vendoredTest(name, source):
         includes=["$(B)/lib", *vendored_includes],
         cflags=c_runtime_flags,
         cxxflags=cxx_runtime_flags,
-        output=f"$(B)/tst/lib/lib{name}_app.a",
+        output=f"{prefix}/lib/lib{name}_app.a",
     )
     archives = [
         application,
@@ -703,7 +703,7 @@ def vendoredTest(name, source):
             vulkan_crtend.output,
             *[archive.output for archive in archives],
         ],
-        outputs=[f"$(B)/tst/{name}"],
+        outputs=[f"{prefix}/{name}"],
         deps=[vulkan_crt1, vulkan_crti, vulkan_crtn, vulkan_crtend, *archives],
         cmd=[
             cc,
@@ -717,7 +717,7 @@ def vendoredTest(name, source):
             "-Wl,-z,noexecstack",
             "-Wl,-e,_start",
             "-o",
-            f"$(B)/tst/{name}",
+            f"{prefix}/{name}",
             "-Wl,--whole-archive",
             vulkan_crti.output,
             vulkan_crt1.output,
@@ -738,8 +738,17 @@ def vendoredTest(name, source):
     )
 
 
+def vendoredTest(name, source):
+    return vendoredBinary(name, source, "$(B)/tst")
+
+
 smoke = vendoredTest("smoke", "$(S)/tst/smoke.cpp")
 pthread_bridge = vendoredTest("pthread_bridge", "$(S)/tst/pthread_bridge.cpp")
+
+# The solo command: `solo run ./app` executes a ready-made glibc binary over
+# the bridge, `solo ldd ./app` prints its closure. Built exactly like the
+# vulkan proof — a static musl executable with the loader linked in.
+solo_cli = vendoredBinary("solo", "$(S)/bin/solo/main.cpp", "$(B)/bin/solo")
 
 pthread_test = command(
     name="pthread_test",
@@ -983,9 +992,9 @@ downloads = list(downloadTargets.values())
 
 arch_smoke = command(
     name="arch_smoke",
-    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/glibc_exception_test.cpp", "$(S)/tst/glibc_lazy_test.c", "$(S)/tst/glibc_shim_test.c", "$(S)/tst/glibc_ie_test.c", "$(S)/tst/glibc_interpose_test.c", "$(S)/tst/glibc_overridable_test.c", "$(S)/tst/glibc_caller_test.c", "$(S)/tst/glibc_versioned_test.c", "$(S)/tst/glibc_version_consumer_test.c", "$(S)/tst/glibc_ie_gd_test.c", "$(S)/tst/glibc_ie_ref_test.c", "$(S)/tst/glibc_big_tls_test.c", "$(S)/tst/glibc_runpath_host_test.c", "$(S)/tst/glibc_runpath_sibling_test.c", "$(S)/tst/run_smoke.py", *archives],
+    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/glibc_exception_test.cpp", "$(S)/tst/glibc_lazy_test.c", "$(S)/tst/glibc_shim_test.c", "$(S)/tst/glibc_ie_test.c", "$(S)/tst/glibc_interpose_test.c", "$(S)/tst/glibc_overridable_test.c", "$(S)/tst/glibc_caller_test.c", "$(S)/tst/glibc_versioned_test.c", "$(S)/tst/glibc_version_consumer_test.c", "$(S)/tst/glibc_ie_gd_test.c", "$(S)/tst/glibc_ie_ref_test.c", "$(S)/tst/glibc_big_tls_test.c", "$(S)/tst/glibc_runpath_host_test.c", "$(S)/tst/glibc_runpath_sibling_test.c", "$(S)/tst/glibc_guest_test.c", "$(S)/tst/run_smoke.py", *archives],
     outputs=["$(B)/tst/arch-smoke.log"],
-    deps=[smoke, *downloads],
+    deps=[smoke, solo_cli, *downloads],
     cmd=[
         "python3",
         "$(S)/tst/run_smoke.py",
@@ -1010,7 +1019,9 @@ arch_smoke = command(
         "DLFCN_GLIBC_RUNPATH_HOST_TEST_SOURCE": "$(S)/tst/glibc_runpath_host_test.c",
         "DLFCN_GLIBC_RUNPATH_SIBLING_TEST_SOURCE": "$(S)/tst/glibc_runpath_sibling_test.c",
         "DLFCN_GLIBC_TEST_SOURCE": "$(S)/tst/glibc_test.c",
+        "DLFCN_GLIBC_GUEST_TEST_SOURCE": "$(S)/tst/glibc_guest_test.c",
         "DLFCN_SMOKE": "$(B)/tst/smoke",
+        "DLFCN_SOLO": "$(B)/bin/solo/solo",
         "DLFCN_SYSROOT_LIB": sysroot_lib,
         "DLFCN_SYSROOT_INCLUDES": sysroot_includes,
     },
