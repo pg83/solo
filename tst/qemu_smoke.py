@@ -26,6 +26,7 @@ export HOME=/root
 export TERM=dumb
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
 echo SOLO-QEMU-BOOT
 echo "shell $((6*7))"
 echo hello world | sed "s/\\(hello\\) \\(world\\)/\\2 \\1/"
