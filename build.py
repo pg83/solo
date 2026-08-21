@@ -1288,6 +1288,26 @@ rootfs_smoke = command(
     color="green",
 )
 
+# The same stripped rootfs booted whole under qemu: PID 1 and everything
+# after it runs kernel-loaded with solo as the interpreter. Not part of the
+# test group — it needs a qemu and a kernel image, which the CI job that
+# invokes it provides through DLFCN_QEMU and DLFCN_KERNEL.
+qemu_smoke = command(
+    name="qemu_smoke",
+    inputs=["$(S)/tst/qemu_smoke.py", "$(S)/tst/rootfs_smoke.py", rootfs_archives[0]],
+    outputs=["$(B)/tst/qemu-smoke.log"],
+    deps=[solo_cli, downloadTargets["ubuntu_rootfs"]],
+    cmd=[
+        "python3",
+        "$(S)/tst/qemu_smoke.py",
+        "$(B)/tst/qemu-smoke.log",
+        rootfs_archives[0],
+    ],
+    env={"DLFCN_SOLO": "$(B)/bin/solo/solo"},
+    descr="TS",
+    color="green",
+)
+
 install(dlfcn)
 group("test", pthread_test, arch_smoke, rootfs_smoke)
 # Everything the tests download, for warming a package mirror in one pass.
