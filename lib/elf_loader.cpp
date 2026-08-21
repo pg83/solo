@@ -512,6 +512,29 @@ bool dyn::secureExecution() {
     return secure;
 }
 
+bool dyn::traceLoadedObjects() {
+    static const bool enabled = !secureExecution() && getenv("LD_TRACE_LOADED_OBJECTS");
+
+    return enabled;
+}
+
+// Each provided name prints once, like ldd's one line per object; callers
+// arrive both under the loader mutex and outside it.
+void dyn::traceProvider(std::string_view name, const char* provider) {
+    static std::mutex tracedMutex;
+    static std::unordered_set<std::string> traced;
+
+    if (!traceLoadedObjects()) {
+        return;
+    }
+
+    std::lock_guard lock(tracedMutex);
+
+    if (traced.emplace(name).second) {
+        fprintf(stdout, "\t%.*s => %s\n", static_cast<int>(name.size()), name.data(), provider);
+    }
+}
+
 bool dyn::debugFlag(std::string_view flag) {
     static const std::string flags = [] {
         const auto* debug = secureExecution() ? nullptr : getenv("LD_DEBUG");
@@ -571,6 +594,7 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
     auto resolved = resolvePath(requestedPath, dlopenCaller);
 
     if (!resolved) {
+        traceProvider(requestedPath, "not found");
         throwError("cannot resolve ELF image: %.*s", static_cast<int>(requestedPath.size()), requestedPath.data());
     }
 
@@ -648,6 +672,10 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
     imagesByName_.emplace(image.path, &image);
     imagesByName_.emplace(std::string(requestedPath), &image);
     imagesByAddress_.emplace(image.mapStart, &image);
+
+    if (traceLoadedObjects()) {
+        fprintf(stdout, "\t%.*s => %s (0x%zx)\n", static_cast<int>(requestedPath.size()), requestedPath.data(), image.path.c_str(), image.mapStart);
+    }
 
     MarkFailed markFailed(image);
 
@@ -1329,10 +1357,12 @@ void Loader::loadDependencies(LinkMap& image) {
         std::string needed(image.strings + entry->d_un.d_val);
 
         if (isGlibcDependency(needed)) {
+            traceProvider(needed, "the glibc ABI bridge over the embedded musl");
             image.glibcAbi = true;
             continue;
         }
         if (isBionicDependency(needed)) {
+            traceProvider(needed, "the bionic ABI bridge over the embedded musl");
             image.bionicAbi = true;
             continue;
         }

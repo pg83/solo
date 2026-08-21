@@ -283,10 +283,12 @@ static void* dlopenImpl(unsigned caller, const char* filename, int mode) {
         }
 
         if (auto res = Handles::instance()->findHandle(filename); res) {
+            dyn::traceProvider(filename, "a static provider linked into the executable");
             return res;
         }
 
         if (auto res = Handles::instance()->findHandle(calcName(filename)); res) {
+            dyn::traceProvider(filename, "a static provider linked into the executable");
             return res;
         }
 

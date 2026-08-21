@@ -18,6 +18,13 @@ namespace dyn {
     // bridge, and "all" turns everything on. Always false under AT_SECURE.
     bool debugFlag(std::string_view flag);
 
+    // ld.so's LD_TRACE_LOADED_OBJECTS, in ldd's arrow format on stdout.
+    // Mapped files print their resolved path and base; names served without
+    // a mapping — the ABI bridges and the static providers linked into the
+    // executable — print who provided them instead.
+    bool traceLoadedObjects();
+    void traceProvider(std::string_view name, const char* provider);
+
     struct ElfAddress {
         std::string_view path;
         void* base = nullptr;

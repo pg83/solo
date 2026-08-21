@@ -408,6 +408,26 @@ def main():
         if result.returncode:
             symbolize_fault(executable, result.stdout)
             rerun_under_gdb([executable], environment)
+        else:
+            # ldd's arrow format, with every provenance the loader knows:
+            # a mapped file, a bridged soname, and a static provider.
+            trace = subprocess.run(
+                [executable],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env={**environment, "LD_TRACE_LOADED_OBJECTS": "1"},
+            )
+            for needle in (
+                "libdlfcn-test-glibc.so => /",
+                "libc.so.6 => the glibc ABI bridge",
+                "=> a static provider linked into the executable",
+            ):
+                if needle not in trace.stdout:
+                    raise SystemExit(f"LD_TRACE_LOADED_OBJECTS misses: {needle}")
+            if trace.returncode:
+                raise SystemExit(f"traced run failed: {trace.returncode}")
 
     print(result.stdout, end="")
     output.parent.mkdir(parents=True, exist_ok=True)
