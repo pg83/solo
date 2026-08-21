@@ -8,6 +8,11 @@
 #include <string_view>
 
 namespace dyn {
+    // Secure-execution mode, ld.so's AT_SECURE discipline: a set-uid,
+    // set-gid, or capability-elevated process must not honor the
+    // environment's search paths, debug switches, or $-token expansions.
+    bool secureExecution();
+
     struct ElfAddress {
         std::string_view path;
         void* base = nullptr;

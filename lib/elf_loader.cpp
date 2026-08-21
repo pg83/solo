@@ -495,11 +495,28 @@ ScopedRequester::~ScopedRequester() {
     slot_ = previous_;
 }
 
+bool dyn::secureExecution() {
+    static const bool secure = [] {
+        errno = 0;
+        if (getauxval(AT_SECURE)) {
+            return true;
+        }
+        if (errno != ENOENT) {
+            // The auxv answered: the kernel says not secure.
+            return false;
+        }
+
+        return getuid() != geteuid() || getgid() != getegid();
+    }();
+
+    return secure;
+}
+
 // Registered before any loaded DSO can register its own atexit handlers, so
 // like glibc's _dl_fini it runs after them.
 Loader::Loader() {
     bindNow_ = getenv("LD_BIND_NOW") != nullptr;
-    if (const auto* debug = getenv("DL_DEBUG"); debug) {
+    if (const auto* debug = secureExecution() ? nullptr : getenv("DL_DEBUG"); debug) {
         std::string_view flags(debug);
 
         debugLibs_ = flags.find("libs") != std::string_view::npos || flags == "all";
@@ -1094,7 +1111,11 @@ std::optional<std::string> Loader::resolvePath(const std::string_view& path, con
     // while resolving DT_NEEDED, the image being loaded is the requester.
     const LinkMap* requester = dlopenCaller ? dlopenCaller : requester_;
 
-    if (const auto* configured = getenv("DL_ELF_LIBRARY_PATH"); configured) {
+    // ld.so's AT_SECURE discipline: a privileged process must not search
+    // paths the environment names.
+    const bool secure = secureExecution();
+
+    if (const auto* configured = secure ? nullptr : getenv("DL_ELF_LIBRARY_PATH"); configured) {
         if (auto resolved = inSearchPath(configured, path, false); resolved) {
             return resolved;
         }
@@ -1104,7 +1125,7 @@ std::optional<std::string> Loader::resolvePath(const std::string_view& path, con
             return resolved;
         }
     }
-    if (const auto* configured = getenv("LD_LIBRARY_PATH"); configured) {
+    if (const auto* configured = secure ? nullptr : getenv("LD_LIBRARY_PATH"); configured) {
         if (auto resolved = inSearchPath(configured, path, true); resolved) {
             return resolved;
         }
@@ -1514,23 +1535,38 @@ std::string LinkMap::substituteOrigin(std::string_view directories) const {
     std::string result;
 
     while (!directories.empty()) {
-        auto dollar = directories.find('$');
+        auto colon = directories.find(':');
+        auto entry = directories.substr(0, colon);
 
-        if (dollar == std::string_view::npos) {
-            result.append(directories);
-            break;
+        directories.remove_prefix(colon == std::string_view::npos ? directories.size() : colon + 1);
+        // ld.so's AT_SECURE discipline, musl's rule: a privileged process
+        // drops search entries carrying dynamic string tokens, whose
+        // expansion the invoker can influence.
+        if (secureExecution() && entry.find('$') != std::string_view::npos) {
+            continue;
         }
-        result.append(directories.substr(0, dollar));
-        directories.remove_prefix(dollar);
-        if (directories.starts_with("${ORIGIN}")) {
-            result.append(origin);
-            directories.remove_prefix(9);
-        } else if (directories.starts_with("$ORIGIN")) {
-            result.append(origin);
-            directories.remove_prefix(7);
-        } else {
-            result.push_back('$');
-            directories.remove_prefix(1);
+        if (!result.empty()) {
+            result.push_back(':');
+        }
+        while (!entry.empty()) {
+            auto dollar = entry.find('$');
+
+            if (dollar == std::string_view::npos) {
+                result.append(entry);
+                break;
+            }
+            result.append(entry.substr(0, dollar));
+            entry.remove_prefix(dollar);
+            if (entry.starts_with("${ORIGIN}")) {
+                result.append(origin);
+                entry.remove_prefix(9);
+            } else if (entry.starts_with("$ORIGIN")) {
+                result.append(origin);
+                entry.remove_prefix(7);
+            } else {
+                result.push_back('$');
+                entry.remove_prefix(1);
+            }
         }
     }
 

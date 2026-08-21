@@ -1,5 +1,7 @@
 #include "glibc_stubs.h"
 
+#include "elf_loader.h"
+
 #include "hash.h"
 
 #include <stdio.h>
@@ -83,7 +85,7 @@ namespace {
     }
 
     static void report(const std::string_view& name, const std::string_view& version) noexcept {
-        if (getenv("DL_GLIBC_STUB_DEBUG")) {
+        if (!secureExecution() && getenv("DL_GLIBC_STUB_DEBUG")) {
             fprintf(stderr, "glibc bridge: resolved fallback %.*s@%.*s\n", static_cast<int>(name.size()), name.data(), static_cast<int>(version.size()), version.data());
         }
     }

@@ -772,6 +772,43 @@ vulkan_test = command(
     color="green",
 )
 
+secure_probe = vendoredTest("secure_probe", "$(S)/tst/secure_probe.cpp")
+
+secure_target = command(
+    name="secure_target",
+    inputs=["$(S)/tst/secure_target.c"],
+    outputs=["$(B)/tst/libdlfcn-secure-target.so"],
+    cmd=[
+        cc,
+        *linker_flags,
+        "-shared",
+        "-fPIC",
+        "-nostdlib",
+        "-fno-stack-protector",
+        "-o",
+        "$(B)/tst/libdlfcn-secure-target.so",
+        "$(S)/tst/secure_target.c",
+    ],
+    descr="LD",
+    color="light-blue",
+)
+
+secure_test = command(
+    name="secure_test",
+    inputs=["$(S)/tst/run_secure.py"],
+    outputs=["$(B)/tst/secure.log"],
+    deps=[secure_probe, secure_target],
+    cmd=[
+        "python3",
+        "$(S)/tst/run_secure.py",
+        "$(B)/tst/secure.log",
+        "$(B)/tst/secure_probe",
+        "$(B)/tst/libdlfcn-secure-target.so",
+    ],
+    descr="TS",
+    color="green",
+)
+
 bionic_test = command(
     name="bionic_test",
     inputs=["$(S)/tst/run_bionic.py", "$(S)/tst/run_vulkan.py"],

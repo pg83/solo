@@ -412,9 +412,12 @@ namespace {
     }
 
     static char* sh_secure_getenv(const char* name) {
-        if (getuid() != geteuid() || getgid() != getegid()) {
+        // The uid checks alone miss capability-elevated processes, which
+        // the kernel reports through AT_SECURE.
+        if (secureExecution()) {
             return NULL;
         }
+
         return getenv(name);
     }
 
@@ -2789,7 +2792,7 @@ namespace {
     }
 
     static int sh_trace_enabled(void) {
-        return getenv("SH_GLIBC_BRIDGE_TRACE") != NULL;
+        return !secureExecution() && getenv("SH_GLIBC_BRIDGE_TRACE") != NULL;
     }
 
     static int sh_pthread_once(void* foreign, void (*initialize)(void)) {

@@ -179,6 +179,12 @@ jobs:
           CXX: clang++
         run: ./build -j12 -Duse_corpus="$GITHUB_WORKSPACE/corpus" test
 
+      - name: Secure
+        env:
+          CC: clang
+          CXX: clang++
+        run: ./build -j12 -Duse_corpus="$GITHUB_WORKSPACE/corpus" secure_test
+
       - name: Corpus
         env:
           CC: clang
@@ -240,6 +246,12 @@ jobs:
           CC: clang
           CXX: clang++
         run: ./build -j12 -Duse_corpus="$GITHUB_WORKSPACE/corpus" abi_diff
+
+      - name: Secure
+        env:
+          CC: clang
+          CXX: clang++
+        run: ./build -j12 -Duse_corpus="$GITHUB_WORKSPACE/corpus" secure_test
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
