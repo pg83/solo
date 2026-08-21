@@ -1633,6 +1633,22 @@ namespace {
         return result;
     }
 
+    // glibc's getaddrinfo grew IDN flag bits musl's rejects outright with
+    // EAI_BADFLAGS; apt passes AI_IDN on every lookup. The bridge drops the
+    // glibc-only bits — musl never transliterates hostnames anyway.
+    static int sh_getaddrinfo(const char* node, const char* service, const struct addrinfo* hints, struct addrinfo** result) {
+        struct addrinfo cleaned;
+
+        if (hints) {
+            cleaned = *hints;
+            // AI_IDN, AI_CANONIDN, and their two long-deprecated companions.
+            cleaned.ai_flags &= ~0x03c0;
+            hints = &cleaned;
+        }
+
+        return getaddrinfo(node, service, hints, result);
+    }
+
     // glibc's fgetpwent and fgetgrent say end-of-file with ENOENT; musl
     // leaves errno alone, and a caller distinguishing the end from an error
     // — systemd's sysusers — reads stale garbage.
@@ -4692,6 +4708,7 @@ namespace {
         SH_FUNCTION("_obstack_memory_used", "GLIBC_2.2.5", sh_obstack_memory_used),
         SH_FUNCTION("error_at_line", "GLIBC_2.2.5", sh_error_at_line),
         SH_FUNCTION("setvbuf", "GLIBC_2.2.5", sh_setvbuf),
+        SH_FUNCTION("getaddrinfo", "GLIBC_2.2.5", sh_getaddrinfo),
         SH_FUNCTION("fgetpwent", "GLIBC_2.2.5", sh_fgetpwent),
         SH_FUNCTION("fgetgrent", "GLIBC_2.2.5", sh_fgetgrent),
         SH_FUNCTION("setbuf", "GLIBC_2.2.5", sh_setbuf),
@@ -5055,6 +5072,7 @@ GlibcAdapter::GlibcAdapter()
 
     static constexpr std::string_view overrideNames[] = {
         "__cxa_atexit",
+        "getaddrinfo",
         "fgetgrent",
         "fgetpwent",
         "setbuf",

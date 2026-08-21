@@ -1462,6 +1462,16 @@ static void distributionTail(void) {
     memset(&shift_state, 0, sizeof(shift_state));
     CHECK(__mbsnrtowcs_chk(wide_buffer, &narrow_text, 3, 8, &shift_state, sizeof(wide_buffer)) == 3);
 
+    /* apt passes AI_IDN on every lookup; musl's getaddrinfo rejects the
+     * glibc-only flag bits with EAI_BADFLAGS unless the bridge drops them. */
+    struct addrinfo idn_hints;
+    struct addrinfo* idn_result = NULL;
+    memset(&idn_hints, 0, sizeof(idn_hints));
+    idn_hints.ai_flags = 0x0040 /* AI_IDN */ | AI_NUMERICHOST;
+    idn_hints.ai_family = AF_INET;
+    CHECK(getaddrinfo("127.0.0.1", NULL, &idn_hints, &idn_result) == 0);
+    freeaddrinfo(idn_result);
+
     /* The __locale_struct ABI: libstdc++ reads the three ctype tables
      * straight out of the locale object at their fixed offsets to build its
      * classic-locale facets, so the bridge's locale_t must be the glibc
