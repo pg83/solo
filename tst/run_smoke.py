@@ -442,6 +442,12 @@ def run_solo_checks(root, sysroot_lib, environment):
     sysroot's own crt objects and libc.so.6, so its _start is glibc's crt and
     startup runs through the bridge's __libc_start_main."""
     solo = os.environ["DLFCN_SOLO"]
+    # Linking an executable against a bare libc.so.6 leaves ld.so's
+    # GLIBC_PRIVATE half unresolved; glibc hosts quietly find their own
+    # ld-linux for it, musl hosts have none, so the sysroot's is explicit.
+    ld_so = sorted((root / sysroot_lib).glob("ld-linux-*.so*"))
+    if not ld_so:
+        raise SystemExit(f"no ld-linux in the sysroot under {sysroot_lib}")
     # Both link models: a PIE the loader places anywhere, and a non-PIE that
     # owns its fixed link-time addresses — which is why solo itself is
     # static-PIE.
@@ -463,6 +469,7 @@ def run_solo_checks(root, sysroot_lib, environment):
                 str(root / sysroot_lib / "crti.o"),
                 os.environ["DLFCN_GLIBC_GUEST_TEST_SOURCE"],
                 str(root / sysroot_lib / "libc.so.6"),
+                str(ld_so[0]),
                 str(root / sysroot_lib / "crtn.o"),
                 "-o",
                 str(guest),
