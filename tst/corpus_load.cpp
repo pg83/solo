@@ -1,11 +1,10 @@
 #include "dlfcn.h"
-#include "elf_loader.h"
 #include "fault_report.h"
 
 #include <stdio.h>
 
 int main(int argc, char** argv) {
-    dyn::init();
+    stub_dlinit();
     installFaultReport();
 
     if (argc != 2) {

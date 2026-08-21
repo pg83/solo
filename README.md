@@ -148,8 +148,8 @@ and ordinary `dlopen()`/`dlsym()` calls are redirected to SoLo. The source tree
 is intentionally self-contained and suitable for copying into another static
 build graph.
 
-One startup requirement: call `dyn::init()` (from
-[`lib/elf_loader.h`](lib/elf_loader.h)) at the top of `main()`, before the
+One startup requirement: call `dlinit()` (`stub_dlinit()` from
+[`lib/dlfcn.h`](lib/dlfcn.h)) at the top of `main()`, before the
 process creates its first thread. It re-plants the main thread's TLS with the
 static TLS window guests get their thread-local storage from — the same
 second thread-pointer planting musl's own dynamic linker performs — and that

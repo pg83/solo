@@ -1,5 +1,5 @@
 #include <png.h>
-#include "elf_loader.h"
+#include "dlfcn.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -505,7 +505,7 @@ namespace {
 }
 
 int main(int argumentCount, char** arguments) {
-    dyn::init();
+    dlinit();
     try {
         Options options = parseOptions(argumentCount, arguments);
         if (options.driver != nullptr && setenv("VK_DRIVER_FILES", options.driver, 1) != 0) {

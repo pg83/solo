@@ -1,4 +1,4 @@
-#include "elf_loader.h"
+#include "dlfcn.h"
 #include "glibc_shim.h"
 
 #include <errno.h>
@@ -420,7 +420,7 @@ namespace {
 }
 
 int main() {
-    init();
+    stub_dlinit();
     BRIDGE = loadBridge();
     if (!resolved) {
         return 1;

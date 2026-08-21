@@ -101,7 +101,7 @@ namespace {
 }
 
 int main() {
-    init();
+    stub_dlinit();
     installFaultReport();
 
 #if defined(__x86_64__)

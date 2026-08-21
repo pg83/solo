@@ -5,7 +5,7 @@
  * by __copy_tls from the module list in libc.tls_head, and the thread
  * pointer of the main thread is planted by __init_tp — twice in the dynamic
  * linker's own startup, the second time when the program's TLS sizes are
- * known. This file does the same from the static world: dyn::init(), called
+ * known. This file does the same from the static world: dlinit(), called
  * at the top of main() by contract, re-plants the main thread onto an
  * allocation with a reserve next to the thread pointer, and the loader
  * registers each placed guest as one more tls_module, after which
@@ -172,11 +172,11 @@ intptr_t soloStaticTls(const void* image, size_t length, size_t size, size_t ali
 	return registerModule(image, length, size, offset);
 }
 
-/* Best effort ahead of the dyn::init() contract: priority 101 — the earliest
+/* Best effort ahead of the dlinit() contract: priority 101 — the earliest
  * unreserved slot — sorts before every ordinary constructor regardless of
  * link order, so the re-planting usually has already happened by the time
  * main() runs. A link whose earlier constructors spawn threads anyway is
- * caught by dyn::init()'s loud failure. */
+ * caught by dlinit()'s loud failure. */
 __attribute__((constructor(101))) static void soloTlsBoot(void) {
 	soloTlsReplant();
 }

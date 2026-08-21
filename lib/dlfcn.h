@@ -23,6 +23,7 @@
 #define RTLD_DEFAULT stub_dlopen(0, 0)
 
 #if !defined(COMPILE_DLOPEN)
+    #define dlinit stub_dlinit
     #define dlsym stub_dlsym
     #define dlopen stub_dlopen
     #define dlclose stub_dlclose
@@ -43,6 +44,12 @@ extern "C" {
     } Dl_info;
 #endif
 
+    // The loader's startup: re-plants the main thread's TLS with the static
+    // TLS window guests get their thread-local storage from. Call at the top
+    // of main(), before the process creates its first thread — later is a
+    // loud error. An early best-effort constructor usually has it done
+    // already, making this a no-op check; the call is the contract.
+    void stub_dlinit(void);
     void* stub_dlsym(void* handle, const char* symbol);
     void* stub_dlopen(const char* filename, int flags);
     // The dlopen issued by loaded code: caller indexes the loader's dlopen
