@@ -363,6 +363,7 @@ namespace {
         LinkMap* adopt(const char* path, const Elf64_Phdr* headers, size_t count, uintptr_t entry);
         void prepareImage(LinkMap& image, int flags, bool adopted);
         void completeImage(LinkMap& image);
+        void orderForRelocation(LinkMap& image, std::vector<LinkMap*>& order, std::unordered_set<const LinkMap*>& placed);
         void linkClosure();
         void runPendingInitializers();
 
@@ -951,18 +952,43 @@ void Loader::completeImage(LinkMap& image) {
     pendingInitializers_.push_back(&image);
 }
 
+// Dependencies before dependents, glibc's _dl_sort_maps discipline: an
+// IFUNC resolver in a dependency executes during the dependent's
+// relocation, so the dependency's own relocations must already be in
+// place — breadth-first order alone does not guarantee that between
+// siblings. Cycles place in first-seen order, like ld.so.
+void Loader::orderForRelocation(LinkMap& image, std::vector<LinkMap*>& order, std::unordered_set<const LinkMap*>& placed) {
+    if (!placed.insert(&image).second) {
+        return;
+    }
+    for (const auto& dependency : image.dependencies) {
+        if (dependency.image && dependency.image->state == LinkMap::State::Mapped) {
+            orderForRelocation(*dependency.image, order, placed);
+        }
+    }
+    order.push_back(&image);
+}
+
 // ld.so's two phases over the whole closure, run by the outermost load.
 // First the dependency lists, breadth-first: each image's stub_dlopen either
 // finds its dependency already mapped or maps and appends it, growing the
-// queue this loop is walking. Then relocations, back to front, so an image
-// relocates after everything it depends on.
+// queue this loop is walking. Then relocations, dependency-sorted, the
+// requested image last.
 void Loader::linkClosure() {
     try {
         for (size_t index = 0; index < closure_.size(); ++index) {
             loadDependencies(*closure_[index]);
         }
+
+        std::vector<LinkMap*> order;
+        std::unordered_set<const LinkMap*> placed;
+
+        order.reserve(closure_.size());
         for (auto image = closure_.rbegin(); image != closure_.rend(); ++image) {
-            completeImage(**image);
+            orderForRelocation(**image, order, placed);
+        }
+        for (auto* image : order) {
+            completeImage(*image);
         }
     } catch (...) {
         for (auto* image : closure_) {
