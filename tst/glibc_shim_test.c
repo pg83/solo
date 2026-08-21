@@ -19,6 +19,7 @@
 #include <link.h>
 #include <locale.h>
 #include <malloc.h>
+#include <mcheck.h>
 #include <poll.h>
 #include <printf.h>
 #include <pthread.h>
@@ -36,6 +37,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/epoll.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
 #include <sys/auxv.h>
@@ -599,6 +601,54 @@ static void expressions(void) {
     char message[64];
     CHECK(regerror(REG_NOMATCH, &compiled, message, sizeof(message)) > 0);
     regfree(&compiled);
+
+    /* The GNU layer under grep, sed, and expr: the dialect comes from
+     * re_syntax_options, the registers follow the reallocation protocol,
+     * and backreferences work in the basic dialects. The buffer arrives
+     * with its mode bits as stack garbage, the way expr passes it — the
+     * compile must reset them. */
+    reg_syntax_t previous_syntax = re_set_syntax(RE_SYNTAX_GREP);
+    CHECK(re_set_syntax(RE_SYNTAX_GREP) == RE_SYNTAX_GREP);
+
+    struct re_pattern_buffer pattern;
+    memset(&pattern, 0x55, sizeof(pattern));
+    pattern.buffer = NULL;
+    pattern.allocated = 0;
+    pattern.fastmap = NULL;
+    pattern.translate = NULL;
+    CHECK(re_compile_pattern("\\(ab\\)\\1c*", 10, &pattern) == NULL);
+    CHECK(pattern.re_nsub == 1);
+
+    struct re_registers registers;
+    memset(&registers, 0, sizeof(registers));
+    CHECK(re_search(&pattern, "xxababccc", 9, 0, 9, &registers) == 2);
+    CHECK(registers.num_regs >= 2);
+    CHECK(registers.start[0] == 2 && registers.end[0] == 9);
+    CHECK(registers.start[1] == 2 && registers.end[1] == 4);
+    /* A second search reuses the reallocated registers. */
+    CHECK(re_search(&pattern, "abab", 4, 0, 4, &registers) == 0);
+    CHECK(registers.end[0] == 4);
+    CHECK(re_match(&pattern, "abab", 4, 0, NULL) == 4);
+    CHECK(re_match(&pattern, "xabab", 5, 0, NULL) == -1);
+    /* Backward search: the closest match start at or below the start. */
+    CHECK(re_search(&pattern, "xxabab", 6, 6, -6, NULL) == 2);
+
+    char fastmap[256];
+    pattern.fastmap = fastmap;
+    CHECK(re_compile_fastmap(&pattern) == 0);
+    CHECK(fastmap[(unsigned char)'a']);
+    regfree(&pattern);
+
+    re_set_syntax(RE_SYNTAX_EGREP);
+    struct re_pattern_buffer extended;
+    memset(&extended, 0, sizeof(extended));
+    CHECK(re_compile_pattern("(a|b)+c{2}", 10, &extended) == NULL);
+    CHECK(re_match(&extended, "abcc", 4, 0, NULL) == 4);
+    CHECK(re_compile_pattern("(a|b", 4, &extended) != NULL);
+    regfree(&extended);
+    re_set_syntax(previous_syntax);
+    free(registers.start);
+    free(registers.end);
 }
 
 static void descriptorsAndLimits(void) {
@@ -1268,6 +1318,18 @@ static void popularData(void) {
     char* object = obstack_finish(&stack);
     CHECK(strncmp(object, "text-5+chk-v", 12) == 0 && strlen(object) == 5012);
 
+    /* Rewind to an object boundary, then release everything: dpkg frees
+     * through the function, not the macro, so call it spelled out too. */
+    char* mark = obstack_alloc(&stack, 100);
+    memset(mark, 1, 100);
+    obstack_free(&stack, mark);
+    char* reused = obstack_alloc(&stack, 100);
+    CHECK(reused == mark);
+    int _obstack_memory_used(struct obstack*);
+    CHECK(_obstack_memory_used(&stack) > 0);
+    void __solo_obstack_free(struct obstack*, void*) __asm__("obstack_free");
+    __solo_obstack_free(&stack, NULL);
+
     /* Introspection odds and ends. */
     char* info_text = NULL;
     size_t info_size = 0;
@@ -1336,6 +1398,71 @@ static void popularData(void) {
     CHECK(_nl_msg_cat_cntr == 0);
 }
 
+/* The long tail an Ubuntu base system demands: BSD signal masks, the
+ * signal-name tables, gettext's internals, the fortified spellings of the
+ * unlocked and wide-character families, and the little aliases glibc keeps
+ * for its own headers' benefit. */
+static void distributionTail(void) {
+    CHECK(strcmp(sigabbrev_np(SIGKILL), "KILL") == 0);
+    CHECK(sigabbrev_np(1000) == NULL);
+    CHECK(sigdescr_np(SIGINT) != NULL);
+    CHECK(sigsetmask(0) >= 0);
+
+    int __getpagesize(void);
+    CHECK(__getpagesize() == getpagesize());
+
+    extern const char _libc_intl_domainname[];
+    CHECK(strcmp(_libc_intl_domainname, "libc") == 0);
+    mtrace();
+    muntrace();
+
+    error_at_line(0, 0, "shim-test.c", 1, "error_at_line probe");
+
+    int lock_descriptor = memfd_create("shim-lock", 0);
+    CHECK(lockf64(lock_descriptor, F_LOCK, 0) == 0);
+    CHECK(lockf64(lock_descriptor, F_ULOCK, 0) == 0);
+    close(lock_descriptor);
+
+    int epoll_descriptor = epoll_create1(0);
+    struct timespec no_wait = {0, 0};
+    struct epoll_event epoll_events[1];
+    CHECK(epoll_pwait2(epoll_descriptor, epoll_events, 1, &no_wait, NULL) == 0);
+    close(epoll_descriptor);
+
+    size_t __fread_unlocked_chk(void*, size_t, size_t, size_t, FILE*);
+    char zero_bytes[8];
+    FILE* zero_stream = fopen("/dev/zero", "r");
+    CHECK(__fread_unlocked_chk(zero_bytes, sizeof(zero_bytes), 1, 8, zero_stream) == 8);
+    fclose(zero_stream);
+
+    char* __fgets_unlocked_chk(char*, size_t, int, FILE*);
+    char line_buffer[32];
+    FILE* line_stream = fmemopen((char*)"one\ntwo\n", 8, "r");
+    CHECK(__fgets_unlocked_chk(line_buffer, sizeof(line_buffer), sizeof(line_buffer), line_stream) == line_buffer);
+    CHECK(strcmp(line_buffer, "one\n") == 0);
+    fclose(line_stream);
+
+    size_t __confstr_chk(int, char*, size_t, size_t);
+    char path_buffer[256];
+    CHECK(__confstr_chk(_CS_PATH, path_buffer, sizeof(path_buffer), sizeof(path_buffer)) > 0);
+
+    size_t __wcsrtombs_chk(char*, const wchar_t**, size_t, mbstate_t*, size_t);
+    const wchar_t* wide_text = L"wide";
+    char narrow_buffer[16];
+    mbstate_t shift_state;
+    memset(&shift_state, 0, sizeof(shift_state));
+    CHECK(__wcsrtombs_chk(narrow_buffer, &wide_text, sizeof(narrow_buffer), &shift_state, sizeof(narrow_buffer)) == 4);
+
+    size_t __wcstombs_chk(char*, const wchar_t*, size_t, size_t);
+    CHECK(__wcstombs_chk(narrow_buffer, L"xy", sizeof(narrow_buffer), sizeof(narrow_buffer)) == 2);
+
+    size_t __mbsnrtowcs_chk(wchar_t*, const char**, size_t, size_t, mbstate_t*, size_t);
+    const char* narrow_text = "abc";
+    wchar_t wide_buffer[8];
+    memset(&shift_state, 0, sizeof(shift_state));
+    CHECK(__mbsnrtowcs_chk(wide_buffer, &narrow_text, 3, 8, &shift_state, sizeof(wide_buffer)) == 3);
+}
+
 int glibc_shim_test(void) {
     failures = 0;
 
@@ -1361,6 +1488,7 @@ int glibc_shim_test(void) {
     jumps();
     schedulingBridge();
     dynamicLinking();
+    distributionTail();
 
     return failures;
 }

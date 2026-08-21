@@ -20,6 +20,7 @@
 #include <grp.h>
 #include <netdb.h>
 #include <spawn.h>
+#include <sys/epoll.h>
 #include <sys/sendfile.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -29,6 +30,7 @@
 #include <inttypes.h>
 #include <langinfo.h>
 #include <libgen.h>
+#include <libintl.h>
 #include <limits.h>
 #include <locale.h>
 #include <malloc.h>
@@ -1462,6 +1464,137 @@ namespace {
         }
     }
 
+    static void sh_error_at_line(int status, int number, const char* file, unsigned line, const char* format, ...) {
+        fflush(stdout);
+        fprintf(stderr, "%s:%s:%u: ", program_invocation_short_name, file, line);
+
+        va_list arguments;
+
+        va_start(arguments, format);
+        vfprintf(stderr, format, arguments);
+        va_end(arguments);
+        if (number) {
+            fprintf(stderr, ": %s", strerror(number));
+        }
+        fputc('\n', stderr);
+        if (status) {
+            exit(status);
+        }
+    }
+
+    // The BSD signal mask in an int, over the modern set.
+    static int sh_sigsetmask(int mask) {
+        sigset_t set;
+        sigset_t old;
+
+        sigemptyset(&set);
+        for (int signal = 1; signal <= 32; ++signal) {
+            if (mask & (1 << (signal - 1))) {
+                sigaddset(&set, signal);
+            }
+        }
+        if (sigprocmask(SIG_SETMASK, &set, &old)) {
+            return -1;
+        }
+
+        auto previous = 0;
+
+        for (int signal = 1; signal <= 32; ++signal) {
+            if (sigismember(&old, signal)) {
+                previous |= 1 << (signal - 1);
+            }
+        }
+
+        return previous;
+    }
+
+    static const char* sh_sigabbrev_np(int signal) {
+        static const char* const names[] = {
+            nullptr, "HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "BUS",
+            "FPE", "KILL", "USR1", "SEGV", "USR2", "PIPE", "ALRM", "TERM",
+            "STKFLT", "CHLD", "CONT", "STOP", "TSTP", "TTIN", "TTOU", "URG",
+            "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "POLL", "PWR", "SYS",
+        };
+
+        if (signal > 0 && signal < static_cast<int>(sizeof(names) / sizeof(names[0]))) {
+            return names[signal];
+        }
+
+        return nullptr;
+    }
+
+    static const char* sh_sigdescr_np(int signal) {
+        return strsignal(signal);
+    }
+
+    // glibc's own message catalog name, referenced by its gettext callers.
+    static const char sh_libc_intl_domainname[] = "libc";
+
+    // mallinfo-era tracing hooks: nothing to trace in musl's allocator.
+    static void sh_mtrace(void) {
+    }
+
+    static void sh_muntrace(void) {
+    }
+
+    static int sh_epoll_pwait2(int descriptor, struct epoll_event* events, int count, const struct timespec* timeout, const sigset_t* mask) {
+        auto result = syscall(SYS_epoll_pwait2, descriptor, events, count, timeout, mask, _NSIG / 8);
+
+        if (result < 0 && errno == ENOSYS) {
+            auto milliseconds = -1;
+
+            if (timeout) {
+                milliseconds = static_cast<int>(timeout->tv_sec * 1000 + (timeout->tv_nsec + 999999) / 1000000);
+            }
+
+            return epoll_pwait(descriptor, events, count, milliseconds, mask);
+        }
+
+        return static_cast<int>(result);
+    }
+
+    static size_t sh_fread_unlocked_chk(void* destination, size_t destination_size, size_t element_size, size_t element_count, FILE* stream) {
+        if (element_size && element_count > destination_size / element_size) {
+            sh_fortify_fail();
+        }
+        return fread_unlocked(destination, element_size, element_count, stream);
+    }
+
+    static char* sh_fgets_unlocked_chk(char* destination, size_t destination_size, int count, FILE* stream) {
+        if (count > 0 && static_cast<size_t>(count) > destination_size) {
+            sh_fortify_fail();
+        }
+        return fgets_unlocked(destination, count, stream);
+    }
+
+    static size_t sh_wcsrtombs_chk(char* destination, const wchar_t** source, size_t count, mbstate_t* state, size_t destination_size) {
+        if (count > destination_size) {
+            sh_fortify_fail();
+        }
+        return wcsrtombs(destination, source, count, state);
+    }
+
+    static size_t sh_wcstombs_chk(char* destination, const wchar_t* source, size_t count, size_t destination_size) {
+        if (count > destination_size) {
+            sh_fortify_fail();
+        }
+        return wcstombs(destination, source, count);
+    }
+
+    static size_t sh_mbsnrtowcs_chk(wchar_t* destination, const char** source, size_t source_count, size_t count, mbstate_t* state, size_t destination_size) {
+        if (count > destination_size / sizeof(wchar_t)) {
+            sh_fortify_fail();
+        }
+        return mbsnrtowcs(destination, source, source_count, count, state);
+    }
+
+    static size_t sh_confstr_chk(int name, char* destination, size_t count, size_t destination_size) {
+        if (count > destination_size) {
+            sh_fortify_fail();
+        }
+        return confstr(name, destination, count);
+    }
+
     // The argz vectors: NUL-separated strings in one malloc'd block.
     static int sh_argz_append(char** argz, size_t* length, const char* extra, size_t extraLength) {
         auto* grown = static_cast<char*>(realloc(*argz, *length + extraLength));
@@ -1607,7 +1740,15 @@ namespace {
         return reinterpret_cast<void* (*)(long)>(reinterpret_cast<uintptr_t>(obstack->allocate))(size);
     }
 
-    static int sh_obstack_begin(GlibcObstack* obstack, int size, int alignment, void* (*allocate)(long), void (*release)(void*)) {
+    static void obstackRelease(GlibcObstack* obstack, GlibcObstackChunk* chunk) {
+        if (obstack->useExtraArgument) {
+            obstack->release(obstack->extraArgument, chunk);
+        } else {
+            reinterpret_cast<void (*)(void*)>(reinterpret_cast<uintptr_t>(obstack->release))(chunk);
+        }
+    }
+
+    static int obstackStart(GlibcObstack* obstack, int size, int alignment) {
         if (!alignment) {
             alignment = alignof(max_align_t);
         }
@@ -1616,9 +1757,6 @@ namespace {
         }
         obstack->chunkSize = size;
         obstack->alignmentMask = alignment - 1;
-        obstack->allocate = reinterpret_cast<void* (*)(void*, long)>(reinterpret_cast<uintptr_t>(allocate));
-        obstack->release = reinterpret_cast<void (*)(void*, void*)>(reinterpret_cast<uintptr_t>(release));
-        obstack->useExtraArgument = 0;
         obstack->maybeEmptyObject = 0;
         obstack->allocationFailed = 0;
 
@@ -1634,6 +1772,55 @@ namespace {
         chunk->previous = nullptr;
 
         return 1;
+    }
+
+    static int sh_obstack_begin(GlibcObstack* obstack, int size, int alignment, void* (*allocate)(long), void (*release)(void*)) {
+        obstack->allocate = reinterpret_cast<void* (*)(void*, long)>(reinterpret_cast<uintptr_t>(allocate));
+        obstack->release = reinterpret_cast<void (*)(void*, void*)>(reinterpret_cast<uintptr_t>(release));
+        obstack->useExtraArgument = 0;
+
+        return obstackStart(obstack, size, alignment);
+    }
+
+    static int sh_obstack_begin_1(GlibcObstack* obstack, int size, int alignment, void* (*allocate)(void*, long), void (*release)(void*, void*), void* argument) {
+        obstack->allocate = allocate;
+        obstack->release = release;
+        obstack->extraArgument = argument;
+        obstack->useExtraArgument = 1;
+
+        return obstackStart(obstack, size, alignment);
+    }
+
+    // Releases every chunk above the one holding the object and rewinds to
+    // it; a null object releases everything. A pointer in no chunk is the
+    // caller's bug, and glibc aborts the same way.
+    static void sh_obstack_free(GlibcObstack* obstack, void* object) {
+        auto* chunk = obstack->chunk;
+
+        while (chunk && (static_cast<void*>(chunk) >= object || static_cast<void*>(chunk->limit) < object)) {
+            auto* previous = chunk->previous;
+
+            obstackRelease(obstack, chunk);
+            chunk = previous;
+            obstack->maybeEmptyObject = 1;
+        }
+        if (chunk) {
+            obstack->objectBase = obstack->nextFree = static_cast<char*>(object);
+            obstack->chunkLimit = chunk->limit;
+            obstack->chunk = chunk;
+        } else if (object) {
+            abort();
+        }
+    }
+
+    static int sh_obstack_memory_used(GlibcObstack* obstack) {
+        auto total = 0l;
+
+        for (auto* chunk = obstack->chunk; chunk; chunk = chunk->previous) {
+            total += chunk->limit - reinterpret_cast<char*>(chunk);
+        }
+
+        return static_cast<int>(total);
     }
 
     static void sh_obstack_newchunk(GlibcObstack* obstack, int length) {
@@ -2228,13 +2415,42 @@ namespace {
     // glibc regmatch_t holds int offsets while musl's are 64-bit
     // (dev/abi-diff.txt), so the regex family cannot pass through: the musl
     // object lives behind the buffer field of the caller's glibc regex_t, and
-    // matches are converted.
+    // matches are converted. The remaining fields are glibc's re_pattern_buffer,
+    // field for field — the GNU re_* entry points below read and write them.
     struct GlibcRegex {
         regex_t* shadow;
-        unsigned long reserved[5];
+        unsigned long allocated;
+        unsigned long used;
+        unsigned long syntax;
+        char* fastmap;
+        const unsigned char* translate;
         size_t re_nsub;
+        // glibc's bit-field byte: can_be_null, regs_allocated (two bits),
+        // fastmap_accurate, no_sub, not_bol, not_eol, newline_anchor.
         unsigned long flags;
     };
+
+    static constexpr unsigned long SH_RE_REGS_MASK = 3ul << 1;
+    static constexpr unsigned long SH_RE_REGS_REALLOCATE = 1ul << 1;
+    static constexpr unsigned long SH_RE_REGS_FIXED = 2ul << 1;
+    static constexpr unsigned long SH_RE_FASTMAP_ACCURATE = 1ul << 3;
+    static constexpr unsigned long SH_RE_NO_SUB = 1ul << 4;
+    static constexpr unsigned long SH_RE_NOT_BOL = 1ul << 5;
+    static constexpr unsigned long SH_RE_NOT_EOL = 1ul << 6;
+    static constexpr unsigned long SH_RE_NEWLINE_ANCHOR = 1ul << 7;
+
+    // The re_syntax_options dialect bits that change how a pattern reads;
+    // glibc's values. The rest of the word tunes corner semantics the
+    // rewrite below does not reach.
+    static constexpr unsigned long SH_RE_SYNTAX_BK_PLUS_QM = 1ul << 1;
+    static constexpr unsigned long SH_RE_SYNTAX_INTERVALS = 1ul << 9;
+    static constexpr unsigned long SH_RE_SYNTAX_LIMITED_OPS = 1ul << 10;
+    static constexpr unsigned long SH_RE_SYNTAX_NEWLINE_ALT = 1ul << 11;
+    static constexpr unsigned long SH_RE_SYNTAX_NO_BK_BRACES = 1ul << 12;
+    static constexpr unsigned long SH_RE_SYNTAX_NO_BK_PARENS = 1ul << 13;
+    static constexpr unsigned long SH_RE_SYNTAX_NO_BK_VBAR = 1ul << 15;
+    static constexpr unsigned long SH_RE_SYNTAX_ICASE = 1ul << 22;
+    static constexpr unsigned long SH_RE_SYNTAX_NO_SUB = 1ul << 25;
 
     struct GlibcRegmatch {
         int rm_so;
@@ -2295,23 +2511,166 @@ namespace {
         }
     }
 
-    // The BSD re_* layer over the same shadow: glibc's re_pattern_buffer is
-    // its regex_t. Extended syntax is the pragmatic default; re_match is
-    // anchored, and leftmost-longest regexec answers anchoring exactly.
-    static const char* sh_re_compile_pattern(const char* pattern, size_t length, GlibcRegex* compiled) {
-        auto* copy = static_cast<char*>(malloc(length + 1));
+    // The GNU re_* layer over the same shadow: glibc's re_pattern_buffer is
+    // its regex_t. GNU regex arrives in whichever dialect re_syntax_options
+    // selects, and musl's regcomp speaks POSIX extended, so the pattern is
+    // rewritten: the operator or literal role of (){}| + ? flips between the
+    // dialects, newline-as-alternation becomes |, and everything else —
+    // anchors, brackets, the GNU word escapes musl's TRE already knows —
+    // passes through.
+    static unsigned long sh_re_syntax_options;
 
-        if (!copy) {
-            return "out of memory";
+    static unsigned long sh_re_set_syntax(unsigned long syntax) {
+        auto previous = sh_re_syntax_options;
+
+        sh_re_syntax_options = syntax;
+
+        return previous;
+    }
+
+    static std::string sh_re_rewrite(const char* pattern, size_t length, unsigned long syntax) {
+        // The dialect family, by who owns the parentheses: musl's extended
+        // dialect compiles the egrep/awk side, its basic dialect — with the
+        // GNU extensions TRE speaks natively — the grep/sed/emacs side,
+        // backreferences included.
+        auto extended = (syntax & SH_RE_SYNTAX_NO_BK_PARENS) != 0;
+        std::string rewritten;
+
+        rewritten.reserve(length + 8);
+
+        // Inside a bracket expression everything is literal until the closing
+        // bracket; content marks where a ] would already close it.
+        auto bracket = false;
+        size_t content = 0;
+
+        for (size_t index = 0; index < length; ++index) {
+            auto character = pattern[index];
+
+            if (bracket) {
+                // [: :], [. .], and [= =] carry a ] in their terminator that
+                // must not close the bracket expression.
+                if (character == '[' && index + 1 < length && (pattern[index + 1] == ':' || pattern[index + 1] == '.' || pattern[index + 1] == '=')) {
+                    auto kind = pattern[index + 1];
+
+                    rewritten.push_back('[');
+                    rewritten.push_back(kind);
+                    index += 2;
+                    while (index + 1 < length && !(pattern[index] == kind && pattern[index + 1] == ']')) {
+                        rewritten.push_back(pattern[index]);
+                        ++index;
+                    }
+                    if (index + 1 < length) {
+                        rewritten.push_back(kind);
+                        rewritten.push_back(']');
+                        ++index;
+                    }
+                    continue;
+                }
+                rewritten.push_back(character);
+                if (character == ']' && index >= content) {
+                    bracket = false;
+                }
+                continue;
+            }
+
+            if (character == '[') {
+                bracket = true;
+                content = index + 1;
+                if (content < length && pattern[content] == '^') {
+                    ++content;
+                }
+                if (content < length && pattern[content] == ']') {
+                    ++content;
+                }
+                rewritten.push_back(character);
+                continue;
+            }
+
+            if (character == '\\' && index + 1 < length) {
+                auto escaped = pattern[++index];
+
+                // \+ and \? are the GNU basic-dialect operators, which
+                // musl's basic dialect also speaks; a dialect reserving them
+                // as literals gets the plain literal instead. Everything
+                // else escaped passes through: groups, intervals,
+                // alternation, backreferences, and the GNU word escapes all
+                // mean the same thing to musl's TRE.
+                if (extended || (escaped != '+' && escaped != '?') || (syntax & SH_RE_SYNTAX_BK_PLUS_QM)) {
+                    rewritten.push_back('\\');
+                }
+                rewritten.push_back(escaped);
+                continue;
+            }
+
+            if (!extended && (character == '+' || character == '?')) {
+                // Plain + and ? are operators unless the dialect reserves
+                // them for the backslashed forms or drops them entirely;
+                // musl's basic dialect wants its operators backslashed.
+                if (!(syntax & (SH_RE_SYNTAX_BK_PLUS_QM | SH_RE_SYNTAX_LIMITED_OPS))) {
+                    rewritten.push_back('\\');
+                }
+                rewritten.push_back(character);
+            } else if (character == '\n' && (syntax & SH_RE_SYNTAX_NEWLINE_ALT)) {
+                if (!extended) {
+                    rewritten.push_back('\\');
+                }
+                rewritten.push_back('|');
+            } else {
+                rewritten.push_back(character);
+            }
         }
-        memcpy(copy, pattern, length);
-        copy[length] = 0;
 
-        auto result = sh_regcomp(compiled, copy, REG_EXTENDED);
+        return rewritten;
+    }
 
-        free(copy);
+    static const char* sh_re_error(int code) {
+        switch (code) {
+            case REG_ESPACE:
+                return "Memory exhausted";
+            case REG_EBRACK:
+                return "Unmatched [ or [^";
+            case REG_EPAREN:
+                return "Unmatched ( or \\(";
+            case REG_EBRACE:
+                return "Unmatched \\{";
+            case REG_ERANGE:
+                return "Invalid range end";
+            case REG_ESUBREG:
+                return "Invalid back reference";
+            case REG_ECOLLATE:
+                return "Invalid collation character";
+            case REG_ECTYPE:
+                return "Invalid character class name";
+            case REG_BADRPT:
+                return "Invalid preceding regular expression";
+        }
 
-        return result ? "invalid regular expression" : nullptr;
+        return "Invalid regular expression";
+    }
+
+    static const char* sh_re_compile_pattern(const char* pattern, size_t length, GlibcRegex* compiled) {
+        auto rewritten = sh_re_rewrite(pattern, length, sh_re_syntax_options);
+        // A translate table in the buffer is grep -i's case fold; musl folds
+        // itself.
+        auto cflags = (sh_re_syntax_options & SH_RE_SYNTAX_NO_BK_PARENS) ? REG_EXTENDED : 0;
+
+        if ((sh_re_syntax_options & SH_RE_SYNTAX_ICASE) || compiled->translate) {
+            cflags |= REG_ICASE;
+        }
+
+        compiled->syntax = sh_re_syntax_options;
+        // glibc resets the buffer's mode bits here, and callers rely on it:
+        // the rest of the bit-field byte is often uninitialized stack.
+        compiled->flags &= ~(SH_RE_REGS_MASK | SH_RE_NO_SUB);
+        compiled->flags |= SH_RE_NEWLINE_ANCHOR;
+        if (sh_re_syntax_options & SH_RE_SYNTAX_NO_SUB) {
+            compiled->flags |= SH_RE_NO_SUB;
+        }
+        if (auto result = sh_regcomp(compiled, rewritten.c_str(), cflags)) {
+            return sh_re_error(result);
+        }
+
+        return nullptr;
     }
 
     struct GlibcReRegisters {
@@ -2320,35 +2679,164 @@ namespace {
         int* end;
     };
 
-    static int sh_re_match(GlibcRegex* compiled, const char* string, int size, int start, GlibcReRegisters* registers) {
-        if (!compiled || !compiled->shadow || start < 0 || start > size) {
-            return -2;
+    // glibc's register protocol: an unallocated set is malloc'd here and
+    // marked for reallocation, a fixed set keeps its size, and unmatched
+    // groups read -1.
+    static void sh_re_registers(GlibcRegex* compiled, GlibcReRegisters* registers, const regmatch_t* matches, size_t groups, int offset) {
+        if (!registers || (compiled->flags & SH_RE_NO_SUB)) {
+            return;
         }
 
-        auto* copy = static_cast<char*>(malloc(size - start + 1));
+        auto need = static_cast<unsigned>(compiled->re_nsub + 1);
+        auto allocation = compiled->flags & SH_RE_REGS_MASK;
+
+        if (allocation != SH_RE_REGS_FIXED && (allocation != SH_RE_REGS_REALLOCATE || registers->count < need)) {
+            auto* start = static_cast<int*>(realloc(allocation == SH_RE_REGS_REALLOCATE ? registers->start : nullptr, need * sizeof(int)));
+            auto* end = static_cast<int*>(realloc(allocation == SH_RE_REGS_REALLOCATE ? registers->end : nullptr, need * sizeof(int)));
+
+            if (!start || !end) {
+                free(start);
+                free(end);
+                registers->count = 0;
+                return;
+            }
+            registers->start = start;
+            registers->end = end;
+            registers->count = need;
+            compiled->flags = (compiled->flags & ~SH_RE_REGS_MASK) | SH_RE_REGS_REALLOCATE;
+        }
+        for (unsigned index = 0; index < registers->count; ++index) {
+            if (index < groups && matches[index].rm_so >= 0) {
+                registers->start[index] = static_cast<int>(matches[index].rm_so) + offset;
+                registers->end[index] = static_cast<int>(matches[index].rm_eo) + offset;
+            } else {
+                registers->start[index] = -1;
+                registers->end[index] = -1;
+            }
+        }
+    }
+
+    // The shared body of re_match and re_search: one regexec over the tail
+    // of the string starting at position, on a NUL-terminated copy — the
+    // caller's buffer is length-delimited and musl has no REG_STARTEND.
+    // Leftmost-longest answers both questions: the leftmost match starts at
+    // the position exactly when an anchored match exists there.
+    static int sh_re_execute(GlibcRegex* compiled, const char* string, int size, int position, regmatch_t* matches, size_t groups) {
+        auto* copy = static_cast<char*>(malloc(size - position + 1));
 
         if (!copy) {
             return -2;
         }
-        memcpy(copy, string + start, size - start);
-        copy[size - start] = 0;
+        memcpy(copy, string + position, size - position);
+        copy[size - position] = 0;
 
-        regmatch_t matches[16] = {};
-        auto groups = compiled->re_nsub + 1 < 16 ? compiled->re_nsub + 1 : 16;
-        auto result = regexec(compiled->shadow, copy, groups, matches, 0);
+        auto eflags = 0;
+
+        if (position > 0 || (compiled->flags & SH_RE_NOT_BOL)) {
+            eflags |= REG_NOTBOL;
+        }
+        if (compiled->flags & SH_RE_NOT_EOL) {
+            eflags |= REG_NOTEOL;
+        }
+
+        auto result = regexec(compiled->shadow, copy, groups, matches, eflags);
 
         free(copy);
-        if (result || matches[0].rm_so != 0) {
-            return -1;
-        }
-        if (registers && registers->count) {
-            for (unsigned index = 0; index < registers->count && index < groups; ++index) {
-                registers->start[index] = matches[index].rm_so < 0 ? -1 : (int)matches[index].rm_so + start;
-                registers->end[index] = matches[index].rm_eo < 0 ? -1 : (int)matches[index].rm_eo + start;
-            }
+
+        return result ? -1 : 0;
+    }
+
+    static int sh_re_match(GlibcRegex* compiled, const char* string, int size, int start, GlibcReRegisters* registers) {
+        if (!compiled || !compiled->shadow || size < 0 || start < 0 || start > size) {
+            return -2;
         }
 
-        return matches[0].rm_eo;
+        regmatch_t buffer[16];
+        auto groups = compiled->re_nsub + 1;
+        auto* matches = groups <= 16 ? buffer : static_cast<regmatch_t*>(calloc(groups, sizeof(regmatch_t)));
+
+        if (!matches) {
+            return -2;
+        }
+
+        auto result = sh_re_execute(compiled, string, size, start, matches, groups);
+
+        if (!result && matches[0].rm_so != 0) {
+            result = -1;
+        }
+        if (!result) {
+            sh_re_registers(compiled, registers, matches, groups, start);
+            result = static_cast<int>(matches[0].rm_eo);
+        }
+        if (matches != buffer) {
+            free(matches);
+        }
+
+        return result;
+    }
+
+    static int sh_re_search(GlibcRegex* compiled, const char* string, int size, int start, int range, GlibcReRegisters* registers) {
+        if (!compiled || !compiled->shadow || size < 0 || start < 0 || start > size) {
+            return -2;
+        }
+
+        regmatch_t buffer[16];
+        auto groups = compiled->re_nsub + 1;
+        auto* matches = groups <= 16 ? buffer : static_cast<regmatch_t*>(calloc(groups, sizeof(regmatch_t)));
+
+        if (!matches) {
+            return -2;
+        }
+
+        auto found = -1;
+
+        if (range >= 0) {
+            // Forward: the leftmost match, accepted while it starts within
+            // range of the start position.
+            auto limit = range > size - start ? size - start : range;
+            auto result = sh_re_execute(compiled, string, size, start, matches, groups);
+
+            if (result == -2) {
+                found = -2;
+            } else if (!result && matches[0].rm_so <= limit) {
+                found = start + static_cast<int>(matches[0].rm_so);
+                sh_re_registers(compiled, registers, matches, groups, start);
+            }
+        } else {
+            // Backward: the closest position at or below start where a match
+            // begins.
+            auto floor = start + range < 0 ? 0 : start + range;
+
+            for (auto position = start; position >= floor; --position) {
+                auto result = sh_re_execute(compiled, string, size, position, matches, groups);
+
+                if (result == -2) {
+                    found = -2;
+                    break;
+                }
+                if (!result && matches[0].rm_so == 0) {
+                    found = position;
+                    sh_re_registers(compiled, registers, matches, groups, position);
+                    break;
+                }
+            }
+        }
+        if (matches != buffer) {
+            free(matches);
+        }
+
+        return found;
+    }
+
+    // The fastmap is a skip-ahead hint; every byte marked viable keeps the
+    // search correct and merely unoptimized.
+    static int sh_re_compile_fastmap(GlibcRegex* compiled) {
+        if (compiled && compiled->fastmap) {
+            memset(compiled->fastmap, 1, 256);
+            compiled->flags |= SH_RE_FASTMAP_ACCURATE;
+        }
+
+        return 0;
     }
 
     // musl's FTW_* type codes are glibc's plus one (dev/abi-diff.txt), so the
@@ -3872,6 +4360,33 @@ namespace {
         SH_FUNCTION("putsgent", "GLIBC_2.10", sh_putsgent),
         SH_FUNCTION("re_compile_pattern", "GLIBC_2.2.5", sh_re_compile_pattern),
         SH_FUNCTION("re_match", "GLIBC_2.2.5", sh_re_match),
+        SH_FUNCTION("re_search", "GLIBC_2.2.5", sh_re_search),
+        SH_FUNCTION("re_set_syntax", "GLIBC_2.2.5", sh_re_set_syntax),
+        SH_FUNCTION("re_compile_fastmap", "GLIBC_2.2.5", sh_re_compile_fastmap),
+        SH_OBJECT("re_syntax_options", "GLIBC_2.2.5", sh_re_syntax_options),
+        SH_FUNCTION("_obstack_begin_1", "GLIBC_2.2.5", sh_obstack_begin_1),
+        SH_FUNCTION("_obstack_free", "GLIBC_2.2.5", sh_obstack_free),
+        SH_FUNCTION("obstack_free", "GLIBC_2.2.5", sh_obstack_free),
+        SH_FUNCTION("_obstack_memory_used", "GLIBC_2.2.5", sh_obstack_memory_used),
+        SH_FUNCTION("error_at_line", "GLIBC_2.2.5", sh_error_at_line),
+        SH_OBJECT("_libc_intl_domainname", "GLIBC_2.2.5", sh_libc_intl_domainname),
+        SH_FUNCTION("sigsetmask", "GLIBC_2.2.5", sh_sigsetmask),
+        SH_FUNCTION("sigabbrev_np", "GLIBC_2.32", sh_sigabbrev_np),
+        SH_FUNCTION("sigdescr_np", "GLIBC_2.32", sh_sigdescr_np),
+        SH_FUNCTION("mtrace", "GLIBC_2.2.5", sh_mtrace),
+        SH_FUNCTION("muntrace", "GLIBC_2.2.5", sh_muntrace),
+        SH_FUNCTION("epoll_pwait2", "GLIBC_2.35", sh_epoll_pwait2),
+        SH_FUNCTION("__fread_unlocked_chk", "GLIBC_2.7", sh_fread_unlocked_chk),
+        SH_FUNCTION("__fgets_unlocked_chk", "GLIBC_2.4", sh_fgets_unlocked_chk),
+        SH_FUNCTION("__wcsrtombs_chk", "GLIBC_2.4", sh_wcsrtombs_chk),
+        SH_FUNCTION("__wcstombs_chk", "GLIBC_2.4", sh_wcstombs_chk),
+        SH_FUNCTION("__mbsnrtowcs_chk", "GLIBC_2.4", sh_mbsnrtowcs_chk),
+        SH_FUNCTION("__confstr_chk", "GLIBC_2.4", sh_confstr_chk),
+        SH_FUNCTION("__dcgettext", "GLIBC_2.2.5", dcgettext),
+        SH_FUNCTION("__stpcpy", "GLIBC_2.2.5", stpcpy),
+        SH_FUNCTION("__mempcpy", "GLIBC_2.2.5", mempcpy),
+        SH_FUNCTION("__getpagesize", "GLIBC_2.2.5", getpagesize),
+        SH_FUNCTION("lockf64", "GLIBC_2.2.5", lockf),
         SH_FUNCTION("res_nsearch", "GLIBC_2.34", sh_res_nsearch),
         SH_FUNCTION("__res_nsearch", "GLIBC_2.2.5", sh_res_nsearch),
         SH_FUNCTION("res_nsend", "GLIBC_2.34", sh_res_nsend),
