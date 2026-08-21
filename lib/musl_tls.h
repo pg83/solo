@@ -4,9 +4,12 @@
 #include <stdint.h>
 
 // The static musl's TLS — embedded or the environment's, always static —
-// opened to the loader. Compiled against musl's internal headers and linked
-// against its hidden symbols: the same arrangement by which the loader
-// already replaced musl's ldso.
+// opened to the loader. The reservation itself is one link-time thread_local
+// pad this file declares and never touches: musl sizes every thread's static
+// TLS with it from process birth, the main thread included, so there is no
+// startup call and no single-threaded moment. The loader carves guest blocks
+// out of the pad and registers their templates with musl, whose own
+// pthread_create machinery then seeds every thread created afterwards.
 //
 // The offsets returned are thread-pointer-relative and signed the way the
 // loader stores them: negative on x86-64, where static TLS sits below the
@@ -17,25 +20,23 @@
 extern "C" {
 #endif
 
-// Moves the main thread's pthread block onto a fresh allocation whose layout
-// reserves a static TLS window next to the thread pointer, exactly what
-// musl's own dynamic linker does between its stage 2 and stage 3 — the
-// thread pointer is planted twice, and the second planting happens when the
-// sizes are known. dlinit() calls this from the top of main(), by contract
-// before any thread exists; idempotent; fails once threads do.
-int soloTlsReplant(void);
+// Reserves a block in the pad for a shared object's TLS, initial-exec
+// demands and all.
+intptr_t soloStaticTls(size_t size, size_t align);
 
-// Places a module's TLS block in the window and registers its template with
-// musl, so pthread_create's __copy_tls seeds the block in every thread
-// created afterwards. The template is read at each thread's creation, so
-// relocations applied to it are seen by later threads automatically.
-intptr_t soloStaticTls(const void* image, size_t length, size_t size, size_t align);
-
-// Places the main guest executable's TLS block at the ABI-mandated slot next
+// Reserves the main guest executable's block at the ABI-mandated slot next
 // to the thread pointer, where its local-exec offsets, burned into the
 // instructions by the static linker, expect it. Only valid as the first
-// placement, in a process whose own executable carries no TLS.
-intptr_t soloExecutableTls(const void* image, size_t length, size_t size, size_t align);
+// reservation, in a process whose PT_TLS is exactly the pad — a stray
+// thread_local that unseats the pad from the thread pointer is refused here,
+// loudly, through the loader.
+intptr_t soloExecutableTls(const void* image, size_t size, size_t align);
+
+// Registers a reserved block's template with musl, after relocations, so
+// threads created later are seeded from relocated bytes. Threads already
+// running keep zeroes: dlopen libraries with TLS before spawning threads
+// that use them.
+void soloTlsRegister(const void* image, size_t length, size_t size, intptr_t offset);
 
 #ifdef __cplusplus
 }

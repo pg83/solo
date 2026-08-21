@@ -12,13 +12,14 @@ nix-ld/steam-run на NixOS, gcompat на Alpine. PLAN сам называет �
 существующий лоадер, стек+auxv руками, `__libc_start_main` в бридже,
 COPY-релокации. Этап 3 [сделано]: solo собирается static-PIE (свой
 PIE-флейвор рантайма, rcrt1), ET_EXEC-гости мапятся по своим адресам через
-MAP_FIXED_NOREPLACE. Этап 2 [сделано]: схема динамического musl в
-статическом мире — у solo ноль PT_TLS (весь per-thread стейт за
-`ThreadTls::current()` на pthread-ключе), lib/musl_tls.c пересаживает TP
-главного треда на блок с окном в 1 МиБ и регистрирует модули гостей в
-`libc.tls_head`; exe-гость встаёт в ABI-слот у TP (local-exec), DSO — за
-ним, musl сам сеет каждый новый тред. claude.bin (bun, 27К local-exec
-TLS) работает. Заодно закрыт долг «динамический размер IE-арены» из п.7:
+MAP_FIXED_NOREPLACE. Этап 2 [сделано]: статический TLS гостей — донорский thread_local-pad
+(1 МиБ .tbss в lib/musl_tls.c, единственный PT_TLS-объект бинаря; весь
+наш per-thread стейт за `ThreadTls::current()` на pthread-ключе). musl
+сам закладывает pad в каждый тред с рождения — без replant и без
+стартового вызова; лоадер режет из pad блоки (exe-гость — в ABI-слот у
+TP, local-exec; DSO — за ним) и регистрирует шаблоны в `libc.tls_head`,
+`__copy_tls` сеет новые треды. claude.bin (bun, 27К local-exec TLS)
+работает. Заодно закрыт долг «динамический размер IE-арены» из п.7:
 потолок теперь 1 МиБ; при следующей регенерации корпуса можно вернуть
 liblsan0 (56К IE) из SKIP.
 

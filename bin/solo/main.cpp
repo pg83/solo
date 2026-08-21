@@ -5,7 +5,6 @@
 // process stack, and the jump to the guest's own _start comes back into the
 // bridge through the executable's __libc_start_main import.
 
-#include "dlfcn.h"
 #include "elf_loader.h"
 
 #include <elf.h>
@@ -114,8 +113,6 @@ namespace {
 }
 
 int main(int argc, char** argv) {
-    stub_dlinit();
-
     auto ldd = false;
     int consumed = 1;
 

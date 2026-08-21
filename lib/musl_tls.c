@@ -1,22 +1,32 @@
-/* The static TLS window: how the loader gives guests thread-local storage at
- * fixed thread-pointer offsets without owning any TLS itself.
+/* The static TLS pad: how the loader gives guests thread-local storage at
+ * fixed thread-pointer offsets without moving anything at runtime.
  *
- * musl already has everything needed. Every thread's static TLS is laid out
- * by __copy_tls from the module list in libc.tls_head, and the thread
- * pointer of the main thread is planted by __init_tp — twice in the dynamic
- * linker's own startup, the second time when the program's TLS sizes are
- * known. This file does the same from the static world: dlinit(), called
- * at the top of main() by contract, re-plants the main thread onto an
- * allocation with a reserve next to the thread pointer, and the loader
- * registers each placed guest as one more tls_module, after which
- * pthread_create seeds every future thread by itself. The reserve is address
- * space, not memory: __copy_tls touches only the registered templates.
+ * The pad is one ordinary thread_local this file never reads or writes. Its
+ * only job is to make musl reserve the bytes: __init_tls sizes the main
+ * thread's static TLS with it before any of our code runs, and pthread_create
+ * sizes every later thread's the same way — so a span of donated memory sits
+ * next to every thread's thread pointer from birth. All zeroes in .tbss: no
+ * file bytes, no pages until someone writes.
+ *
+ * The loader carves guest blocks out of that span. On x86-64 the pad is
+ * solo's whole PT_TLS and musl's own layout puts it flush against the thread
+ * pointer, which is exactly where a guest executable's local-exec offsets
+ * point; shared objects pack behind it. Each placed block is then registered
+ * as one more tls_module in libc.tls_head, and musl's __copy_tls seeds it in
+ * every thread created afterwards, reading the mapped template after
+ * relocations by construction. libc.tls_size grows by one pointer per
+ * module, keeping the dtv slots __copy_tls writes for the new entries inside
+ * every newborn thread's allocation; threads that already exist are never
+ * revisited and never see the new dtv entries.
  */
 
 #include "musl_tls.h"
 
 /* musl's internal headers rely on annotations its own tree defines in
- * src/include/features.h; this file compiles outside that tree. */
+ * src/include/features.h; this file compiles outside that tree. The header
+ * itself comes by relative path, not by include directory: musl's private
+ * headers shadow public names, so their directory must never appear on the
+ * include path the library's C++ sources share. */
 #ifndef hidden
 #define hidden __attribute__((__visibility__("hidden")))
 #endif
@@ -24,112 +34,159 @@
 #define weak __attribute__((__weak__))
 #endif
 
-/* By relative path, not by include directory: musl's private headers shadow
- * public names (syscall.h, atomic.h), so their directory must never appear
- * on the include path of the library's C++ sources. Quoted includes inside
- * pthread_impl.h find its src/internal neighbors by themselves; the
- * per-architecture headers it wants come from the arch include paths every
- * flavor already carries. */
-#include "../ext/musl/src/internal/pthread_impl.h"
+#include "../ext/musl/src/internal/libc.h"
 
-#include <signal.h>
-#include <stdlib.h>
-#include <string.h>
-
-/* The window's capacity beyond whatever the executable's own TLS occupies,
- * and the thread pointer's guaranteed alignment. One megabyte of address
- * space per thread costs pages only where templates are actually copied;
- * liblsan's 56K initial-exec block, the largest real demand seen so far,
- * fits with room to spare. */
-#define SOLO_TLS_RESERVE (1024 * 1024)
-#define SOLO_TLS_MODULES 64
+/* The donated span and the ceiling on a block's alignment; the pad's own
+ * alignment is what makes every thread pointer a multiple of it. liblsan's
+ * 56K initial-exec block, the largest real demand seen so far, fits with
+ * room to spare, and .tbss address space is all this costs. */
+#define SOLO_TLS_PAD (1024 * 1024)
 #define SOLO_TLS_ALIGN 64
+#define SOLO_TLS_MODULES 64
+
+/* The aarch64 TCB: two pointers at the thread pointer, blocks above. */
+#define SOLO_TLS_GAP 16
+
+static _Thread_local unsigned char soloTlsPad[SOLO_TLS_PAD] __attribute__((aligned(SOLO_TLS_ALIGN)));
 
 static struct tls_module soloModules[SOLO_TLS_MODULES];
 static size_t soloModuleCount;
 
-/* Occupied bytes of the module span, measured from the thread pointer away
- * from it, and the span's capacity. */
+/* Occupied bytes of the span, measured from the thread-pointer-proximal end
+ * away from it, and the count of reservations handed out. */
 static size_t soloExtent;
-static size_t soloCapacity;
-static int soloReplanted;
+static size_t soloReserved;
 
-static size_t moduleEnd(const struct tls_module* module) {
-#ifdef TLS_ABOVE_TP
-	return module->offset + module->size;
+static uintptr_t threadPointer(void) {
+	uintptr_t pointer;
+
+#if defined(__x86_64__)
+	__asm__("mov %%fs:0, %0" : "=r"(pointer));
+#elif defined(__aarch64__)
+	__asm__("mrs %0, tpidr_el0" : "=r"(pointer));
+#endif
+
+	return pointer;
+}
+
+/* The pad's thread-pointer-relative offset: a process-wide constant, the
+ * same in every thread, discovered from whichever thread reserves first.
+ * All reservations run under the loader's lock. */
+static intptr_t padOffset(void) {
+	static intptr_t offset;
+	static int known;
+
+	if (!known) {
+		offset = (intptr_t)soloTlsPad - (intptr_t)threadPointer();
+		known = 1;
+	}
+
+	return offset;
+}
+
+intptr_t soloStaticTls(size_t size, size_t align) {
+	if (align > SOLO_TLS_ALIGN || soloReserved == SOLO_TLS_MODULES) {
+		return 0;
+	}
+	if (align < sizeof(uintptr_t)) {
+		align = sizeof(uintptr_t);
+	}
+
+#if defined(__x86_64__)
+	/* Blocks pack downward from the pad's end, which sits at or below the
+	 * thread pointer; the offset itself carries the block's alignment,
+	 * against a thread pointer aligned by the pad. */
+	size_t extent = (soloExtent + size + align - 1) & -align;
+	intptr_t offset = padOffset() + SOLO_TLS_PAD - (intptr_t)extent;
+
+	if (extent > SOLO_TLS_PAD) {
+		return 0;
+	}
 #else
-	return module->offset;
+	/* Blocks pack upward from the pad's start. */
+	size_t start = (soloExtent + align - 1) & -align;
+	size_t extent = start + size;
+	intptr_t offset = padOffset() + (intptr_t)start;
+
+	if (extent > SOLO_TLS_PAD) {
+		return 0;
+	}
+#endif
+
+	soloExtent = extent;
+	soloReserved++;
+
+	return offset;
+}
+
+intptr_t soloExecutableTls(const void* image, size_t size, size_t align) {
+	if (align > SOLO_TLS_ALIGN || soloReserved == SOLO_TLS_MODULES) {
+		return 0;
+	}
+	/* First reservation only: the ABI slot is adjacent to the thread
+	 * pointer, and anything placed earlier may already occupy it. */
+	if (soloExtent || soloReserved) {
+		return 0;
+	}
+
+	/* musl's own formula for the main program's block, congruence with the
+	 * template's address included; the static linker burned the matching
+	 * offsets into the guest's instructions. */
+#if defined(__x86_64__)
+	/* The pad must end exactly at the thread pointer — true when it is the
+	 * executable's only thread_local; a stray one unseats it. */
+	if (padOffset() + SOLO_TLS_PAD != 0) {
+		return 0;
+	}
+
+	size += (-size - (uintptr_t)image) & (align - 1);
+
+	if (size > SOLO_TLS_PAD) {
+		return 0;
+	}
+	soloExtent = size;
+	soloReserved++;
+
+	return -(intptr_t)size;
+#else
+	/* The pad starts where the TCB gap ends, rounded to the pad's own
+	 * alignment; the guest's block may begin inside that rounding gap,
+	 * which exists, zeroed, in every thread's allocation. */
+	if (padOffset() != (intptr_t)((SOLO_TLS_GAP + SOLO_TLS_ALIGN - 1) & -(size_t)SOLO_TLS_ALIGN)) {
+		return 0;
+	}
+
+	size_t offset = SOLO_TLS_GAP;
+	offset += (-(size_t)SOLO_TLS_GAP + (uintptr_t)image) & (align - 1);
+
+	if (offset + size > (size_t)padOffset() + SOLO_TLS_PAD) {
+		return 0;
+	}
+	if (offset + size > (size_t)padOffset()) {
+		soloExtent = offset + size - (size_t)padOffset();
+	}
+	soloReserved++;
+
+	return (intptr_t)offset;
 #endif
 }
 
-int soloTlsReplant(void) {
-	if (soloReplanted) {
-		return 0;
-	}
-	if (libc.threads_minus_1) {
-		return -1;
+void soloTlsRegister(const void* image, size_t length, size_t size, intptr_t offset) {
+	if (soloModuleCount == SOLO_TLS_MODULES) {
+		return;
 	}
 
-	for (struct tls_module* module = libc.tls_head; module; module = module->next) {
-		if (moduleEnd(module) > soloExtent) {
-			soloExtent = moduleEnd(module);
-		}
-	}
-	soloCapacity = soloExtent + SOLO_TLS_RESERVE;
-
-	size_t size = libc.tls_size + SOLO_TLS_RESERVE
-		+ SOLO_TLS_MODULES * sizeof(uintptr_t) + SOLO_TLS_ALIGN;
-	unsigned char* block = calloc(size, 1);
-
-	if (!block) {
-		return -1;
-	}
-
-	libc.tls_size = size;
-	if (libc.tls_align < SOLO_TLS_ALIGN) {
-		libc.tls_align = SOLO_TLS_ALIGN;
-	}
-
-	/* The move itself: lay out the new block, carry the live pthread state
-	 * over, and re-aim the self-referential fields. Everything else that
-	 * points at the thread — the kernel's tid address, the tsd array — is
-	 * either global or carried by the copy. Signals stay blocked across the
-	 * instant when the old and the new thread pointer disagree. */
-	sigset_t all;
-	sigset_t previous;
-
-	sigfillset(&all);
-	pthread_sigmask(SIG_BLOCK, &all, &previous);
-
-	pthread_t self = __pthread_self();
-	pthread_t fresh = __copy_tls(block);
-	uintptr_t* dtv = fresh->dtv;
-
-	memcpy(fresh, self, sizeof(struct pthread));
-	fresh->self = fresh;
-	fresh->dtv = dtv;
-	fresh->prev = fresh->next = fresh;
-	fresh->robust_list.head = &fresh->robust_list.head;
-
-	int planted = __set_thread_area(TP_ADJ(fresh));
-
-	pthread_sigmask(SIG_SETMASK, &previous, 0);
-	if (planted < 0) {
-		return -1;
-	}
-	soloReplanted = 1;
-
-	return 0;
-}
-
-static intptr_t registerModule(const void* image, size_t length, size_t size, size_t offset) {
 	struct tls_module* module = &soloModules[soloModuleCount++];
 
 	module->image = (void*)image;
 	module->len = length;
 	module->size = size;
 	module->align = SOLO_TLS_ALIGN;
-	module->offset = offset;
+#if defined(__x86_64__)
+	module->offset = (size_t)-offset;
+#else
+	module->offset = (size_t)offset;
+#endif
 	module->next = 0;
 
 	/* Appended at the tail: a module's dtv slot is its list position, and
@@ -141,83 +198,6 @@ static intptr_t registerModule(const void* image, size_t length, size_t size, si
 	}
 	*tail = module;
 	libc.tls_cnt++;
-
-#ifdef TLS_ABOVE_TP
-	return (intptr_t)offset;
-#else
-	return -(intptr_t)offset;
-#endif
+	/* One more dtv slot in every thread created from here on. */
+	libc.tls_size += sizeof(uintptr_t);
 }
-
-intptr_t soloStaticTls(const void* image, size_t length, size_t size, size_t align) {
-	if (soloTlsReplant() || align > SOLO_TLS_ALIGN || soloModuleCount == SOLO_TLS_MODULES) {
-		return 0;
-	}
-	if (align < sizeof(uintptr_t)) {
-		align = sizeof(uintptr_t);
-	}
-
-#ifdef TLS_ABOVE_TP
-	/* Blocks sit at TP + offset; the gap above the thread pointer belongs
-	 * to the ABI's TCB. */
-	size_t start = soloExtent > (size_t)GAP_ABOVE_TP ? soloExtent : (size_t)GAP_ABOVE_TP;
-	size_t offset = (start + align - 1) & -align;
-	size_t end = offset + size;
-#else
-	/* Blocks sit at TP - offset, and the offset itself must carry the
-	 * block's alignment. */
-	size_t offset = (soloExtent + size + align - 1) & -align;
-	size_t end = offset;
-#endif
-
-	if (end > soloCapacity) {
-		return 0;
-	}
-	soloExtent = end;
-
-	return registerModule(image, length, size, offset);
-}
-
-/* Best effort ahead of the dlinit() contract: priority 101 — the earliest
- * unreserved slot — sorts before every ordinary constructor regardless of
- * link order, so the re-planting usually has already happened by the time
- * main() runs. A link whose earlier constructors spawn threads anyway is
- * caught by dlinit()'s loud failure. */
-__attribute__((constructor(101))) static void soloTlsBoot(void) {
-	soloTlsReplant();
-}
-
-intptr_t soloExecutableTls(const void* image, size_t length, size_t size, size_t align) {
-	if (soloTlsReplant() || align > SOLO_TLS_ALIGN || soloModuleCount == SOLO_TLS_MODULES) {
-		return 0;
-	}
-	/* The ABI slot is adjacent to the thread pointer; anything already
-	 * placed there — the process's own TLS, an earlier guest — occupies it
-	 * for good. */
-	if (libc.tls_head) {
-		return 0;
-	}
-
-	/* musl's own formula for the main program's block, congruence with the
-	 * template's address included; the static linker burned the matching
-	 * offsets into the guest's instructions. */
-#ifdef TLS_ABOVE_TP
-	size_t offset = GAP_ABOVE_TP;
-	offset += (-(size_t)GAP_ABOVE_TP + (uintptr_t)image) & (align - 1);
-	size_t end = offset + size;
-#else
-	size += (-size - (uintptr_t)image) & (align - 1);
-	size_t offset = size;
-	size_t end = offset;
-#endif
-
-	if (end > soloCapacity) {
-		return 0;
-	}
-	if (end > soloExtent) {
-		soloExtent = end;
-	}
-
-	return registerModule(image, length, size, offset);
-}
-

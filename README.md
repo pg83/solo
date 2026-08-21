@@ -148,15 +148,10 @@ and ordinary `dlopen()`/`dlsym()` calls are redirected to SoLo. The source tree
 is intentionally self-contained and suitable for copying into another static
 build graph.
 
-One startup requirement: call `dlinit()` (`stub_dlinit()` from
-[`lib/dlfcn.h`](lib/dlfcn.h)) at the top of `main()`, before the
-process creates its first thread. It re-plants the main thread's TLS with the
-static TLS window guests get their thread-local storage from — the same
-second thread-pointer planting musl's own dynamic linker performs — and that
-is only possible while the thread is alone. Calling it late is a loud error.
-A best-effort early constructor usually gets the re-planting done before any
-of the application's own constructors run, so `dyn::init()` is normally a
-no-op check — but it is the contract, not the constructor.
+There is no startup call. The static TLS that guests demand — including
+initial-exec — comes from a thread_local pad the library links into the
+application: musl sizes every thread's TLS with it from process birth, and
+the loader hands guests pieces of it as they load.
 
 ## Reproduce the experiment
 

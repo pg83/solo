@@ -8,10 +8,10 @@ namespace dyn {
     // Per-thread state of the loader and the bridges, behind one door. The
     // backing is a pthread key — the embedded musl keeps key values in its
     // pthread structure, so none of this puts a single byte into the
-    // executable's own PT_TLS, which the static TLS window requires to stay
-    // empty. When the thread exits, the destructors loaded DSOs registered
-    // run first and the storage is freed after, so a destructor still sees
-    // its thread-local state.
+    // executable's own PT_TLS, which must hold exactly the static TLS pad
+    // and nothing else. When the thread exits, the destructors loaded DSOs
+    // registered run first and the storage is freed after, so a destructor
+    // still sees its thread-local state.
     struct ThreadTls {
         virtual void registerDtor(void (*function)(void*), void* argument) = 0;
 

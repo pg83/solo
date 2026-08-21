@@ -9,7 +9,6 @@
 #include <sys/auxv.h>
 
 int main(int argumentCount, char** arguments) {
-    stub_dlinit();
     if (argumentCount != 2) {
         fprintf(stderr, "usage: secure_probe LIBRARY\n");
         return 2;

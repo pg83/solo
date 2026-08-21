@@ -1259,31 +1259,28 @@ size_t Loader::addTlsModule() {
     return ++tlsModuleCount_;
 }
 
-// Places a freshly loaded module's TLS in musl's static TLS window, making
-// one thread-pointer-relative offset valid in every thread at once, which is
-// what initial-exec relocations demand; the registered template is what
-// musl's __copy_tls seeds every later thread from. On overflow the module
-// falls back to the dynamic per-thread blocks, and only a later initial-exec
-// reference to it fails. The main guest executable instead takes the ABI
-// slot adjacent to the thread pointer, where the offsets its static linker
-// burned into local-exec instructions point — and there is no fallback.
+// Places a freshly loaded module's TLS in the static TLS pad, making one
+// thread-pointer-relative offset valid in every thread at once, which is
+// what initial-exec relocations demand. On overflow the module falls back to
+// the dynamic per-thread blocks, and only a later initial-exec reference to
+// it fails. The main guest executable instead takes the ABI slot adjacent to
+// the thread pointer, where the offsets its static linker burned into
+// local-exec instructions point — and there is no fallback.
 void Loader::allocateStaticTls(LinkMap& image) {
-    const auto* image_ = reinterpret_cast<const void*>(image.tlsTemplate);
-    auto alignment = std::max(image.tlsAlignment, sizeof(void*));
-
     image.staticTlsOffset = image.executable
-        ? soloExecutableTls(image_, image.tlsFileSize, image.tlsMemorySize, alignment)
-        : soloStaticTls(image_, image.tlsFileSize, image.tlsMemorySize, alignment);
+        ? soloExecutableTls(reinterpret_cast<const void*>(image.tlsTemplate), image.tlsMemorySize, image.tlsAlignment)
+        : soloStaticTls(image.tlsMemorySize, image.tlsAlignment);
 
     if (image.executable && !image.staticTlsOffset) {
-        throwError("%s: the executable's TLS (%zu bytes, %zu-byte alignment) cannot take the ABI slot next to the thread pointer; the slot is already occupied or the block does not fit the static TLS window", image.path.c_str(), image.tlsMemorySize, image.tlsAlignment);
+        throwError("%s: the executable's TLS (%zu bytes, %zu-byte alignment) cannot take the ABI slot next to the thread pointer; the slot is occupied, the block does not fit the pad, or a stray thread_local unseated the pad", image.path.c_str(), image.tlsMemorySize, image.tlsAlignment);
     }
 }
 
 // The loading thread's own copy of a placed block, seeded after relocations
-// so relocated template bytes land in it; musl seeds threads created later
-// at their birth, and threads already running keep zeroes, like ld.so:
-// dlopen libraries with TLS before spawning threads that use them.
+// so relocated template bytes land in it — and only then registered with
+// musl, so threads created later are seeded from relocated bytes too.
+// Threads already running keep zeroes, like ld.so: dlopen libraries with TLS
+// before spawning threads that use them.
 void Loader::seedStaticTls(LinkMap& image) {
     if (!image.staticTlsOffset) {
         return;
@@ -1293,6 +1290,7 @@ void Loader::seedStaticTls(LinkMap& image) {
 
     memset(block, 0, image.tlsMemorySize);
     memcpy(block, reinterpret_cast<const void*>(image.tlsTemplate), image.tlsFileSize);
+    soloTlsRegister(reinterpret_cast<const void*>(image.tlsTemplate), image.tlsFileSize, image.tlsMemorySize, image.staticTlsOffset);
 }
 
 // Bionic's system libraries, spelled without versions: Termux packages are

@@ -3,11 +3,9 @@
 #include "elf_loader.h"
 #include "iface_handle.h"
 #include "musl_provider.h"
-#include "musl_tls.h"
 #include "thread_tls.h"
 
 #include <fcntl.h>
-#include <stdio.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
@@ -246,13 +244,6 @@ Handles* Handles::instance() {
     static Handles* h = new Handles();
 
     return h;
-}
-
-extern "C" void stub_dlinit(void) {
-    if (soloTlsReplant()) {
-        fprintf(stderr, "solo: dlinit() called after threads were created; static TLS is unavailable\n");
-        abort();
-    }
 }
 
 extern "C" void* stub_dlsym(void* handle, const char* symbol) {

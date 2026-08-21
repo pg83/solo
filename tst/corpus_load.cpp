@@ -4,7 +4,6 @@
 #include <stdio.h>
 
 int main(int argc, char** argv) {
-    stub_dlinit();
     installFaultReport();
 
     if (argc != 2) {
