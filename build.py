@@ -84,17 +84,9 @@ dlfcn_srcs = [
     "$(S)/lib/iface_handle.cpp",
     "$(S)/lib/musl_provider.cpp",
     "$(S)/lib/musl_symbols.cpp",
+    "$(S)/lib/musl_tls.c",
     "$(S)/lib/thread_tls.cpp",
 ]
-
-dlfcn = library(
-    srcs=dlfcn_srcs,
-    deps=symbol_headers,
-    includes=["$(B)/lib"],
-    cppflags=["-DCOMPILE_DLOPEN", "-D_GNU_SOURCE"],
-    public_cppflags=["-I$(S)/lib"],
-    output="$(B)/libdlfcn.a",
-)
 
 
 def vendorPaths(root, names):
@@ -249,6 +241,15 @@ runtime_generated = [
     musl_version,
     libcxx_config,
 ]
+
+dlfcn = library(
+    srcs=dlfcn_srcs,
+    deps=[*symbol_headers, musl_alltypes, musl_syscall, musl_version],
+    includes=["$(B)/lib", *musl_internal_includes],
+    cppflags=["-DCOMPILE_DLOPEN", "-D_GNU_SOURCE"],
+    public_cppflags=["-I$(S)/lib"],
+    output="$(B)/libdlfcn.a",
+)
 target_flags = [
     "-ffunction-sections",
     "-fdata-sections",
@@ -422,7 +423,7 @@ def runtimeArchives(flavor, out, model_flags):
         name=f"{flavor}_dlfcn",
         srcs=dlfcn_srcs,
         deps=[*runtime_generated, *symbol_headers],
-        includes=["$(B)/lib", *vendored_includes],
+        includes=["$(B)/lib", *vendored_includes, *musl_internal_includes],
         cflags=flags,
         cxxflags=[
             *cxx_runtime_flags,

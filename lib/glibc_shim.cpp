@@ -2355,18 +2355,17 @@ namespace {
     // callback sees translated codes; the flags match.
     using NftwCallback = int (*)(const char*, const struct stat*, int, struct FTW*);
 
-    static thread_local NftwCallback nftwUserCallback;
-
     static int sh_nftw_trampoline(const char* path, const struct stat* status, int type, struct FTW* info) {
-        return nftwUserCallback(path, status, type - 1, info);
+        return reinterpret_cast<NftwCallback>(*ThreadTls::current()->nftwCallback())(path, status, type - 1, info);
     }
 
     static int sh_nftw(const char* path, NftwCallback callback, int descriptors, int flags) {
-        auto* previous = nftwUserCallback;
+        auto** slot = ThreadTls::current()->nftwCallback();
+        auto* previous = *slot;
 
-        nftwUserCallback = callback;
+        *slot = reinterpret_cast<void*>(callback);
         int result = nftw(path, sh_nftw_trampoline, descriptors, flags);
-        nftwUserCallback = previous;
+        *slot = previous;
         return result;
     }
 
@@ -2392,6 +2391,12 @@ namespace {
 
     static int sh_cxa_atexit(void (*function)(void*), void* argument, void* dso) {
         return __cxa_atexit(function, argument, dso);
+    }
+
+    static int sh_cxa_at_quick_exit(void (*function)(), void* dso) {
+        (void)dso;
+
+        return at_quick_exit(function);
     }
 
     struct GlibcSymbolKey {
@@ -3507,8 +3512,14 @@ namespace {
         void* address = nullptr;
 
         if (handle == (void*)(uintptr_t)-1) {
-            // RTLD_NEXT: search the images loaded after the caller's one.
+            // RTLD_NEXT: the images loaded after the caller's one, and then
+            // the bridge — the guest's libc sits after every image, which is
+            // where dlsym(RTLD_NEXT, "getcwd")-style interposer bypasses
+            // expect to find it.
             address = ElfImage::lookupNext(__builtin_return_address(0), name, {});
+            if (!address) {
+                address = resolveGlibcSymbol(name, {}, true);
+            }
         } else if (!handle) {
             address = GlibcAdapter::instance().defaultHandle()->lookup(name, {});
         } else {
@@ -3535,6 +3546,9 @@ namespace {
 
         if (handle == (void*)(uintptr_t)-1) {
             address = ElfImage::lookupNext(__builtin_return_address(0), name, version);
+            if (!address) {
+                address = resolveGlibcSymbol(name, version, true);
+            }
         } else if (!handle) {
             address = GlibcAdapter::instance().defaultHandle()->lookup(name, version);
         } else {
@@ -4008,6 +4022,7 @@ namespace {
         SH_FUNCTION("fstat", "GLIBC_2.33", fstat),
         SH_FUNCTION("__cxa_finalize", "GLIBC_2.2.5", sh_cxa_finalize),
         SH_FUNCTION("__cxa_atexit", "GLIBC_2.2.5", sh_cxa_atexit),
+        SH_FUNCTION("__cxa_at_quick_exit", "GLIBC_2.10", sh_cxa_at_quick_exit),
         SH_FUNCTION("strstr", "GLIBC_2.2.5", sh_strstr),
         SH_FUNCTION("pthread_mutex_lock", "GLIBC_2.2.5", sh_pthread_mutex_lock),
         SH_FUNCTION("pthread_mutex_trylock", "GLIBC_2.2.5", sh_pthread_mutex_trylock),

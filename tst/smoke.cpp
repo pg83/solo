@@ -355,7 +355,7 @@ int main() {
     }
 
     // Initial-exec TLS: one process-wide GOT offset must be valid in every
-    // thread through the surplus static arena. The parked thread exists
+    // thread through the static TLS window. The parked thread exists
     // before the module loads and must see zeroed TLS for it.
     ParkedThread parked = {};
     pthread_t parkedThread;
@@ -455,9 +455,9 @@ int main() {
         fprintf(stderr, "oversized initial-exec TLS load succeeded\n");
         return 1;
     }
-    auto* arenaError = stub_dlerror();
-    if (!arenaError || !strstr(arenaError, "static TLS arena")) {
-        fprintf(stderr, "oversized initial-exec failure lacks the arena message: %s\n", arenaError ? arenaError : "(null)");
+    auto* windowError = stub_dlerror();
+    if (!windowError || !strstr(windowError, "static TLS window")) {
+        fprintf(stderr, "oversized initial-exec failure lacks the window message: %s\n", windowError ? windowError : "(null)");
         return 1;
     }
 
@@ -661,7 +661,7 @@ int main() {
         "file-backed segments named in /proc/self/maps: ok\n"
         "RTLD_GLOBAL and RTLD_NEXT: ok\n"
         "lazy PLT binding: ok\n"
-        "initial-exec TLS: arena placement, both models, fresh and parked threads: ok\n"
+        "initial-exec TLS: window placement, both models, fresh and parked threads: ok\n"
         "scope order: global interposition, RTLD_DEEPBIND, -Bsymbolic: ok\n"
         "SysV hash, unversioned provider compat, ld.so.cache: ok\n"
         "glibc shim conformance battery: ok\n"

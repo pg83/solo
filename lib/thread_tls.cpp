@@ -1,7 +1,7 @@
 #include "thread_tls.h"
 
+#include <pthread.h>
 #include <stdlib.h>
-#include <unistd.h>
 
 #include <deque>
 #include <string>
@@ -9,8 +9,6 @@
 #include <vector>
 
 using namespace dyn;
-
-extern "C" int __cxa_thread_atexit(void (*function)(void*), void* argument, void* dso);
 
 // The C++ runtime's __cxa_thread_atexit fallback registers a static cleanup
 // object against __dso_handle, which normally comes from crtbegin.o. The
@@ -29,14 +27,19 @@ namespace {
         void clearDlError() override;
         char* takeDlError() override;
 
+        void* tlsStub(size_t index, size_t size) override;
+        void** nftwCallback() override;
+
         void drainDtors();
 
         std::vector<std::pair<void (*)(void*), void*>> dtors_;
         // A deque keeps the slot pointers tlsBlock() hands out stable while
         // the container grows.
         std::deque<void*> blocks_;
+        std::vector<std::pair<size_t, void*>> stubs_;
         std::string dlError_;
         std::string takenDlError_;
+        void* nftwCallback_ = nullptr;
     };
 
     static void threadExit(void* opaque) {
@@ -48,6 +51,9 @@ State::~State() {
     drainDtors();
     for (void* block : blocks_) {
         free(block);
+    }
+    for (const auto& stub : stubs_) {
+        free(stub.second);
     }
 }
 
@@ -92,17 +98,44 @@ char* State::takeDlError() {
     return takenDlError_.data();
 }
 
+void* State::tlsStub(size_t index, size_t size) {
+    for (const auto& stub : stubs_) {
+        if (stub.first == index) {
+            return stub.second;
+        }
+    }
+
+    auto* storage = calloc(1, size);
+
+    stubs_.emplace_back(index, storage);
+
+    return storage;
+}
+
+void** State::nftwCallback() {
+    return &nftwCallback_;
+}
+
+// The pthread key clears its value before running the destructor, so a
+// thread-exit destructor that reaches back — a guest's own thread destructor
+// touching another module's TLS — gets a fresh State, and the key machinery
+// runs one more round for it.
 ThreadTls* ThreadTls::current() {
-    static thread_local State* state = nullptr;
+    static const pthread_key_t key = [] {
+        pthread_key_t created;
+
+        if (pthread_key_create(&created, threadExit)) {
+            abort();
+        }
+
+        return created;
+    }();
+
+    auto* state = static_cast<State*>(pthread_getspecific(key));
 
     if (!state) {
-        if (getpid() == gettid()) {
-            static State* main = new State(); // never reclaimed
-            state = main;
-        } else {
-            state = new State();
-            __cxa_thread_atexit(threadExit, state, nullptr);
-        }
+        state = new State();
+        pthread_setspecific(key, state);
     }
 
     return state;

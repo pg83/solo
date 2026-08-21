@@ -126,7 +126,7 @@ def main():
         )
         # The initial-exec family: a defining module carrying both models, a
         # second module reaching the first one's TLS via initial-exec, and two
-        # over-arena-sized modules, of which only the initial-exec one may
+        # over-window-sized modules, of which only the initial-exec one may
         # fail to load.
         ie_test = library_path / "libdlfcn-test-ie.so"
         subprocess.run(
@@ -499,6 +499,9 @@ def run_solo_checks(root, sysroot_lib, environment):
             "guest argv beta",
             "guest stdout env=smoke-value",
             "guest environ present",
+            "guest tls=51106011 bss=0",
+            "guest thread tls=51106011 bss=0",
+            "guest tls after thread=600d",
             "guest atexit",
         ):
             if needle not in run.stdout:

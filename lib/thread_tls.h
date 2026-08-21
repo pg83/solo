@@ -5,10 +5,13 @@
 #include <string_view>
 
 namespace dyn {
-    // Per-thread state of the loader: the thread-exit destructors loaded DSOs
-    // register and their lazily allocated ELF TLS blocks. When the thread
-    // exits, the destructors run first and the blocks are freed after, so a
-    // destructor still sees its thread-local storage.
+    // Per-thread state of the loader and the bridges, behind one door. The
+    // backing is a pthread key — the embedded musl keeps key values in its
+    // pthread structure, so none of this puts a single byte into the
+    // executable's own PT_TLS, which the static TLS window requires to stay
+    // empty. When the thread exits, the destructors loaded DSOs registered
+    // run first and the storage is freed after, so a destructor still sees
+    // its thread-local state.
     struct ThreadTls {
         virtual void registerDtor(void (*function)(void*), void* argument) = 0;
 
@@ -22,6 +25,14 @@ namespace dyn {
         virtual void setDlError(std::string_view error) = 0;
         virtual void clearDlError() = 0;
         virtual char* takeDlError() = 0;
+
+        // The glibc inventory's TLS-kind symbols (errno@GLIBC_PRIVATE and
+        // friends): per-thread zeroed storage keyed by the symbol's inventory
+        // index, alive until the thread's destructors have run.
+        virtual void* tlsStub(size_t index, size_t size) = 0;
+
+        // The nftw adapter's per-thread callback slot, held across the walk.
+        virtual void** nftwCallback() = 0;
 
         static ThreadTls* current();
     };

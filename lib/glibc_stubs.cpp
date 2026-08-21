@@ -3,6 +3,7 @@
 #include "elf_loader.h"
 
 #include "hash.h"
+#include "thread_tls.h"
 
 #include <stdio.h>
 #include <stddef.h>

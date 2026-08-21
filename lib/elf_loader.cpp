@@ -3,6 +3,7 @@
 #include "dlfcn.h"
 #include "bionic_shim.h"
 #include "glibc_shim.h"
+#include "musl_tls.h"
 #include "thread_tls.h"
 
 #include <elf.h>
@@ -138,35 +139,6 @@ namespace {
 
         return protection;
     }
-
-    // Surplus static TLS for initial-exec guests. An initial-exec GOT slot is
-    // one process-wide number added to every thread's own thread pointer, so
-    // the storage it names must sit at the same thread-pointer-relative
-    // offset in every thread. The arena is ordinary thread_local data of the
-    // host executable, which gives it exactly that property: unmodified musl
-    // lays out a copy per thread and seeds threads created later from the
-    // executable's TLS template, into which the loader writes each placed
-    // guest's own template. The sentinel byte keeps the arena in .tdata; an
-    // all-zero arena would land in .tbss, which has no template bytes to
-    // write guest initial values into.
-    constexpr size_t staticTlsSize = 16 * 1024;
-    constexpr size_t staticTlsAlignment = 64;
-
-    struct StaticTlsArena {
-        alignas(staticTlsAlignment) unsigned char bytes[staticTlsSize];
-        unsigned char sentinel;
-    };
-
-    thread_local StaticTlsArena staticTlsArena = {{}, 1};
-
-    // Finding the arena inside the executable's TLS template without
-    // re-deriving the linker's thread-pointer layout: search the template for
-    // this marker's bytes, then shift by the marker-to-arena distance, which
-    // is the same in the template and in every thread's copy of it.
-    thread_local unsigned char staticTlsMarker[16] = {
-        0x53, 0x6f, 0x4c, 0x6f, 0x9d, 0x11, 0xc4, 0x7e,
-        0x2a, 0x68, 0xb0, 0xf5, 0x3c, 0x81, 0xd6, 0x4b,
-    };
 
     // An ifunc resolver call. The aarch64 ABI hands resolvers the hwcaps so
     // they can pick an implementation without reading the auxv themselves;
@@ -307,7 +279,7 @@ namespace {
         size_t tlsMemorySize = 0;
         size_t tlsAlignment = 0;
         // Thread-pointer-relative offset of the module's block in the static
-        // TLS arena: negative on x86-64 (TLS below the thread pointer),
+        // TLS window: negative on x86-64 (TLS below the thread pointer),
         // positive on aarch64 (above it), and never 0, which marks modules
         // served from the dynamic per-thread blocks instead.
         intptr_t staticTlsOffset = 0;
@@ -394,8 +366,8 @@ namespace {
         void rememberLibraryDirectory(const std::string& path);
 
         size_t addTlsModule();
-        void initializeStaticTls();
         void allocateStaticTls(LinkMap& image);
+        void seedStaticTls(LinkMap& image);
 
         static bool isGlibcDependency(const std::string_view& name) noexcept;
         void loadDependencies(LinkMap& image);
@@ -415,11 +387,6 @@ namespace {
         std::unordered_map<std::string, LinkMap*, StringHash, std::equal_to<>> imagesByName_;
         std::map<uintptr_t, LinkMap*> imagesByAddress_;
         size_t tlsModuleCount_ = 0;
-        // The arena's thread-pointer-relative offset, its bytes inside the
-        // executable's TLS template, and the bump allocator's high mark.
-        intptr_t staticTlsArenaOffset_ = 0;
-        unsigned char* staticTlsTemplate_ = nullptr;
-        size_t staticTlsUsed_ = 0;
         std::string libraryDirectory_;
         LinkMap* requester_ = nullptr;
         // Consumed by the next load(): it is loading the main guest
@@ -582,7 +549,6 @@ Loader::Loader() {
     bindNow_ = getenv("LD_BIND_NOW") != nullptr;
     debugLibs_ = debugFlag("libs");
     debugBindings_ = debugFlag("bindings");
-    initializeStaticTls();
     atexit(runAllFinalizers);
 }
 
@@ -770,15 +736,6 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
     }
 
     if (asExecutable) {
-        // An executable's own TLS is accessed local-exec: the offsets are
-        // burned into the instructions against the ABI's fixed thread-pointer
-        // layout, invisible to relocations. The arena serves offsets of its
-        // own choosing, so honest failure until the arena learns to reserve
-        // the ABI's spot.
-        if (image.tlsModule) {
-            throwError("%s: the executable carries thread-local storage; its local-exec block needs a fixed thread-pointer offset the loader does not reserve yet", image.path.c_str());
-        }
-
         image.executable = true;
         image.entry = image.base + header.e_entry;
         // What the kernel would publish as AT_PHDR: the program header table
@@ -816,6 +773,9 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
         applyRelocation(*item.image, *item.relocation, true);
     }
     image.applyRelro();
+    if (image.tlsModule) {
+        seedStaticTls(image);
+    }
 
     image.wrapper.reset(new LoadedElf(image));
     image.state = LinkMap::State::Ready;
@@ -964,7 +924,7 @@ void* LinkMap::tlsAddress(size_t offset) const {
         throwError("%s: TLS offset %zu exceeds size %zu", path.c_str(), offset, tlsMemorySize);
     }
 
-    // A module placed in the static arena must be served from it through
+    // A module placed in the static window must be served from it through
     // every TLS model, or general-dynamic and initial-exec accesses to the
     // same variable would see different memory.
     if (staticTlsOffset) {
@@ -1299,83 +1259,40 @@ size_t Loader::addTlsModule() {
     return ++tlsModuleCount_;
 }
 
-// Locates the arena in the executable's TLS template, which musl's
-// pthread_create copies into every new thread, and pins down the arena's
-// thread-pointer-relative offset, a link-time constant of the executable.
-void Loader::initializeStaticTls() {
-    auto program = elfMainProgram();
-    const Elf64_Phdr* tls = nullptr;
+// Places a freshly loaded module's TLS in musl's static TLS window, making
+// one thread-pointer-relative offset valid in every thread at once, which is
+// what initial-exec relocations demand; the registered template is what
+// musl's __copy_tls seeds every later thread from. On overflow the module
+// falls back to the dynamic per-thread blocks, and only a later initial-exec
+// reference to it fails. The main guest executable instead takes the ABI
+// slot adjacent to the thread pointer, where the offsets its static linker
+// burned into local-exec instructions point — and there is no fallback.
+void Loader::allocateStaticTls(LinkMap& image) {
+    const auto* image_ = reinterpret_cast<const void*>(image.tlsTemplate);
+    auto alignment = std::max(image.tlsAlignment, sizeof(void*));
 
-    if (!program.count) {
-        throwError("static TLS: no program headers in the auxiliary vector or behind __ehdr_start");
-    }
+    image.staticTlsOffset = image.executable
+        ? soloExecutableTls(image_, image.tlsFileSize, image.tlsMemorySize, alignment)
+        : soloStaticTls(image_, image.tlsFileSize, image.tlsMemorySize, alignment);
 
-    for (Elf64_Half index = 0; index < program.count; ++index) {
-        if (program.headers[index].p_type == PT_TLS) {
-            tls = &program.headers[index];
-        }
-    }
-    if (!tls) {
-        throwError("static TLS: the executable has no PT_TLS segment");
-    }
-
-    auto* image = reinterpret_cast<unsigned char*>(program.base + tls->p_vaddr);
-    auto* marker = static_cast<unsigned char*>(memmem(image, tls->p_filesz, staticTlsMarker, sizeof(staticTlsMarker)));
-
-    if (!marker) {
-        throwError("static TLS: the arena marker is not in the executable's TLS template");
-    }
-    if (memmem(marker + 1, image + tls->p_filesz - marker - 1, staticTlsMarker, sizeof(staticTlsMarker))) {
-        throwError("static TLS: the arena marker is ambiguous");
-    }
-
-    // The distance between two thread_local objects is the same in the
-    // template and in every thread's copy of it.
-    auto delta = reinterpret_cast<intptr_t>(staticTlsArena.bytes) - reinterpret_cast<intptr_t>(staticTlsMarker);
-
-    staticTlsTemplate_ = marker + delta;
-    if (staticTlsTemplate_ < image || staticTlsTemplate_ + staticTlsSize > image + tls->p_filesz) {
-        throwError("static TLS: the arena is outside the executable's TLS template");
-    }
-    staticTlsArenaOffset_ = reinterpret_cast<intptr_t>(staticTlsArena.bytes) - static_cast<intptr_t>(threadPointer());
-
-    // The template commonly sits in the executable's RELRO region.
-    auto pageSize = sysconf(_SC_PAGESIZE);
-    auto start = alignDown(reinterpret_cast<uintptr_t>(staticTlsTemplate_), pageSize);
-    auto end = alignUp(reinterpret_cast<uintptr_t>(staticTlsTemplate_) + staticTlsSize, pageSize);
-
-    if (pageSize <= 0 || mprotect(reinterpret_cast<void*>(start), end - start, PROT_READ | PROT_WRITE)) {
-        throwError("static TLS: mprotect(template): %s", strerror(errno));
+    if (image.executable && !image.staticTlsOffset) {
+        throwError("%s: the executable's TLS (%zu bytes, %zu-byte alignment) cannot take the ABI slot next to the thread pointer; the slot is already occupied or the block does not fit the static TLS window", image.path.c_str(), image.tlsMemorySize, image.tlsAlignment);
     }
 }
 
-// Places a freshly loaded module's TLS in the arena, making one
-// thread-pointer-relative offset valid in every thread at once, which is what
-// initial-exec relocations demand. On overflow the module falls back to the
-// dynamic per-thread blocks, and only a later initial-exec reference to it
-// fails.
-void Loader::allocateStaticTls(LinkMap& image) {
-    auto alignment = std::max(image.tlsAlignment, sizeof(void*));
-
-    if (alignment > staticTlsAlignment) {
+// The loading thread's own copy of a placed block, seeded after relocations
+// so relocated template bytes land in it; musl seeds threads created later
+// at their birth, and threads already running keep zeroes, like ld.so:
+// dlopen libraries with TLS before spawning threads that use them.
+void Loader::seedStaticTls(LinkMap& image) {
+    if (!image.staticTlsOffset) {
         return;
     }
 
-    auto offset = alignUp(staticTlsUsed_, alignment);
+    auto* block = reinterpret_cast<unsigned char*>(threadPointer() + image.staticTlsOffset);
 
-    if (offset > staticTlsSize || image.tlsMemorySize > staticTlsSize - offset) {
-        return;
-    }
-    staticTlsUsed_ = offset + image.tlsMemorySize;
-    image.staticTlsOffset = staticTlsArenaOffset_ + static_cast<intptr_t>(offset);
-
-    // Threads created after this load copy the executable's template, and the
-    // loading thread gets its copy here. Threads that already exist keep
-    // zeroes: dlopen libraries with TLS before spawning threads that use them.
-    memset(staticTlsTemplate_ + offset, 0, image.tlsMemorySize);
-    memcpy(staticTlsTemplate_ + offset, reinterpret_cast<const void*>(image.tlsTemplate), image.tlsFileSize);
-    memset(staticTlsArena.bytes + offset, 0, image.tlsMemorySize);
-    memcpy(staticTlsArena.bytes + offset, reinterpret_cast<const void*>(image.tlsTemplate), image.tlsFileSize);
+    memset(block, 0, image.tlsMemorySize);
+    memcpy(block, reinterpret_cast<const void*>(image.tlsTemplate), image.tlsFileSize);
 }
 
 // Bionic's system libraries, spelled without versions: Termux packages are
@@ -2037,7 +1954,7 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
                 throwError("%s: local initial-exec relocation has no module", image.path.c_str());
             }
             if (!image.staticTlsOffset) {
-                throwError("%s: initial-exec TLS: %zu bytes with %zu-byte alignment did not fit the static TLS arena (%zu of %zu bytes in use)", image.path.c_str(), image.tlsMemorySize, image.tlsAlignment, staticTlsUsed_, staticTlsSize);
+                throwError("%s: initial-exec TLS: %zu bytes with %zu-byte alignment did not fit the static TLS window", image.path.c_str(), image.tlsMemorySize, image.tlsAlignment);
             }
             *where = static_cast<uintptr_t>(image.staticTlsOffset) + relocation.r_addend;
             return false;
@@ -2145,7 +2062,7 @@ bool Loader::applyRelocation(LinkMap& image, const Elf64_Rela& relocation, bool 
             const auto& provider = *definition.image;
 
             if (!provider.staticTlsOffset) {
-                throwError("%s: initial-exec TLS against %s: %zu bytes with %zu-byte alignment did not fit the static TLS arena (%zu of %zu bytes in use)", image.path.c_str(), provider.path.c_str(), provider.tlsMemorySize, provider.tlsAlignment, staticTlsUsed_, staticTlsSize);
+                throwError("%s: initial-exec TLS against %s: %zu bytes with %zu-byte alignment did not fit the static TLS window", image.path.c_str(), provider.path.c_str(), provider.tlsMemorySize, provider.tlsAlignment);
             }
             *where = static_cast<uintptr_t>(provider.staticTlsOffset) + definition.symbol->st_value + relocation.r_addend;
             return false;

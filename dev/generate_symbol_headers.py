@@ -78,10 +78,12 @@ def glibc_header(table: dict) -> list[str]:
             # faults at the use instead of yielding silent zeroes.
             entries.append(f"        {{{name}, {version}, nullptr, nullptr, {size}}},")
         elif kind == "tls":
+            # Per-thread storage served by ThreadTls, not by a thread_local:
+            # the executable's own PT_TLS must stay empty for the static TLS
+            # window.
             lines += [
-                f"    alignas(max_align_t) static thread_local unsigned char glibcTlsStub{index}[{size}] = {{}};",
                 f"    static void* glibcTlsStubAddress{index}() noexcept {{",
-                f"        return glibcTlsStub{index};",
+                f"        return dyn::ThreadTls::current()->tlsStub({index}, {size});",
                 "    }",
             ]
             entries.append(
