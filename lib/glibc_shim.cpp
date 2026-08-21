@@ -11,6 +11,7 @@
 #include "fts.h"
 #include "glibc_stubs.h"
 #include "hash.h"
+#include "musl_tls.h"
 #include "thread_tls.h"
 
 #include <arpa/inet.h>
@@ -267,6 +268,13 @@ namespace {
             sh_fortify_fail();
         }
         return fread(destination, element_size, element_count, stream);
+    }
+
+    static char* sh_stpncpy_chk(char* destination, const char* source, size_t count, size_t destination_size) {
+        if (count > destination_size) {
+            sh_fortify_fail();
+        }
+        return stpncpy(destination, source, count);
     }
 
     static char* sh_strncpy_chk(char* destination, const char* source, size_t count, size_t destination_size) {
@@ -1625,6 +1633,54 @@ namespace {
         return result;
     }
 
+    // glibc's fgetpwent and fgetgrent say end-of-file with ENOENT; musl
+    // leaves errno alone, and a caller distinguishing the end from an error
+    // — systemd's sysusers — reads stale garbage.
+    static struct passwd* sh_fgetpwent(FILE* stream) {
+        errno = 0;
+
+        auto* entry = fgetpwent(stream);
+
+        if (!entry && !errno) {
+            errno = ENOENT;
+        }
+
+        return entry;
+    }
+
+    static struct group* sh_fgetgrent(FILE* stream) {
+        errno = 0;
+
+        auto* entry = fgetgrent(stream);
+
+        if (!entry && !errno) {
+            errno = ENOENT;
+        }
+
+        return entry;
+    }
+
+    // glibc's unbuffered streams write flat; musl's would writev with an
+    // empty leading segment, which procfs attribute files reject. The
+    // moment a guest turns a stream unbuffered, its writer is swapped.
+    static int sh_setvbuf(FILE* stream, char* buffer, int mode, size_t size) {
+        auto result = setvbuf(stream, buffer, mode, size);
+
+        if (!result && mode == _IONBF) {
+            soloReplaceWriteFunc(stream);
+        }
+
+        return result;
+    }
+
+    static void sh_setbuf(FILE* stream, char* buffer) {
+        sh_setvbuf(stream, buffer, buffer ? _IOFBF : _IONBF, BUFSIZ);
+    }
+
+    static void sh_setbuffer(FILE* stream, char* buffer, size_t size) {
+        sh_setvbuf(stream, buffer, buffer ? _IOFBF : _IONBF, size);
+    }
+
     // glibc's own message catalog name, referenced by its gettext callers.
     static const char sh_libc_intl_domainname[] = "libc";
 
@@ -2968,6 +3024,7 @@ namespace {
     }
 
     __attribute__((noreturn)) static void sh_stack_chk_fail(void) {
+        fputs("*** stack smashing detected ***: terminated\n", stderr);
         abort();
     }
 
@@ -4634,6 +4691,11 @@ namespace {
         SH_FUNCTION("obstack_free", "GLIBC_2.2.5", sh_obstack_free),
         SH_FUNCTION("_obstack_memory_used", "GLIBC_2.2.5", sh_obstack_memory_used),
         SH_FUNCTION("error_at_line", "GLIBC_2.2.5", sh_error_at_line),
+        SH_FUNCTION("setvbuf", "GLIBC_2.2.5", sh_setvbuf),
+        SH_FUNCTION("fgetpwent", "GLIBC_2.2.5", sh_fgetpwent),
+        SH_FUNCTION("fgetgrent", "GLIBC_2.2.5", sh_fgetgrent),
+        SH_FUNCTION("setbuf", "GLIBC_2.2.5", sh_setbuf),
+        SH_FUNCTION("setbuffer", "GLIBC_2.2.5", sh_setbuffer),
         SH_FUNCTION("memset_explicit", "GLIBC_2.43", sh_memset_explicit),
         SH_FUNCTION("__memset_explicit_chk", "GLIBC_2.43", sh_memset_explicit_chk),
         SH_FUNCTION("getopt", "GLIBC_2.2.5", sh_getopt),
@@ -4908,6 +4970,8 @@ namespace {
         SH_FUNCTION("__strlcpy_chk", "GLIBC_2.38", sh_strlcpy_chk),
         SH_FUNCTION("__read_chk", "GLIBC_2.4", sh_read_chk),
         SH_FUNCTION("__pread_chk", "GLIBC_2.4", sh_pread_chk),
+        SH_FUNCTION("__pread64_chk", "GLIBC_2.4", sh_pread_chk),
+        SH_FUNCTION("__stpncpy_chk", "GLIBC_2.4", sh_stpncpy_chk),
         SH_FUNCTION("__readlinkat_chk", "GLIBC_2.5", sh_readlinkat_chk),
         SH_FUNCTION("__realpath_chk", "GLIBC_2.4", sh_realpath_chk),
         SH_FUNCTION("__explicit_bzero_chk", "GLIBC_2.25", sh_explicit_bzero_chk),
@@ -4991,6 +5055,11 @@ GlibcAdapter::GlibcAdapter()
 
     static constexpr std::string_view overrideNames[] = {
         "__cxa_atexit",
+        "fgetgrent",
+        "fgetpwent",
+        "setbuf",
+        "setbuffer",
+        "setvbuf",
         "getopt",
         "getopt_long",
         "getopt_long_only",

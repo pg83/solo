@@ -50,6 +50,7 @@ fi
 if [ -x /usr/bin/busctl ]; then
     busctl list --no-pager --no-legend | grep -q freedesktop && echo dbus-ok
     systemctl list-units --type=service --state=running --no-legend --no-pager
+    systemctl --no-pager --failed --no-legend | grep -q . || echo no-failed-units
 fi
 echo SOLO-QEMU-OK
 """
@@ -70,7 +71,7 @@ WantedBy=multi-user.target
 """
 
 PLAIN_NEEDLES = ["SOLO-QEMU-BOOT", "shell 42", "world hello", "grep-ok", "package-manager-ok", "SOLO-QEMU-OK"]
-SYSTEMD_NEEDLES = ["shell 42", "world hello", "package-manager-ok", "dbus-ok", "systemd-journald.service", "SOLO-QEMU-OK"]
+SYSTEMD_NEEDLES = ["shell 42", "world hello", "package-manager-ok", "dbus-ok", "systemd-journald.service", "systemd-logind.service", "no-failed-units", "SOLO-QEMU-OK"]
 
 
 def newc_record(name, mode, rdevmajor, rdevminor):
@@ -132,6 +133,18 @@ def install_systemd_boot(root):
     (root / "etc/machine-id").write_text("")
     (root / "etc/hostname").write_text("solo\n")
 
+    # The system users the packages' postinst scripts would have created;
+    # dbus refuses to start without its own, and journald wants its group.
+    with (root / "etc/passwd").open("a") as passwd:
+        passwd.write("messagebus:x:990:990::/nonexistent:/usr/sbin/nologin\n")
+        passwd.write("systemd-network:x:991:991::/run/systemd:/usr/sbin/nologin\n")
+        passwd.write("systemd-resolve:x:992:992::/run/systemd:/usr/sbin/nologin\n")
+    with (root / "etc/group").open("a") as group:
+        group.write("messagebus:x:990:\n")
+        group.write("systemd-network:x:991:\n")
+        group.write("systemd-resolve:x:992:\n")
+        group.write("systemd-journal:x:993:\n")
+
     battery = root / "usr/local/bin/solo-battery"
     battery.parent.mkdir(parents=True, exist_ok=True)
     battery.write_text(BATTERY)
@@ -144,6 +157,11 @@ def install_systemd_boot(root):
     wants = root / "etc/systemd/system/multi-user.target.wants"
     wants.mkdir(parents=True, exist_ok=True)
     (wants / "solo-battery.service").symlink_to("/etc/systemd/system/solo-battery.service")
+
+    # Legacy the boot honestly cannot serve: musl stubs the utmp family, and
+    # the base image ships e2scrub's unit without its lvm tooling.
+    for masked in ("systemd-update-utmp.service", "systemd-update-utmp-runlevel.service", "e2scrub_reap.service"):
+        (root / "etc/systemd/system" / masked).symlink_to("/dev/null")
 
 
 def main():

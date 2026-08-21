@@ -5,7 +5,9 @@
 #include "hash.h"
 #include "thread_tls.h"
 
+#include <fcntl.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <sys/mman.h>
@@ -25,6 +27,13 @@ namespace {
 
     [[noreturn]] static void abortStub(const char* name, const char* version) noexcept {
         fprintf(stderr, "glibc bridge: called unimplemented ABI %s@%s\n", name, version);
+        // A guest init's stderr is usually /dev/null; a fatal bridge gap
+        // deserves the system console, and where opening it is a privilege
+        // ordinary processes lack, this quietly does nothing.
+        char text[256];
+        int size = snprintf(text, sizeof(text), "BRIDGE-ABORT stub %s@%s\n", name, version);
+        int console = open("/dev/console", O_WRONLY | O_NOCTTY);
+        if (console >= 0) { write(console, text, size); close(console); }
         abort();
     }
 

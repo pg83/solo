@@ -277,6 +277,9 @@ namespace {
         size_t finalizerCount = 0;
         uintptr_t relroStart = 0;
         size_t relroSize = 0;
+        // DT_TEXTREL: relocations land in read-only segments, glibc-style
+        // mprotect dance around the relocation pass.
+        bool textRelocations = false;
 
         size_t tlsModule = 0;
         uintptr_t tlsTemplate = 0;
@@ -309,6 +312,7 @@ namespace {
         void* tlsAddress(size_t offset) const;
         void applyRelativeRelocations();
         void protect();
+        void unprotect();
         void applyRelro();
         void runInitializers();
         void runFinalizers();
@@ -736,29 +740,37 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
                 throwError("%s: PT_LOAD file offset is not congruent with its address", image.path.c_str());
             }
 
-            // The segments map from the file, copy-on-write: untouched pages
-            // stay shared with the page cache, and /proc/self/maps names the
-            // library for debuggers and profilers. Everything is writable
-            // until protect() runs, so relocations just work.
+            // The segments map from the file, copy-on-write, each with its
+            // final protections straight away — ld.so's discipline.
+            // Relocations only ever touch writable segments, so nothing
+            // needs a writable-then-executable transition and a sandbox
+            // that forbids one (MemoryDenyWriteExecute) stays satisfied;
+            // the rare DT_TEXTREL image gets glibc's mprotect dance at
+            // relocation time instead. /proc/self/maps names the library
+            // for debuggers and profilers.
+            auto protection = segmentProtection(programHeader.p_flags);
             auto start = alignDown(image.base + programHeader.p_vaddr, pageSize);
             auto fileEnd = image.base + programHeader.p_vaddr + programHeader.p_filesz;
             auto memoryEnd = alignUp(image.base + programHeader.p_vaddr + programHeader.p_memsz, pageSize);
 
             if (programHeader.p_filesz) {
-                if (mmap(reinterpret_cast<void*>(start), alignUp(fileEnd, pageSize) - start, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, file.descriptor_, static_cast<off_t>(alignDown(programHeader.p_offset, pageSize))) == MAP_FAILED) {
+                if (mmap(reinterpret_cast<void*>(start), alignUp(fileEnd, pageSize) - start, protection, MAP_PRIVATE | MAP_FIXED, file.descriptor_, static_cast<off_t>(alignDown(programHeader.p_offset, pageSize))) == MAP_FAILED) {
                     throwError("%s: mmap segment: %s", image.path.c_str(), strerror(errno));
                 }
             }
             if (programHeader.p_memsz > programHeader.p_filesz) {
-                // The zero-fill tail: the rest of the last file page by hand,
-                // fresh anonymous pages beyond it.
+                // The zero-fill tail: the rest of the last file page by
+                // hand — only a writable segment can carry one — and fresh
+                // anonymous pages beyond it.
                 auto anonymousStart = start;
 
                 if (programHeader.p_filesz) {
                     anonymousStart = alignUp(fileEnd, pageSize);
-                    memset(reinterpret_cast<void*>(fileEnd), 0, anonymousStart - fileEnd);
+                    if (protection & PROT_WRITE) {
+                        memset(reinterpret_cast<void*>(fileEnd), 0, anonymousStart - fileEnd);
+                    }
                 }
-                if (anonymousStart < memoryEnd && mmap(reinterpret_cast<void*>(anonymousStart), memoryEnd - anonymousStart, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED) {
+                if (anonymousStart < memoryEnd && mmap(reinterpret_cast<void*>(anonymousStart), memoryEnd - anonymousStart, protection, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED) {
                     throwError("%s: mmap zero fill: %s", image.path.c_str(), strerror(errno));
                 }
             }
@@ -926,8 +938,14 @@ void Loader::completeImage(LinkMap& image) {
     std::vector<DeferredRelocation> deferred;
     auto lazy = !(image.requestFlags & RTLD_NOW) && !image.bindNow && !bindNow_;
 
+    // Segments carry their final protections from the mapping; only a
+    // DT_TEXTREL image opens its read-only segments for the pass, the way
+    // glibc does.
+    if (image.textRelocations && !image.adopted) {
+        image.unprotect();
+    }
     applyRelocations(image, deferred, lazy);
-    if (!image.adopted) {
+    if (image.textRelocations && !image.adopted) {
         image.protect();
     }
 
@@ -1030,17 +1048,23 @@ void Loader::runPendingInitializers() {
 
 // RTLD_GLOBAL publishes the image's whole local scope, so the global search
 // list grows by the dependency closure in breadth-first order, like ld.so.
+// Membership and traversal are separate questions: the executable sits in
+// the global list from the moment it is mapped, and the walk must still
+// descend through it to publish its dependencies.
 void Loader::makeGlobal(LinkMap& image) {
     std::deque<LinkMap*> queue({&image});
+    std::unordered_set<const LinkMap*> visited;
 
     while (!queue.empty()) {
         auto* current = queue.front();
 
         queue.pop_front();
-        if (std::find(globalImages_.begin(), globalImages_.end(), current) != globalImages_.end()) {
+        if (!visited.insert(current).second) {
             continue;
         }
-        globalImages_.push_back(current);
+        if (std::find(globalImages_.begin(), globalImages_.end(), current) == globalImages_.end()) {
+            globalImages_.push_back(current);
+        }
         for (const auto& dependency : current->dependencies) {
             if (dependency.image) {
                 queue.push_back(dependency.image);
@@ -1700,6 +1724,10 @@ void LinkMap::parseDynamic() {
             case DT_FLAGS:
                 bindNow |= (entry->d_un.d_val & DF_BIND_NOW) != 0;
                 symbolic |= (entry->d_un.d_val & DF_SYMBOLIC) != 0;
+                textRelocations |= (entry->d_un.d_val & DF_TEXTREL) != 0;
+                break;
+            case DT_TEXTREL:
+                textRelocations = true;
                 break;
             case DT_FLAGS_1:
                 bindNow |= (entry->d_un.d_val & DF_1_NOW) != 0;
@@ -2350,6 +2378,26 @@ void LinkMap::protect() {
 
         if (mprotect(reinterpret_cast<void*>(start), end - start, segmentProtection(programHeader.p_flags))) {
             throwError("%s: mprotect(PT_LOAD): %s", path.c_str(), strerror(errno));
+        }
+    }
+}
+
+void LinkMap::unprotect() {
+    auto pageSize = sysconf(_SC_PAGESIZE);
+
+    if (pageSize <= 0) {
+        throwError("%s: cannot determine page size", path.c_str());
+    }
+    for (const auto& programHeader : programHeaders) {
+        if (programHeader.p_type != PT_LOAD) {
+            continue;
+        }
+
+        auto start = alignDown(base + programHeader.p_vaddr, pageSize);
+        auto end = alignUp(base + programHeader.p_vaddr + programHeader.p_memsz, pageSize);
+
+        if (mprotect(reinterpret_cast<void*>(start), end - start, segmentProtection(programHeader.p_flags) | PROT_WRITE)) {
+            throwError("%s: mprotect(DT_TEXTREL): %s", path.c_str(), strerror(errno));
         }
     }
 }

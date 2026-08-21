@@ -40,6 +40,7 @@
 #endif
 
 #include "../ext/musl/src/internal/pthread_impl.h"
+#include "../ext/musl/src/internal/stdio_impl.h"
 
 /* The donated span and the ceiling on a block's alignment; the pad's own
  * alignment is what makes every thread pointer a multiple of it. liblsan's
@@ -309,4 +310,39 @@ void __init_tls(size_t *aux)
 
 	if (__init_tp(__copy_tls(mem)) < 0)
 		a_crash();
+}
+
+/* __stdio_write's algorithm with plain writes: the buffered bytes first,
+ * then the caller's, empty segments skipped, musl's error bookkeeping kept
+ * to the letter — nothing of the caller's counted while the buffered head
+ * remains. See soloReplaceWriteFunc in the header for why writev is the
+ * wrong shape here. */
+static size_t soloStdioWrite(FILE *f, const unsigned char *buf, size_t len)
+{
+	unsigned char *segments[2] = { f->wbase, (unsigned char *)buf };
+	size_t lengths[2] = { (size_t)(f->wpos - f->wbase), len };
+	int index;
+
+	for (index = 0; index < 2; index++) {
+		while (lengths[index]) {
+			ssize_t count = syscall(SYS_write, f->fd, segments[index], lengths[index]);
+
+			if (count < 0) {
+				f->wpos = f->wbase = f->wend = 0;
+				f->flags |= F_ERR;
+				return index == 0 ? 0 : len - lengths[1];
+			}
+			segments[index] += count;
+			lengths[index] -= count;
+		}
+	}
+	f->wend = f->buf + f->buf_size;
+	f->wpos = f->wbase = f->buf;
+
+	return len;
+}
+
+void soloReplaceWriteFunc(FILE *file)
+{
+	file->write = soloStdioWrite;
 }
