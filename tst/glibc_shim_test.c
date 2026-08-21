@@ -1512,8 +1512,12 @@ static void gcompatTail(void) {
     CHECK(__isinf(INFINITY) == 1 && __isinf(-INFINITY) == -1 && __isinf(1.0) == 0);
     CHECK(__finite(1.0) == 1 && __finite(INFINITY) == 0);
 
+#if defined(__x86_64__)
+    /* long double compares are x87 hardware here; on aarch64 they are
+     * binary128 and would drag libgcc's soft-float into a -nostdlib link. */
     CHECK(j0l(0.0L) == 1.0L);
     CHECK(scalbl(1.0L, 3.0L) == 8.0L);
+#endif
 
 #if defined(__x86_64__)
     CHECK(feenableexcept(FE_DIVBYZERO) >= 0);
