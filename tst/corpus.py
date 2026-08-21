@@ -167,7 +167,6 @@ def needs_host_symbols(error):
 def run_driver(driver, library, search_path):
     environment = os.environ.copy()
     environment["DL_GLIBC_STUB_DEBUG"] = "1"
-    environment.pop("DL_ELF_LIBRARY_PATH", None)
     environment["LD_LIBRARY_PATH"] = search_path
     result = subprocess.run(
         [driver, str(library)],

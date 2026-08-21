@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Assert the loader's AT_SECURE discipline.
 
-The probe dlopens a bare name reachable only through LD_LIBRARY_PATH and
-DL_ELF_LIBRARY_PATH. Run plain, the load must succeed; run set-uid root —
+The probe dlopens a bare name reachable only through LD_LIBRARY_PATH.
+Run plain, the load must succeed; run set-uid root —
 which puts the kernel's AT_SECURE into the auxv — the same environment must
 be ignored and the load must fail. Needs passwordless sudo for the set-uid
 half; without it only the plain half runs.
@@ -47,7 +47,6 @@ def main():
 
         environment = os.environ.copy()
         environment["LD_LIBRARY_PATH"] = str(root)
-        environment["DL_ELF_LIBRARY_PATH"] = str(root)
 
         plain = run_probe(probe, environment)
         lines.append(f"plain: {plain}")

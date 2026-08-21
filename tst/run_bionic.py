@@ -111,7 +111,7 @@ def main():
             raise SystemExit(f"{termux_tmp} must exist and be writable")
 
         environment = os.environ.copy()
-        for name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES", "DL_ELF_LIBRARY_PATH"):
+        for name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
             environment.pop(name, None)
         environment["LD_LIBRARY_PATH"] = str(prefix / "lib")
         output.unlink(missing_ok=True)

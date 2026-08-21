@@ -120,9 +120,10 @@ error-check initializers are adopted on first use.
 
 Before loading a DSO from disk, SoLo checks its static provider registry. This
 lets an application satisfy a dependency—Wayland, for example—with functions
-already linked into the executable. `LD_LIBRARY_PATH` and
-`DL_ELF_LIBRARY_PATH` are honored for libraries outside the standard system
-directories.
+already linked into the executable. `LD_LIBRARY_PATH` is honored for
+libraries outside the standard system directories, except in
+secure-execution mode (`AT_SECURE`), where the environment is ignored the
+way ld.so ignores it.
 
 The interesting pieces are small enough to read:
 

@@ -377,7 +377,6 @@ def main():
         )
 
         environment = os.environ.copy()
-        environment.pop("DL_ELF_LIBRARY_PATH", None)
         environment["LD_LIBRARY_PATH"] = os.pathsep.join(
             (str(root / "missing"), str(library_path))
         )

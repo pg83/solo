@@ -1114,12 +1114,6 @@ std::optional<std::string> Loader::resolvePath(const std::string_view& path, con
     // ld.so's AT_SECURE discipline: a privileged process must not search
     // paths the environment names.
     const bool secure = secureExecution();
-
-    if (const auto* configured = secure ? nullptr : getenv("DL_ELF_LIBRARY_PATH"); configured) {
-        if (auto resolved = inSearchPath(configured, path, false); resolved) {
-            return resolved;
-        }
-    }
     if (requester && !requester->rpath.empty()) {
         if (auto resolved = inSearchPath(requester->rpath, path, false); resolved) {
             return resolved;
