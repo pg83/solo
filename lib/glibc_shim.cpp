@@ -233,6 +233,21 @@ namespace {
         return memcpy(destination, source, count);
     }
 
+    // C23 memset_explicit: a memset the compiler must not elide; the barrier
+    // keeps the written bytes observable.
+    static void* sh_memset_explicit(void* destination, int value, size_t count) {
+        memset(destination, value, count);
+        __asm__ __volatile__("" : : "r"(destination) : "memory");
+        return destination;
+    }
+
+    static void* sh_memset_explicit_chk(void* destination, int value, size_t count, size_t destination_size) {
+        if (count > destination_size) {
+            sh_fortify_fail();
+        }
+        return sh_memset_explicit(destination, value, count);
+    }
+
     static void* sh_memset_chk(void* destination, int value, size_t count, size_t destination_size) {
         if (count > destination_size) {
             sh_fortify_fail();
@@ -4605,6 +4620,8 @@ namespace {
         SH_FUNCTION("obstack_free", "GLIBC_2.2.5", sh_obstack_free),
         SH_FUNCTION("_obstack_memory_used", "GLIBC_2.2.5", sh_obstack_memory_used),
         SH_FUNCTION("error_at_line", "GLIBC_2.2.5", sh_error_at_line),
+        SH_FUNCTION("memset_explicit", "GLIBC_2.43", sh_memset_explicit),
+        SH_FUNCTION("__memset_explicit_chk", "GLIBC_2.43", sh_memset_explicit_chk),
         SH_FUNCTION("getopt", "GLIBC_2.2.5", sh_getopt),
         SH_FUNCTION("getopt_long", "GLIBC_2.2.5", sh_getopt_long),
         SH_FUNCTION("getopt_long_only", "GLIBC_2.2.5", sh_getopt_long_only),
