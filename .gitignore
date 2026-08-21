@@ -2,3 +2,17 @@
 /dlfcn
 /download_*
 /vulkan
+/abi_diff
+/arch_smoke
+/bionic_test
+/corpus
+/corpus_load
+/fetch
+/pthread_bridge
+/pthread_test
+/secure_probe
+/secure_target
+/secure_test
+/smoke
+/test
+/vulkan_test
