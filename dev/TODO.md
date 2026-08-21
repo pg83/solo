@@ -43,7 +43,20 @@ glibc-шейповый `__locale_struct` с ctype-таблицами (libstdc++ 
 их из структуры — std::regex у dnf5), getopt-обёртки, синхронизирующие
 optind/optarg с COPY-копиями гостя, GNU regex/obstack-хвост.
 Долг: argp_parse (glibc-шные locale/getent/iconv его хотят).
-Дальше: qemu — полный boot с solo вместо ld.so.
+Этап 6 [сделано]: настоящий boot в qemu — PID 1 = systemd 255 из
+пиненных deb поверх ободранного ubuntu-base, journald/logind/dbus
+running, батарея требует ноль упавших юнитов (CI-джоба «Ubuntu / qemu
+boot»). Песочницы systemd вытрясли из solo: маппинг сегментов с
+финальными правами (MemoryDenyWriteExecute), makeGlobal не обрывается
+об exe, плоский write вместо writev с пустой головой на unbuffered
+(procfs-атрибуты, OOMScoreAdjust), fgetpwent/fgetgrent ENOENT на EOF,
+getaddrinfo без glibc-овских IDN-битов (apt), релокации замыкания в
+топологическом порядке (_dl_sort_maps), плюс interposition-точка
+soloReplaceWriteFunc в musl_tls.c. Локальный цикл: qemu-system сам
+бежит через solo (машина без qemu); интерактивная ВМ с автологином и
+slirp-сетью — scratchpad/vm-shell, apt-get update изнутри работает.
+Долг: utmp-семейство (musl-стабы, systemd-update-utmp замаскирован в
+тесте).
 
 **2. [сделано] `LD_TRACE_LOADED_OBJECTS` — ldd-эмуляция (день работы).** Прямое
 продолжение вчерашнего «говорим на языке ld.so»:
