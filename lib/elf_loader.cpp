@@ -45,6 +45,10 @@ using namespace dyn;
     #define DT_RUNPATH 29
 #endif
 
+#ifndef MAP_FIXED_NOREPLACE
+    #define MAP_FIXED_NOREPLACE 0x100000
+#endif
+
 #ifndef DT_FLAGS
     #define DT_FLAGS 30
 #endif
@@ -638,10 +642,12 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
     Elf64_Ehdr header;
 
     file.read(&header, sizeof(header), 0);
-    if (memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 || header.e_ident[EI_CLASS] != ELFCLASS64 || header.e_ident[EI_DATA] != ELFDATA2LSB || header.e_machine != ELF_MACHINE || header.e_type != ET_DYN || header.e_phentsize != sizeof(Elf64_Phdr)) {
-        if (asExecutable && header.e_type == ET_EXEC) {
-            throwError("%s: a non-PIE executable loads at fixed addresses this process already occupies; only PIE executables run for now", resolved->c_str());
-        }
+
+    // Shared objects are ET_DYN; the main guest executable may equally be a
+    // non-PIE ET_EXEC, which owns its link-time addresses.
+    auto validType = header.e_type == ET_DYN || (asExecutable && header.e_type == ET_EXEC);
+
+    if (memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 || header.e_ident[EI_CLASS] != ELFCLASS64 || header.e_ident[EI_DATA] != ELFDATA2LSB || header.e_machine != ELF_MACHINE || !validType || header.e_phentsize != sizeof(Elf64_Phdr)) {
         throwError("%s: not an ET_DYN ELF for this machine", resolved->c_str());
     }
 
@@ -679,11 +685,22 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
 
     image.mapSize = maximumAddress - minimumAddress;
     // A reservation for the whole span; the segments are mapped into it from
-    // the file below.
-    auto* mapping = mmap(nullptr, image.mapSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // the file below. An ET_EXEC image must land exactly on its link-time
+    // addresses, and an occupied range there is a hard error — nothing can
+    // relocate it. This is why solo itself links static-PIE: its own image
+    // randomizes away from the low addresses such guests own.
+    auto* desired = header.e_type == ET_EXEC ? reinterpret_cast<void*>(minimumAddress) : nullptr;
+    auto* mapping = mmap(desired, image.mapSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | (desired ? MAP_FIXED_NOREPLACE : 0), -1, 0);
 
     if (mapping == MAP_FAILED) {
-        throwError("%s: mmap: %s", image.path.c_str(), strerror(errno));
+        throwError("%s: mmap%s: %s", image.path.c_str(), desired ? " at the fixed load addresses" : "", strerror(errno));
+    }
+    // A kernel too old for MAP_FIXED_NOREPLACE ignores the flag and treats
+    // the address as a hint; a reservation that landed elsewhere is as fatal
+    // as a refused one.
+    if (desired && mapping != desired) {
+        munmap(mapping, image.mapSize);
+        throwError("%s: the fixed load addresses %#zx-%#zx are already occupied", image.path.c_str(), minimumAddress, maximumAddress);
     }
 
     image.mapStart = reinterpret_cast<uintptr_t>(mapping);
@@ -753,6 +770,15 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
     }
 
     if (asExecutable) {
+        // An executable's own TLS is accessed local-exec: the offsets are
+        // burned into the instructions against the ABI's fixed thread-pointer
+        // layout, invisible to relocations. The arena serves offsets of its
+        // own choosing, so honest failure until the arena learns to reserve
+        // the ABI's spot.
+        if (image.tlsModule) {
+            throwError("%s: the executable carries thread-local storage; its local-exec block needs a fixed thread-pointer offset the loader does not reserve yet", image.path.c_str());
+        }
+
         image.executable = true;
         image.entry = image.base + header.e_entry;
         // What the kernel would publish as AT_PHDR: the program header table

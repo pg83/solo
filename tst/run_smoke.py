@@ -442,29 +442,41 @@ def run_solo_checks(root, sysroot_lib, environment):
     sysroot's own crt objects and libc.so.6, so its _start is glibc's crt and
     startup runs through the bridge's __libc_start_main."""
     solo = os.environ["DLFCN_SOLO"]
-    guest = root / "dlfcn-test-guest"
-    subprocess.run(
-        [
-            *shlex.split(os.environ["DLFCN_CC"]),
-            "-O2",
-            "-fPIE",
-            "-pie",
-            "-fno-stack-protector",
-            "-nostdlib",
-            "-Wl,--no-as-needed",
-            str(root / sysroot_lib / "Scrt1.o"),
-            str(root / sysroot_lib / "crti.o"),
-            os.environ["DLFCN_GLIBC_GUEST_TEST_SOURCE"],
-            str(root / sysroot_lib / "libc.so.6"),
-            str(root / sysroot_lib / "crtn.o"),
-            "-o",
-            str(guest),
-        ],
-        check=True,
-    )
+    # Both link models: a PIE the loader places anywhere, and a non-PIE that
+    # owns its fixed link-time addresses — which is why solo itself is
+    # static-PIE.
+    guests = []
+    for suffix, model, crt1 in (
+        ("", ["-fPIE", "-pie"], "Scrt1.o"),
+        ("-exec", ["-fno-pie", "-no-pie"], "crt1.o"),
+    ):
+        guest = root / f"dlfcn-test-guest{suffix}"
+        subprocess.run(
+            [
+                *shlex.split(os.environ["DLFCN_CC"]),
+                "-O2",
+                *model,
+                "-fno-stack-protector",
+                "-nostdlib",
+                "-Wl,--no-as-needed",
+                str(root / sysroot_lib / crt1),
+                str(root / sysroot_lib / "crti.o"),
+                os.environ["DLFCN_GLIBC_GUEST_TEST_SOURCE"],
+                str(root / sysroot_lib / "libc.so.6"),
+                str(root / sysroot_lib / "crtn.o"),
+                "-o",
+                str(guest),
+            ],
+            check=True,
+        )
+        guests.append(guest)
 
     guest_environment = {**environment, "SOLO_GUEST_ENV": "smoke-value"}
-    for command in ([solo, "run", str(guest), "alpha", "beta"], [solo, str(guest), "alpha", "beta"]):
+    for command in (
+        [solo, "run", str(guests[0]), "alpha", "beta"],
+        [solo, str(guests[0]), "alpha", "beta"],
+        [solo, "run", str(guests[1]), "alpha", "beta"],
+    ):
         run = subprocess.run(
             command,
             check=False,
@@ -490,7 +502,7 @@ def run_solo_checks(root, sysroot_lib, environment):
             raise SystemExit(f"solo run exited {run.returncode}, wanted the guest's 42")
 
     ldd = subprocess.run(
-        [solo, "ldd", str(guest)],
+        [solo, "ldd", str(guests[0])],
         check=False,
         text=True,
         stdout=subprocess.PIPE,

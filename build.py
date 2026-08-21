@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import types
 
 import build
 
@@ -267,95 +268,10 @@ cxx_runtime_flags = [
     "-nostdinc++",
 ]
 
-musl = library(
-    name="vulkan_musl",
-    srcs=muslSources(),
-    deps=runtime_generated,
-    includes=[*musl_internal_includes, *vendored_includes],
-    cflags=[
-        *c_runtime_flags,
-        "-std=c99",
-        "-ffreestanding",
-        "-w",
-    ],
-    cppflags=["-D_XOPEN_SOURCE=700"],
-    output="$(B)/bin/vulkan/lib/libc.a",
-)
-
 compiler_rt_sources = [
     source for source in build.glob(f"{compiler_rt_root}/*.c")
     if not source.rsplit("/", 1)[1].startswith(("atomic", "crtbegin", "crtend"))
 ]
-compiler_rt = library(
-    name="vulkan_compiler_rt",
-    srcs=compiler_rt_sources,
-    deps=runtime_generated,
-    includes=vendored_includes,
-    cflags=[*c_runtime_flags, "-ffreestanding", "-w"],
-    output="$(B)/bin/vulkan/lib/libcompiler_rt.a",
-)
-
-libunwind = library(
-    name="vulkan_libunwind",
-    srcs=vendorPaths(
-        f"{libunwind_root}/src",
-        [
-            "libunwind.cpp",
-            "Unwind-EHABI.cpp",
-            "Unwind-seh.cpp",
-            "UnwindLevel1.c",
-            "UnwindLevel1-gcc-ext.c",
-            "Unwind-sjlj.c",
-            "UnwindRegistersRestore.S",
-            "UnwindRegistersSave.S",
-        ],
-    ),
-    deps=runtime_generated,
-    includes=vendored_includes,
-    cflags=[*c_runtime_flags, "-fexceptions", "-w"],
-    cxxflags=[*cxx_runtime_flags, "-fno-rtti"],
-    cppflags=[
-        "-D_LIBUNWIND_IS_NATIVE_ONLY",
-        "-D_LIBUNWIND_USE_DLADDR=0",
-    ],
-    output="$(B)/bin/vulkan/lib/libunwind.a",
-)
-
-libcxxabi = library(
-    name="vulkan_libcxxabi",
-    srcs=vendorPaths(
-        f"{libcxxabi_root}/src",
-        [
-            "cxa_aux_runtime.cpp",
-            "cxa_default_handlers.cpp",
-            "cxa_demangle.cpp",
-            "cxa_exception_storage.cpp",
-            "cxa_guard.cpp",
-            "cxa_handlers.cpp",
-            "cxa_vector.cpp",
-            "cxa_virtual.cpp",
-            "stdlib_exception.cpp",
-            "stdlib_stdexcept.cpp",
-            "stdlib_typeinfo.cpp",
-            "abort_message.cpp",
-            "fallback_malloc.cpp",
-            "private_typeinfo.cpp",
-            "stdlib_new_delete.cpp",
-            "cxa_exception.cpp",
-            "cxa_personality.cpp",
-            "cxa_thread_atexit.cpp",
-        ],
-    ),
-    deps=runtime_generated,
-    includes=vendored_includes,
-    cflags=[*c_runtime_flags, "-w"],
-    cxxflags=cxx_runtime_flags,
-    cppflags=[
-        "-D_LIBCXXABI_BUILDING_LIBRARY",
-        "-D_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS",
-    ],
-    output="$(B)/bin/vulkan/lib/libc++abi.a",
-)
 
 libcxx_sources = vendorPaths(
     f"{libcxx_root}/src",
@@ -401,34 +317,134 @@ libcxx_sources = vendorPaths(
         "new.cpp",
     ],
 )
-libcxx = library(
-    name="vulkan_libcxx",
-    srcs=libcxx_sources,
-    deps=runtime_generated,
-    includes=vendored_includes,
-    cflags=[*c_runtime_flags, "-w"],
-    cxxflags=cxx_runtime_flags,
-    cppflags=[
-        "-D_LIBCPP_BUILDING_LIBRARY",
-        "-DLIBCXX_BUILDING_LIBCXXABI",
-    ],
-    output="$(B)/bin/vulkan/lib/libc++.a",
-)
+# One flavor of the vendored runtime the static executables link: the vulkan
+# proof and the tests use the plain build, the solo command its own
+# position-independent build for a static-PIE image. Nothing is shared
+# between flavors but the sources and the generated headers.
+def runtimeArchives(flavor, out, model_flags):
+    flags = [*c_runtime_flags, *model_flags]
+    musl = library(
+        name=f"{flavor}_musl",
+        srcs=muslSources(),
+        deps=runtime_generated,
+        includes=[*musl_internal_includes, *vendored_includes],
+        cflags=[
+            *flags,
+            "-std=c99",
+            "-ffreestanding",
+            "-w",
+        ],
+        cppflags=["-D_XOPEN_SOURCE=700"],
+        output=f"{out}/lib/libc.a",
+    )
+    compiler_rt = library(
+        name=f"{flavor}_compiler_rt",
+        srcs=compiler_rt_sources,
+        deps=runtime_generated,
+        includes=vendored_includes,
+        cflags=[*flags, "-ffreestanding", "-w"],
+        output=f"{out}/lib/libcompiler_rt.a",
+    )
+    libunwind = library(
+        name=f"{flavor}_libunwind",
+        srcs=vendorPaths(
+            f"{libunwind_root}/src",
+            [
+                "libunwind.cpp",
+                "Unwind-EHABI.cpp",
+                "Unwind-seh.cpp",
+                "UnwindLevel1.c",
+                "UnwindLevel1-gcc-ext.c",
+                "Unwind-sjlj.c",
+                "UnwindRegistersRestore.S",
+                "UnwindRegistersSave.S",
+            ],
+        ),
+        deps=runtime_generated,
+        includes=vendored_includes,
+        cflags=[*flags, "-fexceptions", "-w"],
+        cxxflags=[*cxx_runtime_flags, "-fno-rtti"],
+        cppflags=[
+            "-D_LIBUNWIND_IS_NATIVE_ONLY",
+            "-D_LIBUNWIND_USE_DLADDR=0",
+        ],
+        output=f"{out}/lib/libunwind.a",
+    )
+    libcxxabi = library(
+        name=f"{flavor}_libcxxabi",
+        srcs=vendorPaths(
+            f"{libcxxabi_root}/src",
+            [
+                "cxa_aux_runtime.cpp",
+                "cxa_default_handlers.cpp",
+                "cxa_demangle.cpp",
+                "cxa_exception_storage.cpp",
+                "cxa_guard.cpp",
+                "cxa_handlers.cpp",
+                "cxa_vector.cpp",
+                "cxa_virtual.cpp",
+                "stdlib_exception.cpp",
+                "stdlib_stdexcept.cpp",
+                "stdlib_typeinfo.cpp",
+                "abort_message.cpp",
+                "fallback_malloc.cpp",
+                "private_typeinfo.cpp",
+                "stdlib_new_delete.cpp",
+                "cxa_exception.cpp",
+                "cxa_personality.cpp",
+                "cxa_thread_atexit.cpp",
+            ],
+        ),
+        deps=runtime_generated,
+        includes=vendored_includes,
+        cflags=[*flags, "-w"],
+        cxxflags=cxx_runtime_flags,
+        cppflags=[
+            "-D_LIBCXXABI_BUILDING_LIBRARY",
+            "-D_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS",
+        ],
+        output=f"{out}/lib/libc++abi.a",
+    )
+    libcxx = library(
+        name=f"{flavor}_libcxx",
+        srcs=libcxx_sources,
+        deps=runtime_generated,
+        includes=vendored_includes,
+        cflags=[*flags, "-w"],
+        cxxflags=cxx_runtime_flags,
+        cppflags=[
+            "-D_LIBCPP_BUILDING_LIBRARY",
+            "-DLIBCXX_BUILDING_LIBCXXABI",
+        ],
+        output=f"{out}/lib/libc++.a",
+    )
+    dlfcn = library(
+        name=f"{flavor}_dlfcn",
+        srcs=dlfcn_srcs,
+        deps=[*runtime_generated, *symbol_headers],
+        includes=["$(B)/lib", *vendored_includes],
+        cflags=flags,
+        cxxflags=[
+            *cxx_runtime_flags,
+            "-Wno-bitwise-op-parentheses",
+            "-Wno-shift-op-parentheses",
+        ],
+        cppflags=["-DCOMPILE_DLOPEN", "-D_GNU_SOURCE"],
+        output=f"{out}/lib/libdlfcn.a",
+    )
 
-dlfcn_static = library(
-    name="vulkan_dlfcn",
-    srcs=dlfcn_srcs,
-    deps=[*runtime_generated, *symbol_headers],
-    includes=["$(B)/lib", *vendored_includes],
-    cflags=c_runtime_flags,
-    cxxflags=[
-        *cxx_runtime_flags,
-        "-Wno-bitwise-op-parentheses",
-        "-Wno-shift-op-parentheses",
-    ],
-    cppflags=["-DCOMPILE_DLOPEN", "-D_GNU_SOURCE"],
-    output="$(B)/bin/vulkan/lib/libdlfcn.a",
-)
+    return types.SimpleNamespace(
+        musl=musl,
+        compiler_rt=compiler_rt,
+        libunwind=libunwind,
+        libcxxabi=libcxxabi,
+        libcxx=libcxx,
+        dlfcn=dlfcn,
+    )
+
+
+vulkan_runtime = runtimeArchives("vulkan", "$(B)/bin/vulkan", [])
+solo_runtime = runtimeArchives("solo", "$(B)/bin/solo", ["-fPIE"])
 
 zconf = command(
     name="vulkan_zconf",
@@ -595,38 +611,39 @@ vulkan_app = library(
 )
 
 
-def muslCrt(name, source):
+def muslCrt(flavor, name, source, out, model_flags):
     return library(
-        name=f"vulkan_{name}",
+        name=f"{flavor}_{name}",
         srcs=[source],
         deps=runtime_generated,
         includes=[*musl_internal_includes, *vendored_includes],
         cflags=[
             *target_flags,
+            *model_flags,
             "-w",
             "-nostdinc",
             "-DCRT",
         ],
-        output=f"$(B)/bin/vulkan/crt/lib{name}.a",
+        output=f"{out}/crt/lib{name}.a",
     )
 
 
-vulkan_crt1 = muslCrt("crt1", f"{musl_root}/crt/crt1.c")
-vulkan_crti = muslCrt("crti", f"{musl_root}/crt/{machine}/crti.s")
-vulkan_crtn = muslCrt("crtn", f"{musl_root}/crt/{machine}/crtn.s")
-vulkan_crtend = muslCrt("crtend", "$(S)/lib/crtend.s")
+vulkan_crt1 = muslCrt("vulkan", "crt1", f"{musl_root}/crt/crt1.c", "$(B)/bin/vulkan", [])
+vulkan_crti = muslCrt("vulkan", "crti", f"{musl_root}/crt/{machine}/crti.s", "$(B)/bin/vulkan", [])
+vulkan_crtn = muslCrt("vulkan", "crtn", f"{musl_root}/crt/{machine}/crtn.s", "$(B)/bin/vulkan", [])
+vulkan_crtend = muslCrt("vulkan", "crtend", "$(S)/lib/crtend.s", "$(B)/bin/vulkan", [])
 
 vulkan_archives = [
     vulkan_app,
     vulkan_loader,
-    dlfcn_static,
+    vulkan_runtime.dlfcn,
     png,
     zlib,
-    libcxx,
-    libcxxabi,
-    libunwind,
-    musl,
-    compiler_rt,
+    vulkan_runtime.libcxx,
+    vulkan_runtime.libcxxabi,
+    vulkan_runtime.libunwind,
+    vulkan_runtime.musl,
+    vulkan_runtime.compiler_rt,
 ]
 vulkan = command(
     name="vulkan",
@@ -674,7 +691,7 @@ vulkan = command(
 )
 
 
-def vendoredBinary(name, source, prefix):
+def vendoredTest(name, source):
     application = library(
         name=f"{name}_app",
         srcs=[{"src": source, "inputs": [libcxx_config_path]}],
@@ -682,16 +699,16 @@ def vendoredBinary(name, source, prefix):
         includes=["$(B)/lib", *vendored_includes],
         cflags=c_runtime_flags,
         cxxflags=cxx_runtime_flags,
-        output=f"{prefix}/lib/lib{name}_app.a",
+        output=f"$(B)/tst/lib/lib{name}_app.a",
     )
     archives = [
         application,
-        dlfcn_static,
-        libcxx,
-        libcxxabi,
-        libunwind,
-        musl,
-        compiler_rt,
+        vulkan_runtime.dlfcn,
+        vulkan_runtime.libcxx,
+        vulkan_runtime.libcxxabi,
+        vulkan_runtime.libunwind,
+        vulkan_runtime.musl,
+        vulkan_runtime.compiler_rt,
     ]
 
     return command(
@@ -703,7 +720,7 @@ def vendoredBinary(name, source, prefix):
             vulkan_crtend.output,
             *[archive.output for archive in archives],
         ],
-        outputs=[f"{prefix}/{name}"],
+        outputs=[f"$(B)/tst/{name}"],
         deps=[vulkan_crt1, vulkan_crti, vulkan_crtn, vulkan_crtend, *archives],
         cmd=[
             cc,
@@ -717,7 +734,7 @@ def vendoredBinary(name, source, prefix):
             "-Wl,-z,noexecstack",
             "-Wl,-e,_start",
             "-o",
-            f"{prefix}/{name}",
+            f"$(B)/tst/{name}",
             "-Wl,--whole-archive",
             vulkan_crti.output,
             vulkan_crt1.output,
@@ -738,17 +755,78 @@ def vendoredBinary(name, source, prefix):
     )
 
 
-def vendoredTest(name, source):
-    return vendoredBinary(name, source, "$(B)/tst")
-
-
 smoke = vendoredTest("smoke", "$(S)/tst/smoke.cpp")
 pthread_bridge = vendoredTest("pthread_bridge", "$(S)/tst/pthread_bridge.cpp")
 
 # The solo command: `solo run ./app` executes a ready-made glibc binary over
-# the bridge, `solo ldd ./app` prints its closure. Built exactly like the
-# vulkan proof — a static musl executable with the loader linked in.
-solo_cli = vendoredBinary("solo", "$(S)/bin/solo/main.cpp", "$(B)/bin/solo")
+# the bridge, `solo ldd ./app` prints its closure. Its own runtime flavor,
+# linked static-PIE with musl's self-relocating rcrt1, so the image stays out
+# of the fixed addresses non-PIE guests own; nothing of the vulkan world is
+# in it.
+solo_rcrt1 = muslCrt("solo", "rcrt1", f"{musl_root}/crt/rcrt1.c", "$(B)/bin/solo", ["-fPIE"])
+solo_crti = muslCrt("solo", "crti", f"{musl_root}/crt/{machine}/crti.s", "$(B)/bin/solo", ["-fPIE"])
+solo_crtn = muslCrt("solo", "crtn", f"{musl_root}/crt/{machine}/crtn.s", "$(B)/bin/solo", ["-fPIE"])
+solo_crtend = muslCrt("solo", "crtend", "$(S)/lib/crtend.s", "$(B)/bin/solo", ["-fPIE"])
+
+solo_app = library(
+    name="solo_app",
+    srcs=[{"src": "$(S)/bin/solo/main.cpp", "inputs": [libcxx_config_path]}],
+    deps=[*runtime_generated, *symbol_headers],
+    includes=["$(B)/lib", *vendored_includes],
+    cflags=[*c_runtime_flags, "-fPIE"],
+    cxxflags=cxx_runtime_flags,
+    output="$(B)/bin/solo/lib/libsolo_app.a",
+)
+solo_archives = [
+    solo_app,
+    solo_runtime.dlfcn,
+    solo_runtime.libcxx,
+    solo_runtime.libcxxabi,
+    solo_runtime.libunwind,
+    solo_runtime.musl,
+    solo_runtime.compiler_rt,
+]
+solo_cli = command(
+    name="solo",
+    inputs=[
+        solo_rcrt1.output,
+        solo_crti.output,
+        solo_crtn.output,
+        solo_crtend.output,
+        *[archive.output for archive in solo_archives],
+    ],
+    outputs=["$(B)/bin/solo/solo"],
+    deps=[solo_rcrt1, solo_crti, solo_crtn, solo_crtend, *solo_archives],
+    cmd=[
+        cc,
+        *linker_flags,
+        "-nostdlib",
+        "-static-pie",
+        "-Wl,--eh-frame-hdr",
+        "-Wl,--build-id=none",
+        "-Wl,--gc-sections",
+        "-Wl,-z,noexecstack",
+        "-Wl,-e,_start",
+        "-o",
+        "$(B)/bin/solo/solo",
+        "-Wl,--whole-archive",
+        solo_crti.output,
+        solo_rcrt1.output,
+        "-Wl,--no-whole-archive",
+        "-Wl,--start-group",
+        "-Wl,--whole-archive",
+        solo_app.output,
+        "-Wl,--no-whole-archive",
+        *[archive.output for archive in solo_archives[1:]],
+        "-Wl,--end-group",
+        "-Wl,--whole-archive",
+        solo_crtn.output,
+        solo_crtend.output,
+        "-Wl,--no-whole-archive",
+    ],
+    descr="LD",
+    color="light-blue",
+)
 
 pthread_test = command(
     name="pthread_test",
