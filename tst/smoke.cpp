@@ -332,6 +332,16 @@ int main() {
         return 1;
     }
 
+    // The tail-called dlopen: at -O2 the host's forwarder is a tail jump,
+    // so a return address would name this static caller, which has no
+    // RUNPATH; the relocation-time binding keeps the host's.
+    using TailOpen = void* (*)(const char*, int);
+    auto tailOpen = reinterpret_cast<TailOpen>(requiredSymbol(runpathHost, "glibc_runpath_tail_open"));
+    if (!tailOpen || !tailOpen("libdlfcn-test-runpath-sibling.so", RTLD_NOW | RTLD_LOCAL)) {
+        fprintf(stderr, "tail-called dlopen lost the caller's DT_RUNPATH\n");
+        return 1;
+    }
+
     // The old-dtags counterpart: a caller carrying DT_RPATH only.
     auto* rpathHost = stub_dlopen("libdlfcn-test-rpath-host.so", RTLD_NOW | RTLD_LOCAL);
     if (!rpathHost) {

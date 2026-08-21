@@ -258,6 +258,9 @@ namespace {
         std::vector<Dependency> dependencies;
         bool glibcAbi = false;
         bool bionicAbi = false;
+        // The image's slot in the dlopen caller-thunk pool, assigned on the
+        // first relocation of its dlopen or dlmopen import.
+        int callerThunkIndex = -1;
 
         Elf64_Rela* relocations = nullptr;
         size_t relocationCount = 0;
@@ -359,8 +362,10 @@ namespace {
         void makeGlobal(LinkMap& image);
 
         bool findAddress(const void* address, ElfAddress* res);
-        LinkMap* findImageByAddress(const void* address);
         int iterateProgramHeaders(ElfProgramHeaderCallback& callback);
+
+        void* callerThunk(LinkMap& image, bool dlmopen);
+        LinkMap* callerImage(unsigned index);
 
         LinkMap* findByName(const std::string_view& name) const noexcept;
         LinkMap* findByPath(const std::string& path) const noexcept;
@@ -408,6 +413,10 @@ namespace {
         bool debugBindings_ = false;
         // Images whose symbols every later relocation may use, in load order.
         std::vector<LinkMap*> globalImages_;
+        // The images behind the numbered dlopen caller thunks; write-once
+        // slots, published before the thunk address escapes.
+        std::array<LinkMap*, 512> callerImages_{};
+        size_t callerCount_ = 0;
     };
 
     struct LoadedElf final: public ElfImage {
@@ -895,23 +904,26 @@ bool Loader::findAddress(const void* address, ElfAddress* res) {
     return true;
 }
 
-LinkMap* Loader::findImageByAddress(const void* address) {
-    std::lock_guard lock(mutex_);
-    auto needle = reinterpret_cast<uintptr_t>(address);
-    auto found = imagesByAddress_.upper_bound(needle);
+void* Loader::callerThunk(LinkMap& image, bool dlmopen) {
+    if (image.callerThunkIndex < 0) {
+        auto* probe = glibcDlopenCaller(callerCount_);
 
-    if (found == imagesByAddress_.begin()) {
-        return nullptr;
-    }
-    --found;
-
-    auto& image = *found->second;
-
-    if (needle >= image.mapStart + image.mapSize) {
-        return nullptr;
+        if (!probe) {
+            throwError("%s: the dlopen caller pool is exhausted", image.path.c_str());
+        }
+        image.callerThunkIndex = static_cast<int>(callerCount_);
+        // Written before the caller's address reaches any GOT slot; the
+        // loader mutex is held through both.
+        callerImages_[callerCount_++] = &image;
     }
 
-    return &image;
+    auto index = static_cast<unsigned>(image.callerThunkIndex);
+
+    return dlmopen ? glibcDlmopenCaller(index) : glibcDlopenCaller(index);
+}
+
+LinkMap* Loader::callerImage(unsigned index) {
+    return index < callerImages_.size() ? callerImages_[index] : nullptr;
 }
 
 int Loader::iterateProgramHeaders(ElfProgramHeaderCallback& callback) {
@@ -1690,6 +1702,15 @@ Definition Loader::resolveSymbol(LinkMap& image, size_t symbolIndex) {
     auto weak = ELF64_ST_BIND(symbol->st_info) == STB_WEAK;
 
     if (image.glibcAbi || image.bionicAbi) {
+        // Caller attribution, fixed at relocation time: this image's dlopen
+        // and dlmopen must search its own DT_RPATH/DT_RUNPATH, and here the
+        // image is known — no stack inspection, correct even when the guest
+        // tail-calls dlopen, where a return address would name the caller's
+        // caller.
+        if ((name == "dlopen" || name == "dlmopen") && (version.empty() || resolveGlibcOverride(name, version))) {
+            debugBinding(image, name, "glibc bridge (caller)");
+            return {reinterpret_cast<uintptr_t>(callerThunk(image, name == "dlmopen")), nullptr, nullptr};
+        }
         if (auto* address = resolveGlibcOverride(name, version); address) {
             debugBinding(image, name, "glibc bridge (override)");
             return {reinterpret_cast<uintptr_t>(address), nullptr, nullptr};
@@ -2122,10 +2143,9 @@ ElfImage* ElfImage::loadElf(std::string_view path, int flags) {
     return image ? image->wrapper.get() : nullptr;
 }
 
-ElfImage* ElfImage::loadElfFrom(const void* callerAddress, std::string_view path, int flags) {
+ElfImage* ElfImage::loadElfForCaller(unsigned callerIndex, std::string_view path, int flags) {
     auto& loader = Loader::instance();
-    auto* caller = callerAddress ? loader.findImageByAddress(callerAddress) : nullptr;
-    auto* image = loader.load(path, flags, caller);
+    auto* image = loader.load(path, flags, loader.callerImage(callerIndex));
 
     loader.runPendingInitializers();
 

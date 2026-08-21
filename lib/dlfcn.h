@@ -45,10 +45,11 @@ extern "C" {
 
     void* stub_dlsym(void* handle, const char* symbol);
     void* stub_dlopen(const char* filename, int flags);
-    // The dlopen issued by loaded code: caller is the return address the
-    // calling image will resume at, and its DT_RPATH/DT_RUNPATH join the
-    // library search for names without a slash.
-    void* stub_dlopen_from(const void* caller, const char* filename, int flags);
+    // The dlopen issued by loaded code: caller indexes the loader's dlopen
+    // caller pool and names the issuing image, whose DT_RPATH/DT_RUNPATH
+    // join the library search for names without a slash. ~0u means no
+    // caller and behaves like stub_dlopen.
+    void* stub_dlopen_caller(unsigned caller, const char* filename, int flags);
     int stub_dlclose(void* handle);
     char* stub_dlerror(void);
     // Startup wiring: the registry is unsynchronized, so finish every

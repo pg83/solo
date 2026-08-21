@@ -307,6 +307,9 @@ def main():
         subprocess.run(
             [
                 *shlex.split(os.environ["DLFCN_CC"]),
+                # -O2 turns the host's dlopen forwarder into a tail jump,
+                # pinning the relocation-time caller attribution.
+                "-O2",
                 "-fPIC",
                 "-fno-stack-protector",
                 "-shared",

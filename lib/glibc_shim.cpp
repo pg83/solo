@@ -63,12 +63,14 @@
 #include <wctype.h>
 
 #include <algorithm>
+#include <array>
 #include <string>
 #include <exception>
 #include <mutex>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 using namespace dyn;
 
@@ -3370,7 +3372,11 @@ namespace {
         return translated;
     }
 
-    static void* sh_glibc_dlopenFrom(const void* caller, const char* path, int flags) {
+    // No issuing image: dlopen reached outside a caller-pool entry (the
+    // shared adapter a dlsym lookup hands out, or dlopen(NULL)).
+    constexpr unsigned SH_NO_CALLER = ~0u;
+
+    static void* sh_glibc_dlopenFrom(unsigned caller, const char* path, int flags) {
         ThreadTls::current()->clearDlError();
 
         try {
@@ -3379,7 +3385,7 @@ namespace {
             }
 
             auto* provider = runtimeProvider(path);
-            auto* handle = stub_dlopen_from(caller, provider ? provider : path, sh_translate_dlopen_flags(flags));
+            auto* handle = stub_dlopen_caller(caller, provider ? provider : path, sh_translate_dlopen_flags(flags));
 
             if (!handle) {
                 copyStubError("library not found");
@@ -3396,11 +3402,8 @@ namespace {
         return nullptr;
     }
 
-    // The glibc-boundary entry: its caller's return address names the image
-    // that issued the dlopen, whose DT_RPATH/DT_RUNPATH join the search for
-    // names without a slash.
-    __attribute__((noinline)) static void* sh_glibc_dlopen(const char* path, int flags) {
-        return sh_glibc_dlopenFrom(__builtin_return_address(0), path, flags);
+    static void* sh_glibc_dlopen(const char* path, int flags) {
+        return sh_glibc_dlopenFrom(SH_NO_CALLER, path, flags);
     }
 
     static int sh_dladdr1(const void* address, Dl_info* information, void** extra, int flags) {
@@ -3423,15 +3426,46 @@ namespace {
     // The base namespace is plain dlopen; new link-map namespaces stay an
     // explicit non-goal, declined through dlerror rather than an abort —
     // libcuda imports the symbol.
-    __attribute__((noinline)) static void* sh_glibc_dlmopen(long namespace_id, const char* path, int flags) {
+    static void* sh_glibc_dlmopenFrom(unsigned caller, long namespace_id, const char* path, int flags) {
         if (namespace_id != 0) {
             ThreadTls::current()->setDlError("dlmopen: link-map namespaces are not supported");
 
             return nullptr;
         }
 
-        return sh_glibc_dlopenFrom(__builtin_return_address(0), path, flags);
+        return sh_glibc_dlopenFrom(caller, path, flags);
     }
+
+    static void* sh_glibc_dlmopen(long namespace_id, const char* path, int flags) {
+        return sh_glibc_dlmopenFrom(SH_NO_CALLER, namespace_id, path, flags);
+    }
+
+    // The dlopen caller pool: the loader binds a guest image's dlopen and
+    // dlmopen imports to one instantiation per image, so the issuing image
+    // is a template argument fixed at relocation time — no return-address
+    // inspection, correct even under a guest's tail call.
+    template <size_t Caller>
+    static void* sh_glibc_dlopen_caller(const char* path, int flags) {
+        return sh_glibc_dlopenFrom(Caller, path, flags);
+    }
+
+    template <size_t Caller>
+    static void* sh_glibc_dlmopen_caller(long namespace_id, const char* path, int flags) {
+        return sh_glibc_dlmopenFrom(Caller, namespace_id, path, flags);
+    }
+
+    template <size_t... Callers>
+    static constexpr auto makeDlopenCallers(std::index_sequence<Callers...>) {
+        return std::array<void* (*)(const char*, int), sizeof...(Callers)>{&sh_glibc_dlopen_caller<Callers>...};
+    }
+
+    template <size_t... Callers>
+    static constexpr auto makeDlmopenCallers(std::index_sequence<Callers...>) {
+        return std::array<void* (*)(long, const char*, int), sizeof...(Callers)>{&sh_glibc_dlmopen_caller<Callers>...};
+    }
+
+    constexpr auto shDlopenCallers = makeDlopenCallers(std::make_index_sequence<512>{});
+    constexpr auto shDlmopenCallers = makeDlmopenCallers(std::make_index_sequence<512>{});
 
     static void* sh_glibc_dlsym(void* handle, const char* name) {
         ThreadTls::current()->clearDlError();
@@ -4320,6 +4354,14 @@ void* GlibcAdapter::resolveSymbol(std::string_view name, std::string_view versio
     }
 
     return nullptr;
+}
+
+void* dyn::glibcDlopenCaller(size_t index) {
+    return index < shDlopenCallers.size() ? reinterpret_cast<void*>(shDlopenCallers[index]) : nullptr;
+}
+
+void* dyn::glibcDlmopenCaller(size_t index) {
+    return index < shDlmopenCallers.size() ? reinterpret_cast<void*>(shDlmopenCallers[index]) : nullptr;
 }
 
 void* dyn::resolveGlibcSymbol(std::string_view name, std::string_view version, bool weak) {

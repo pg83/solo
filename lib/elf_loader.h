@@ -57,9 +57,11 @@ namespace dyn {
         virtual void* lookupVersion(std::string_view symbol, std::string_view version) const = 0;
 
         static ElfImage* loadElf(std::string_view path, int flags);
-        // The dlopen entry from loaded code: callerAddress names the image
-        // that issued the call, whose DT_RPATH/DT_RUNPATH join the search.
-        static ElfImage* loadElfFrom(const void* callerAddress, std::string_view path, int flags);
+        // The dlopen entry from loaded code: callerIndex names the issuing
+        // image through the loader's dlopen caller pool, and its
+        // DT_RPATH/DT_RUNPATH join the search. An out-of-pool index (~0u)
+        // means no caller.
+        static ElfImage* loadElfForCaller(unsigned callerIndex, std::string_view path, int flags);
         static bool findAddress(const void* address, ElfAddress* res);
         static int iterateProgramHeaders(ElfProgramHeaderCallback& callback);
 

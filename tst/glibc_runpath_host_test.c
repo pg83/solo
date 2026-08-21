@@ -21,3 +21,10 @@ int glibc_runpath_host_value(void) {
 
     return value ? value() : 0;
 }
+
+/* Compiled at -O2 this forwarder becomes a tail jump, so a return address
+ * would name the static caller, which has no RUNPATH; the attribution must
+ * come from the relocation-time caller binding instead. */
+void* glibc_runpath_tail_open(const char* name, int flags) {
+    return dlopen(name, flags);
+}
