@@ -341,6 +341,8 @@ namespace {
         static Loader& instance();
 
         LinkMap* load(const std::string_view& requestedPath, int flags, LinkMap* dlopenCaller);
+        LinkMap* adopt(const char* path, const Elf64_Phdr* headers, size_t count, uintptr_t entry);
+        void linkImage(LinkMap& image, int flags, bool adopted);
         void runPendingInitializers();
 
         void* lookup(LinkMap& image, std::string_view name, std::string_view version);
@@ -749,6 +751,99 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
         }
     }
 
+    linkImage(image, flags, false);
+
+    return imagePointer;
+}
+
+// The guest the kernel already mapped, solo running as its PT_INTERP: the
+// auxiliary vector's program headers, entry point, and execution path stand
+// in for the file. The segments are in place with their final protections;
+// everything after the mapping is the same back half a loaded image takes.
+LinkMap* Loader::adopt(const char* path, const Elf64_Phdr* headers, size_t count, uintptr_t entry) {
+    std::lock_guard lock(mutex_);
+
+    if (!headers || !count) {
+        throwError("the auxiliary vector describes no program headers to adopt");
+    }
+
+    auto imageOwner = std::make_unique<LinkMap>();
+    auto& image = *imageOwner;
+
+    image.path = realPath(path).value_or(path);
+    rememberLibraryDirectory(image.path);
+
+    // The load bias, anchored by PT_PHDR: the table's runtime address is in
+    // hand, and the entry names its link-time one. Every dynamically linked
+    // executable carries the entry — the link editor emits it alongside
+    // PT_INTERP, and only a guest with an interpreter can arrive here.
+    auto biasKnown = false;
+
+    image.programHeaders.assign(headers, headers + count);
+    for (const auto& programHeader : image.programHeaders) {
+        if (programHeader.p_type == PT_PHDR) {
+            image.base = reinterpret_cast<uintptr_t>(headers) - programHeader.p_vaddr;
+            biasKnown = true;
+        }
+    }
+    if (!biasKnown) {
+        throwError("%s: the kernel-mapped executable has no PT_PHDR to anchor its load base", image.path.c_str());
+    }
+
+    auto pageSize = sysconf(_SC_PAGESIZE);
+
+    if (pageSize <= 0) {
+        throwError("%s: cannot determine page size", image.path.c_str());
+    }
+
+    uintptr_t minimumAddress = UINTPTR_MAX;
+    uintptr_t maximumAddress = 0;
+
+    for (const auto& programHeader : image.programHeaders) {
+        if (programHeader.p_type == PT_LOAD) {
+            minimumAddress = std::min(minimumAddress, alignDown(programHeader.p_vaddr, pageSize));
+            maximumAddress = std::max(maximumAddress, alignUp(programHeader.p_vaddr + programHeader.p_memsz, pageSize));
+        } else if (programHeader.p_type == PT_DYNAMIC) {
+            image.dynamic = reinterpret_cast<Elf64_Dyn*>(image.base + programHeader.p_vaddr);
+        } else if (programHeader.p_type == PT_GNU_RELRO) {
+            image.relroStart = programHeader.p_vaddr;
+            image.relroSize = programHeader.p_memsz;
+        } else if (programHeader.p_type == PT_TLS) {
+            image.tlsModule = addTlsModule();
+            image.tlsTemplate = image.base + programHeader.p_vaddr;
+            image.tlsFileSize = programHeader.p_filesz;
+            image.tlsMemorySize = programHeader.p_memsz;
+            image.tlsAlignment = programHeader.p_align;
+        }
+    }
+    if (minimumAddress == UINTPTR_MAX || maximumAddress <= minimumAddress) {
+        throwError("%s: no loadable segments", image.path.c_str());
+    }
+
+    image.mapStart = image.base + minimumAddress;
+    image.mapSize = maximumAddress - minimumAddress;
+    image.executable = true;
+    image.entry = entry;
+    image.programHeadersAddress = reinterpret_cast<uintptr_t>(headers);
+
+    auto* imagePointer = &image;
+    images_.push_back(std::move(imageOwner));
+    imagesByName_.emplace(image.path, &image);
+    imagesByName_.emplace(std::string(path), &image);
+    imagesByAddress_.emplace(image.mapStart, &image);
+
+    MarkFailed markFailed(image);
+
+    linkImage(image, RTLD_GLOBAL, true);
+
+    return imagePointer;
+}
+
+// The back half every image goes through, mapped by us or adopted from the
+// kernel: dependencies, relocations, protections, TLS, and the initializer
+// queue. An adopted image keeps the kernel's segment protections — they are
+// already final — but RELRO stays ours to seal; the kernel never applies it.
+void Loader::linkImage(LinkMap& image, int flags, bool adopted) {
     if (!image.dynamic) {
         throwError("%s: missing PT_DYNAMIC", image.path.c_str());
     }
@@ -767,7 +862,9 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
     auto lazy = !(flags & RTLD_NOW) && !image.bindNow && !bindNow_;
 
     applyRelocations(image, deferred, lazy);
-    image.protect();
+    if (!adopted) {
+        image.protect();
+    }
 
     for (const auto& item : deferred) {
         applyRelocation(*item.image, *item.relocation, true);
@@ -779,7 +876,7 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
 
     image.wrapper.reset(new LoadedElf(image));
     image.state = LinkMap::State::Ready;
-    if (asExecutable) {
+    if (image.executable) {
         mainExecutable_ = &image;
     }
     if (flags & RTLD_GLOBAL) {
@@ -789,8 +886,6 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
         fprintf(stderr, "solo: loaded %s at %#lx%s\n", image.path.c_str(), image.base, lazy ? " (lazy)" : "");
     }
     pendingInitializers_.push_back(&image);
-
-    return imagePointer;
 }
 
 // Initializers run without the loader mutex, so a thread an initializer
@@ -2268,6 +2363,22 @@ ElfExecutable dyn::loadExecutable(std::string_view path) {
     };
 }
 
+ElfExecutable dyn::adoptExecutable(const char* path, const Elf64_Phdr* headers, size_t count, uintptr_t entry) {
+    auto& loader = Loader::instance();
+    auto* image = loader.adopt(path, headers, count, entry);
+
+    if (!traceLoadedObjects()) {
+        loader.runPendingInitializers();
+    }
+
+    return {
+        image->entry,
+        image->programHeadersAddress,
+        image->programHeaders.size(),
+        image->base,
+    };
+}
+
 void dyn::runExecutableInitializers(int argc, char** argv, char** envp) {
     auto* image = Loader::instance().mainExecutable_;
 
@@ -2358,6 +2469,15 @@ ElfMainProgram dyn::elfMainProgram() {
                 program.base = reinterpret_cast<uintptr_t>(mapped) - header.p_vaddr;
             }
         }
+    }
+
+    // In interpreter mode the auxiliary vector's main program is the adopted
+    // guest, already walked with the loader's images.
+    {
+        auto& loader = Loader::instance();
+        std::lock_guard lock(loader.mutex_);
+
+        program.adopted = loader.mainExecutable_ && loader.mainExecutable_->programHeadersAddress == reinterpret_cast<uintptr_t>(program.headers);
     }
 
     return program;

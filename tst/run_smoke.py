@@ -450,39 +450,48 @@ def run_solo_checks(root, sysroot_lib, environment):
         raise SystemExit(f"no ld-linux in the sysroot under {sysroot_lib}")
     # Both link models: a PIE the loader places anywhere, and a non-PIE that
     # owns its fixed link-time addresses — which is why solo itself is
-    # static-PIE.
-    guests = []
+    # static-PIE. Each also links with solo as its PT_INTERP: the kernel maps
+    # the guest and starts solo as the interpreter, and the guest runs by
+    # plain execution, no solo command in front.
+    guests = {}
     for suffix, model, crt1 in (
         ("", ["-fPIE", "-pie"], "Scrt1.o"),
         ("-exec", ["-fno-pie", "-no-pie"], "crt1.o"),
     ):
-        guest = root / f"dlfcn-test-guest{suffix}"
-        subprocess.run(
-            [
-                *shlex.split(os.environ["DLFCN_CC"]),
-                "-O2",
-                *model,
-                "-fno-stack-protector",
-                "-nostdlib",
-                "-Wl,--no-as-needed",
-                str(root / sysroot_lib / crt1),
-                str(root / sysroot_lib / "crti.o"),
-                os.environ["DLFCN_GLIBC_GUEST_TEST_SOURCE"],
-                str(root / sysroot_lib / "libc.so.6"),
-                str(ld_so[0]),
-                str(root / sysroot_lib / "crtn.o"),
-                "-o",
-                str(guest),
-            ],
-            check=True,
-        )
-        guests.append(guest)
+        for interp, linker in (
+            ("", []),
+            ("-interp", [f"-Wl,--dynamic-linker={os.path.abspath(solo)}"]),
+        ):
+            guest = root / f"dlfcn-test-guest{suffix}{interp}"
+            subprocess.run(
+                [
+                    *shlex.split(os.environ["DLFCN_CC"]),
+                    "-O2",
+                    *model,
+                    *linker,
+                    "-fno-stack-protector",
+                    "-nostdlib",
+                    "-Wl,--no-as-needed",
+                    str(root / sysroot_lib / crt1),
+                    str(root / sysroot_lib / "crti.o"),
+                    os.environ["DLFCN_GLIBC_GUEST_TEST_SOURCE"],
+                    str(root / sysroot_lib / "libc.so.6"),
+                    str(ld_so[0]),
+                    str(root / sysroot_lib / "crtn.o"),
+                    "-o",
+                    str(guest),
+                ],
+                check=True,
+            )
+            guests[suffix + interp] = guest
 
     guest_environment = {**environment, "SOLO_GUEST_ENV": "smoke-value"}
     for command in (
-        [solo, "run", str(guests[0]), "alpha", "beta"],
-        [solo, str(guests[0]), "alpha", "beta"],
-        [solo, "run", str(guests[1]), "alpha", "beta"],
+        [solo, "run", str(guests[""]), "alpha", "beta"],
+        [solo, str(guests[""]), "alpha", "beta"],
+        [solo, "run", str(guests["-exec"]), "alpha", "beta"],
+        [str(guests["-interp"]), "alpha", "beta"],
+        [str(guests["-exec-interp"]), "alpha", "beta"],
     ):
         run = subprocess.run(
             command,
@@ -511,22 +520,29 @@ def run_solo_checks(root, sysroot_lib, environment):
             print(run.stdout, file=sys.stderr)
             raise SystemExit(f"solo run exited {run.returncode}, wanted the guest's 42")
 
-    ldd = subprocess.run(
-        [solo, "ldd", str(guests[0])],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        env=guest_environment,
-    )
-    if "libc.so.6 => the glibc ABI bridge" not in ldd.stdout:
-        print(ldd.stdout, file=sys.stderr)
-        raise SystemExit("solo ldd misses the bridged libc.so.6 line")
-    if "guest main" in ldd.stdout:
-        raise SystemExit("solo ldd ran the guest instead of only tracing it")
-    if ldd.returncode:
-        print(ldd.stdout, file=sys.stderr)
-        raise SystemExit(f"solo ldd exited {ldd.returncode}")
+    # Trace mode both ways ldd reaches it: the subcommand, and the
+    # environment variable against a guest whose interpreter is solo — how a
+    # real ldd script drives the interpreter.
+    for command, env in (
+        ([solo, "ldd", str(guests[""])], guest_environment),
+        ([str(guests["-interp"])], {**guest_environment, "LD_TRACE_LOADED_OBJECTS": "1"}),
+    ):
+        ldd = subprocess.run(
+            command,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+        if "libc.so.6 => the glibc ABI bridge" not in ldd.stdout:
+            print(ldd.stdout, file=sys.stderr)
+            raise SystemExit("solo ldd misses the bridged libc.so.6 line")
+        if "guest main" in ldd.stdout:
+            raise SystemExit("solo ldd ran the guest instead of only tracing it")
+        if ldd.returncode:
+            print(ldd.stdout, file=sys.stderr)
+            raise SystemExit(f"solo ldd exited {ldd.returncode}")
 
 
 def rerun_under_gdb(command, environment):

@@ -53,6 +53,9 @@ namespace dyn {
         const Elf64_Phdr* headers = nullptr;
         Elf64_Half count = 0;
         uintptr_t base = 0;
+        // The program these headers describe is an adopted guest, already in
+        // the loader's own image list; reporting both would double it.
+        bool adopted = false;
     };
 
     ElfMainProgram elfMainProgram();
@@ -69,6 +72,12 @@ namespace dyn {
     };
 
     ElfExecutable loadExecutable(std::string_view path);
+    // The PT_INTERP entry: the kernel mapped the guest and started solo as
+    // its interpreter, and the auxiliary vector carries the guest's program
+    // headers, entry point, and execution path. The kernel's mapping is
+    // adopted as the main executable and taken through the same closure,
+    // relocations, TLS, and RELRO as a loaded one.
+    ElfExecutable adoptExecutable(const char* path, const Elf64_Phdr* headers, size_t count, uintptr_t entry);
     // The executable's DT_PREINIT_ARRAY, DT_INIT, and DT_INIT_ARRAY, with
     // glibc's initializer arguments; the bridge's __libc_start_main calls
     // this when the guest's crt passes no init function of its own.

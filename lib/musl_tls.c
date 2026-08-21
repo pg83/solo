@@ -25,9 +25,11 @@
 
 #include "musl_tls.h"
 
+#include <elf.h>
+
 /* musl's internal headers rely on annotations its own tree defines in
- * src/include/features.h; this file compiles outside that tree. The header
- * itself comes by relative path, not by include directory: musl's private
+ * src/include/features.h; this file compiles outside that tree. The headers
+ * themselves come by relative path, not by include directory: musl's private
  * headers shadow public names, so their directory must never appear on the
  * include path the library's C++ sources share. */
 #ifndef hidden
@@ -37,7 +39,7 @@
 #define weak __attribute__((__weak__))
 #endif
 
-#include "../ext/musl/src/internal/libc.h"
+#include "../ext/musl/src/internal/pthread_impl.h"
 
 /* The donated span and the ceiling on a block's alignment; the pad's own
  * alignment is what makes every thread pointer a multiple of it. liblsan's
@@ -206,4 +208,105 @@ void soloTlsRegister(const void* image, size_t length, size_t size, intptr_t off
 	libc.tls_cnt++;
 	/* One more dtv slot in every thread created from here on. */
 	libc.tls_size += sizeof(uintptr_t);
+}
+
+/* The linker's own symbol on the binary's mapped ELF header; weak, so a
+ * layout that leaves the header unmapped resolves it to null and the
+ * auxiliary vector takes over. */
+extern const unsigned char __ehdr_start[] weak;
+extern weak hidden const size_t _DYNAMIC[];
+
+static struct tls_module soloMainTls;
+
+/* musl's MIN_TLS_ALIGN, reconstructed the same way. */
+struct soloAlignProbe {
+	char c;
+	struct pthread pt;
+};
+#define SOLO_MIN_TLS_ALIGN offsetof(struct soloAlignProbe, pt)
+
+/* The main thread's TLS, replacing musl's static_init_tls through the weak
+ * alias musl leaves for exactly this substitution — its own dynamic linker
+ * overrides __init_tls the same way. The substance of the override is one
+ * line: musl reads the program headers out of the auxiliary vector, but when
+ * solo runs as a guest's PT_INTERP, the vector describes the guest, and the
+ * guest's PT_TLS — or its absence — would unseat the pad from the thread
+ * pointer before any of our code ran. The binary this file is linked into
+ * describes itself: its program headers sit behind its own mapped ELF
+ * header, whoever started the process and whatever the vector says. The
+ * layout arithmetic below repeats musl's to the letter. */
+void __init_tls(size_t *aux)
+{
+	unsigned char *p;
+	size_t n, phent;
+	Elf64_Phdr *phdr, *tls_phdr = 0;
+	size_t base = 0;
+	void *mem;
+
+	if (__ehdr_start) {
+		const Elf64_Ehdr *header = (const Elf64_Ehdr *)__ehdr_start;
+
+		p = (unsigned char *)__ehdr_start + header->e_phoff;
+		n = header->e_phnum;
+		phent = header->e_phentsize;
+	} else {
+		p = (unsigned char *)aux[AT_PHDR];
+		n = aux[AT_PHNUM];
+		phent = aux[AT_PHENT];
+	}
+
+	size_t table = (size_t)p;
+
+	for (; n && p; n--, p += phent) {
+		phdr = (Elf64_Phdr *)p;
+		if (phdr->p_type == PT_PHDR)
+			base = table - phdr->p_vaddr;
+		if (phdr->p_type == PT_DYNAMIC && _DYNAMIC)
+			base = (size_t)_DYNAMIC - phdr->p_vaddr;
+		if (phdr->p_type == PT_TLS)
+			tls_phdr = phdr;
+		if (phdr->p_type == PT_GNU_STACK &&
+		    phdr->p_memsz > __default_stacksize)
+			__default_stacksize =
+				phdr->p_memsz < DEFAULT_STACK_MAX ?
+				phdr->p_memsz : DEFAULT_STACK_MAX;
+	}
+
+	if (tls_phdr) {
+		soloMainTls.image = (void *)(base + tls_phdr->p_vaddr);
+		soloMainTls.len = tls_phdr->p_filesz;
+		soloMainTls.size = tls_phdr->p_memsz;
+		soloMainTls.align = tls_phdr->p_align;
+		libc.tls_cnt = 1;
+		libc.tls_head = &soloMainTls;
+	}
+
+	soloMainTls.size += (-soloMainTls.size - (uintptr_t)soloMainTls.image)
+		& (soloMainTls.align - 1);
+#ifdef TLS_ABOVE_TP
+	soloMainTls.offset = GAP_ABOVE_TP;
+	soloMainTls.offset += (-GAP_ABOVE_TP + (uintptr_t)soloMainTls.image)
+		& (soloMainTls.align - 1);
+#else
+	soloMainTls.offset = soloMainTls.size;
+#endif
+	if (soloMainTls.align < SOLO_MIN_TLS_ALIGN)
+		soloMainTls.align = SOLO_MIN_TLS_ALIGN;
+
+	libc.tls_align = soloMainTls.align;
+	libc.tls_size = 2*sizeof(void *) + sizeof(struct pthread)
+#ifdef TLS_ABOVE_TP
+		+ soloMainTls.offset
+#endif
+		+ soloMainTls.size + soloMainTls.align
+		+ SOLO_MIN_TLS_ALIGN - 1 & -SOLO_MIN_TLS_ALIGN;
+
+	/* Always past musl's builtin_tls threshold here: the pad alone is a
+	 * megabyte. A failed map crashes on the first dereference, the same
+	 * bargain musl strikes. */
+	mem = (void *)__syscall(SYS_mmap, 0, libc.tls_size,
+		PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
+
+	if (__init_tp(__copy_tls(mem)) < 0)
+		a_crash();
 }

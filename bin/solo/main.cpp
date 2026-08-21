@@ -110,9 +110,47 @@ namespace {
 
         return 2;
     }
+
+    // The PT_INTERP path: the kernel mapped the guest, mapped solo where the
+    // guest's interpreter string pointed, and started solo with the guest's
+    // own stack. The auxiliary vector describes the guest — headers, entry,
+    // execution path — and stays valid for it, so after adoption the jump
+    // reuses the kernel's stack unchanged: the word before argv is argc,
+    // exactly where the guest's _start wants the stack pointer. Exits like
+    // ld.so: 127 when the guest cannot be started.
+    [[noreturn]] static void interpret(char** argv) {
+        try {
+            auto* headers = reinterpret_cast<const Elf64_Phdr*>(getauxval(AT_PHDR));
+            auto count = static_cast<size_t>(getauxval(AT_PHNUM));
+            auto* name = reinterpret_cast<const char*>(getauxval(AT_EXECFN));
+
+            if (!name || !*name) {
+                name = argv[0] ? argv[0] : "the kernel-mapped guest";
+            }
+
+            auto executable = adoptExecutable(name, headers, count, getauxval(AT_ENTRY));
+
+            if (traceLoadedObjects()) {
+                exit(0);
+            }
+            enterGuest(executable.entry, reinterpret_cast<uintptr_t>(argv - 1));
+        } catch (const std::exception& error) {
+            fprintf(stderr, "solo: %s\n", error.what());
+        } catch (...) {
+            fprintf(stderr, "solo: unknown error\n");
+        }
+        exit(127);
+    }
 }
 
 int main(int argc, char** argv) {
+    // A nonzero AT_BASE is the interpreter's load base — the kernel only
+    // publishes one when it loaded an interpreter, and then that interpreter
+    // is this process's own image.
+    if (getauxval(AT_BASE)) {
+        interpret(argv);
+    }
+
     auto ldd = false;
     int consumed = 1;
 

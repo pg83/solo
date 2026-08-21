@@ -2628,7 +2628,7 @@ namespace {
     static int iterateMainProgramHeaders(int (*callback)(dl_phdr_info*, size_t, void*), void* data) {
         const auto program = elfMainProgram();
 
-        if (!program.count) {
+        if (!program.count || program.adopted) {
             return 0;
         }
 
