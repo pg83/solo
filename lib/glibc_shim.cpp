@@ -3003,6 +3003,23 @@ namespace {
 
     struct GlibcHandle;
 
+    // glibc's locale_t points at a public struct — the old xlocale.h
+    // __locale_struct: thirteen per-category data pointers, the three ctype
+    // tables, and the category names. libstdc++ builds its classic-locale
+    // ctype facets by reading the table pointers straight out of the
+    // struct, so the bridge cannot hand guests musl's opaque locale
+    // objects: every locale a guest sees is this wrapper, the musl locale
+    // riding in the first category slot and the bridge's tables — the same
+    // ones __ctype_b_loc serves — in their ABI positions. musl speaks the C
+    // locales only, so one set of tables fits every wrapper.
+    struct GlibcLocale {
+        void* categories[13];
+        const unsigned short* ctypeClass;
+        const int* ctypeToLower;
+        const int* ctypeToUpper;
+        const char* names[13];
+    };
+
     struct GlibcAdapter {
         GlibcAdapter();
 
@@ -3021,6 +3038,12 @@ namespace {
         GlibcHandle* handleFor(void* stubHandle, bool runtime);
         GlibcHandle* defaultHandle();
 
+        // The locale_t facade: a glibc-shaped wrapper per musl locale, and
+        // back. forgetLocale drops the wrapper of a locale musl released.
+        locale_t wrapLocale(locale_t locale);
+        locale_t unwrapLocale(locale_t locale);
+        void forgetLocale(locale_t locale);
+
         unsigned char libcSingleThreaded_;
         int tolowerTable_[384];
         const int* tolowerPointer_;
@@ -3034,6 +3057,12 @@ namespace {
         std::mutex handleMutex_;
         std::unordered_map<void*, GlibcHandle*> handles_;
         GlibcHandle* lastHandle_ = nullptr;
+        // Both directions in O(1): the musl locale to its wrapper for
+        // wrapping, and the wrapper set for recognizing one on the way back —
+        // the wrapper itself carries its musl locale in the first slot.
+        std::mutex localeMutex_;
+        std::unordered_map<locale_t, GlibcLocale*> locales_;
+        std::unordered_set<GlibcLocale*> wrappers_;
     };
 
     static const int** sh_ctype_tolower_loc(void) {
@@ -3920,6 +3949,58 @@ GlibcHandle* GlibcAdapter::handleFor(void* stubHandle, bool runtime) {
     return slot;
 }
 
+locale_t GlibcAdapter::wrapLocale(locale_t locale) {
+    if (!locale || locale == LC_GLOBAL_LOCALE) {
+        return locale;
+    }
+
+    std::lock_guard lock(localeMutex_);
+    auto& wrapper = locales_[locale];
+
+    if (!wrapper) {
+        wrapper = new GlibcLocale{};
+        wrapper->categories[0] = locale;
+        wrapper->ctypeClass = ctypePointer_;
+        wrapper->ctypeToLower = tolowerPointer_;
+        wrapper->ctypeToUpper = toupperPointer_;
+        for (auto& name : wrapper->names) {
+            name = "C";
+        }
+        wrappers_.insert(wrapper);
+    }
+
+    return reinterpret_cast<locale_t>(wrapper);
+}
+
+locale_t GlibcAdapter::unwrapLocale(locale_t locale) {
+    if (!locale || locale == LC_GLOBAL_LOCALE) {
+        return locale;
+    }
+
+    auto* wrapper = reinterpret_cast<GlibcLocale*>(locale);
+    std::lock_guard lock(localeMutex_);
+
+    if (wrappers_.contains(wrapper)) {
+        return static_cast<locale_t>(wrapper->categories[0]);
+    }
+
+    return locale;
+}
+
+void GlibcAdapter::forgetLocale(locale_t locale) {
+    if (!locale || locale == LC_GLOBAL_LOCALE) {
+        return;
+    }
+
+    std::lock_guard lock(localeMutex_);
+
+    if (auto wrapper = locales_.find(locale); wrapper != locales_.end()) {
+        wrappers_.erase(wrapper->second);
+        delete wrapper->second;
+        locales_.erase(wrapper);
+    }
+}
+
 GlibcHandle* GlibcAdapter::defaultHandle() {
     auto* handle = handleFor(stub_dlopen("", RTLD_LOCAL), true);
 
@@ -4193,67 +4274,12 @@ namespace {
         return -1;
     }
 
-    // glibc's locale_t points at a public struct — the old xlocale.h
-    // __locale_struct: thirteen per-category data pointers, the three ctype
-    // tables, and the category names. libstdc++ builds its classic-locale
-    // ctype facets by reading the table pointers straight out of the
-    // struct, so the bridge cannot hand guests musl's opaque locale
-    // objects: every locale a guest sees is this wrapper, the musl locale
-    // riding in the first category slot and the bridge's tables — the same
-    // ones __ctype_b_loc serves — in their ABI positions. musl speaks the C
-    // locales only, so one set of tables fits every wrapper.
-    struct GlibcLocale {
-        void* categories[13];
-        const unsigned short* ctypeClass;
-        const int* ctypeToLower;
-        const int* ctypeToUpper;
-        const char* names[13];
-    };
-
-    static std::mutex localesMutex;
-    static std::unordered_map<locale_t, GlibcLocale*>& localeWrappers() {
-        static auto* wrappers = new std::unordered_map<locale_t, GlibcLocale*>();
-
-        return *wrappers;
-    }
-
     static locale_t sh_wrap_locale(locale_t locale) {
-        if (!locale || locale == LC_GLOBAL_LOCALE) {
-            return locale;
-        }
-
-        std::lock_guard lock(localesMutex);
-        auto& wrapper = localeWrappers()[locale];
-
-        if (!wrapper) {
-            wrapper = new GlibcLocale{};
-            wrapper->categories[0] = locale;
-            wrapper->ctypeClass = *GlibcAdapter::instance().ctypeFlags();
-            wrapper->ctypeToLower = *GlibcAdapter::instance().ctypeTolower();
-            wrapper->ctypeToUpper = *GlibcAdapter::instance().ctypeToupper();
-            for (auto& name : wrapper->names) {
-                name = "C";
-            }
-        }
-
-        return reinterpret_cast<locale_t>(wrapper);
+        return GlibcAdapter::instance().wrapLocale(locale);
     }
 
     static locale_t sh_unwrap_locale(locale_t locale) {
-        if (!locale || locale == LC_GLOBAL_LOCALE) {
-            return locale;
-        }
-
-        auto* wrapper = reinterpret_cast<GlibcLocale*>(locale);
-        std::lock_guard lock(localesMutex);
-
-        for (const auto& entry : localeWrappers()) {
-            if (entry.second == wrapper) {
-                return entry.first;
-            }
-        }
-
-        return locale;
+        return GlibcAdapter::instance().unwrapLocale(locale);
     }
 
     static locale_t sh_newlocale(int mask, const char* name, locale_t base) {
@@ -4261,13 +4287,8 @@ namespace {
         auto fresh = newlocale(mask, name, unwrapped);
 
         // glibc absorbs the base object; a reallocation strands its wrapper.
-        if (fresh && unwrapped && unwrapped != LC_GLOBAL_LOCALE && fresh != unwrapped) {
-            std::lock_guard lock(localesMutex);
-
-            if (auto wrapper = localeWrappers().find(unwrapped); wrapper != localeWrappers().end()) {
-                delete wrapper->second;
-                localeWrappers().erase(wrapper);
-            }
+        if (fresh && fresh != unwrapped) {
+            GlibcAdapter::instance().forgetLocale(unwrapped);
         }
 
         return sh_wrap_locale(fresh);
@@ -4280,14 +4301,7 @@ namespace {
     static void sh_freelocale(locale_t locale) {
         auto unwrapped = sh_unwrap_locale(locale);
 
-        if (unwrapped && unwrapped != LC_GLOBAL_LOCALE) {
-            std::lock_guard lock(localesMutex);
-
-            if (auto wrapper = localeWrappers().find(unwrapped); wrapper != localeWrappers().end()) {
-                delete wrapper->second;
-                localeWrappers().erase(wrapper);
-            }
-        }
+        GlibcAdapter::instance().forgetLocale(unwrapped);
         freelocale(unwrapped);
     }
 
