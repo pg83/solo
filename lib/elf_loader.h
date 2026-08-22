@@ -59,6 +59,10 @@ namespace dyn {
     };
 
     ElfMainProgram elfMainProgram();
+    // The path the loader ran the main executable from, empty when the main
+    // program was mapped by the kernel instead. What readlink on
+    // /proc/self/exe should have answered inside the guest.
+    std::string_view elfMainExecutablePath();
     // The interpreter's own image — this code, solo — when the kernel loaded
     // it as a guest's PT_INTERP: the guest's unwinder walks the loader's
     // frames through dl_iterate_phdr, so the image must be reported even

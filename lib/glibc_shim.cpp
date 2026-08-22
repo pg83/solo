@@ -325,15 +325,74 @@ namespace {
         return pread(descriptor, destination, count, offset);
     }
 
-    static ssize_t sh_readlinkat_chk(int directory, const char* path, char* destination, size_t count, size_t destination_size) {
-        if (count > destination_size) {
-            sh_fortify_fail();
+    // readlink on /proc/self/exe returns the kernel's truth — solo — while
+    // the guest is asking about itself; hostfxr-style self-location trips
+    // over the honest answer. The bridge substitutes the executable the
+    // loader actually ran, resolved to an absolute path once, on first use.
+    static const char* sh_self_exe_path() {
+        static const char* resolved = [] {
+            auto path = elfMainExecutablePath();
+
+            if (path.empty()) {
+                return static_cast<const char*>(nullptr);
+            }
+            return static_cast<const char*>(realpath(std::string(path).c_str(), nullptr));
+        }();
+        return resolved;
+    }
+
+    static bool sh_is_self_exe(const char* path) {
+        return path && strcmp(path, "/proc/self/exe") == 0 && sh_self_exe_path();
+    }
+
+    static ssize_t sh_self_exe_readlink(char* buffer, size_t length) {
+        const auto* path = sh_self_exe_path();
+        auto count = strlen(path);
+
+        if (count > length) {
+            count = length;
+        }
+        memcpy(buffer, path, count);
+        return static_cast<ssize_t>(count);
+    }
+
+    static char* sh_realpath(const char* path, char* resolved) {
+        if (sh_is_self_exe(path)) {
+            const auto* self = sh_self_exe_path();
+
+            if (!resolved) {
+                return strdup(self);
+            }
+            // The caller's contract: a PATH_MAX buffer.
+            strcpy(resolved, self);
+            return resolved;
+        }
+        return realpath(path, resolved);
+    }
+
+    static ssize_t sh_readlink(const char* path, char* buffer, size_t length) {
+        if (sh_is_self_exe(path)) {
+            return sh_self_exe_readlink(buffer, length);
+        }
+        return readlink(path, buffer, length);
+    }
+
+    static ssize_t sh_readlinkat(int directory, const char* path, char* destination, size_t count) {
+        if (sh_is_self_exe(path)) {
+            return sh_self_exe_readlink(destination, count);
         }
         return readlinkat(directory, path, destination, count);
     }
 
+    static ssize_t sh_readlinkat_chk(int directory, const char* path, char* destination, size_t count, size_t destination_size) {
+        if (count > destination_size) {
+            sh_fortify_fail();
+        }
+        return sh_readlinkat(directory, path, destination, count);
+    }
+
     static char* sh_realpath_chk(const char* path, char* destination, size_t destination_size) {
-        char* temporary = realpath(path, NULL);
+        char* temporary = sh_realpath(path, NULL);
         if (!temporary) {
             return NULL;
         }
@@ -774,7 +833,7 @@ namespace {
 
     static ssize_t sh_readlink_chk(const char* path, char* buffer, size_t length, size_t size) {
         (void)size;
-        return readlink(path, buffer, length);
+        return sh_readlink(path, buffer, length);
     }
 
     static ssize_t sh_recv_chk(int descriptor, void* buffer, size_t length, size_t size, int flags) {
@@ -5447,7 +5506,8 @@ namespace {
         SH_FUNCTION("qsort", "GLIBC_2.2.5", qsort),
         SH_FUNCTION("fread", "GLIBC_2.2.5", fread),
         SH_FUNCTION("strtod", "GLIBC_2.2.5", strtod),
-        SH_FUNCTION("readlink", "GLIBC_2.2.5", readlink),
+        SH_FUNCTION("readlink", "GLIBC_2.2.5", sh_readlink),
+        SH_FUNCTION("readlinkat", "GLIBC_2.4", sh_readlinkat),
         SH_FUNCTION("fclose", "GLIBC_2.2.5", fclose),
         SH_FUNCTION("opendir", "GLIBC_2.2.5", opendir),
         SH_FUNCTION("strlen", "GLIBC_2.2.5", strlen),
@@ -5471,7 +5531,7 @@ namespace {
         SH_FUNCTION("dlopen", "GLIBC_2.2.5", sh_glibc_dlopen),
         SH_FUNCTION("dlmopen", "GLIBC_2.3.4", sh_glibc_dlmopen),
         SH_FUNCTION("__memcpy_chk", "GLIBC_2.3.4", sh_memcpy_chk),
-        SH_FUNCTION("realpath", "GLIBC_2.3", realpath),
+        SH_FUNCTION("realpath", "GLIBC_2.3", sh_realpath),
         SH_FUNCTION("memcpy", "GLIBC_2.14", memcpy),
         SH_FUNCTION("__isoc23_strtol", "GLIBC_2.38", sh_isoc23_strtol),
         SH_FUNCTION("fileno", "GLIBC_2.2.5", fileno),
@@ -5682,6 +5742,9 @@ GlibcAdapter::GlibcAdapter()
     }
 
     static constexpr std::string_view overrideNames[] = {
+        "readlink",
+        "readlinkat",
+        "realpath",
         "__cxa_atexit",
         "getaddrinfo",
         "fgetgrent",
