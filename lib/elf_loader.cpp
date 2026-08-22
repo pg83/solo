@@ -2652,6 +2652,17 @@ ElfMainProgram dyn::elfMainProgram() {
     return program;
 }
 
+std::string_view dyn::elfMainExecutablePath() {
+    auto& loader = Loader::instance();
+    std::lock_guard lock(loader.mutex_);
+
+    if (!loader.mainExecutable_) {
+        return {};
+    }
+    // The path string lives as long as the image, which is forever.
+    return loader.mainExecutable_->path;
+}
+
 ElfMainProgram dyn::elfInterpreterImage() {
     // A nonzero AT_BASE is the kernel's word that this image was loaded as
     // an interpreter; its own ELF header sits at that base.
