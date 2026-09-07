@@ -2,6 +2,7 @@
 
 #include "dlfcn.h"
 #include "bionic_shim.h"
+#include "bundle.h"
 #include "glibc_shim.h"
 #include "musl_tls.h"
 #include "thread_tls.h"
@@ -175,14 +176,20 @@ namespace {
         return pointer;
     }
 
+    // An image's bytes, wherever they live. An ordinary image owns the
+    // descriptor it opened; a bundled one borrows the descriptor of the
+    // executable it was appended to and reads at a base offset, which the
+    // packer kept page-aligned so that mapping stays a plain file mapping.
     struct File {
-        explicit File(const std::string& path);
+        explicit File(const ImageSource& source);
 
         ~File();
 
         void read(void* destination, size_t size, off_t offset) const;
 
         int descriptor_;
+        off_t base_;
+        bool owned_;
     };
 
     struct LinkMap;
@@ -385,12 +392,12 @@ namespace {
         LinkMap* findByName(const std::string_view& name) const noexcept;
         LinkMap* findByPath(const std::string& path) const noexcept;
 
-        static std::optional<std::string> realPath(const std::string& path);
-        static std::optional<std::string> inDirectory(const std::string_view& directory, const std::string_view& name);
-        static std::optional<std::string> inSearchPath(std::string_view directories, const std::string_view& name, bool emptyIsCurrentDirectory);
-        static std::optional<std::string> inCache(const std::string_view& name);
+        static std::optional<ImageSource> realPath(const std::string& path);
+        static std::optional<ImageSource> inDirectory(const std::string_view& directory, const std::string_view& name);
+        static std::optional<ImageSource> inSearchPath(std::string_view directories, const std::string_view& name, bool emptyIsCurrentDirectory);
+        static std::optional<ImageSource> inCache(const std::string_view& name);
 
-        std::optional<std::string> resolvePath(const std::string_view& path, const LinkMap* dlopenCaller) const;
+        std::optional<ImageSource> resolvePath(const std::string_view& path, const LinkMap* dlopenCaller) const;
         void rememberLibraryDirectory(const std::string& path);
 
         size_t addTlsModule();
@@ -452,22 +459,26 @@ namespace {
     };
 }
 
-File::File(const std::string& path)
-    : descriptor_(open(path.c_str(), O_RDONLY | O_CLOEXEC))
+File::File(const ImageSource& source)
+    : descriptor_(source.descriptor >= 0 ? source.descriptor : open(source.path.c_str(), O_RDONLY | O_CLOEXEC))
+    , base_(source.base)
+    , owned_(source.descriptor < 0)
 {
     if (descriptor_ < 0) {
-        throwError("open(%s): %s", path.c_str(), strerror(errno));
+        throwError("open(%s): %s", source.path.c_str(), strerror(errno));
     }
 }
 
 File::~File() {
-    if (descriptor_ >= 0) {
+    if (owned_ && descriptor_ >= 0) {
         close(descriptor_);
     }
 }
 
 void File::read(void* destination, size_t size, off_t offset) const {
     auto* cursor = static_cast<unsigned char*>(destination);
+
+    offset += base_;
 
     while (size) {
         auto result = pread(descriptor_, cursor, size, offset);
@@ -632,7 +643,7 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
         throwError("cannot resolve ELF image: %.*s", static_cast<int>(requestedPath.size()), requestedPath.data());
     }
 
-    if (auto* image = findByPath(*resolved); image) {
+    if (auto* image = findByPath(resolved->path); image) {
         if (image->state == LinkMap::State::Failed) {
             throwError("%s: a previous load failed", image->path.c_str());
         }
@@ -643,10 +654,14 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
         return image;
     }
     if (flags & RTLD_NOLOAD) {
-        throwError("%s: image is not loaded", resolved->c_str());
+        throwError("%s: image is not loaded", resolved->path.c_str());
     }
 
-    rememberLibraryDirectory(*resolved);
+    // Only a real directory can hold the rest of a closure; a bundled
+    // member's path names a range of the stub, not a place to search.
+    if (resolved->descriptor < 0) {
+        rememberLibraryDirectory(resolved->path);
+    }
 
     File file(*resolved);
 
@@ -659,13 +674,13 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
     auto validType = header.e_type == ET_DYN || (asExecutable && header.e_type == ET_EXEC);
 
     if (memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 || header.e_ident[EI_CLASS] != ELFCLASS64 || header.e_ident[EI_DATA] != ELFDATA2LSB || header.e_machine != ELF_MACHINE || !validType || header.e_phentsize != sizeof(Elf64_Phdr)) {
-        throwError("%s: not an ET_DYN ELF for this machine", resolved->c_str());
+        throwError("%s: not an ET_DYN ELF for this machine", resolved->path.c_str());
     }
 
     auto imageOwner = std::make_unique<LinkMap>();
     auto& image = *imageOwner;
 
-    image.path = *resolved;
+    image.path = resolved->path;
     image.programHeaders.resize(header.e_phnum);
     file.read(image.programHeaders.data(), image.programHeaders.size() * sizeof(Elf64_Phdr), static_cast<off_t>(header.e_phoff));
 
@@ -754,7 +769,10 @@ LinkMap* Loader::load(const std::string_view& requestedPath, int flags, LinkMap*
             auto memoryEnd = alignUp(image.base + programHeader.p_vaddr + programHeader.p_memsz, pageSize);
 
             if (programHeader.p_filesz) {
-                if (mmap(reinterpret_cast<void*>(start), alignUp(fileEnd, pageSize) - start, protection, MAP_PRIVATE | MAP_FIXED, file.descriptor_, static_cast<off_t>(alignDown(programHeader.p_offset, pageSize))) == MAP_FAILED) {
+                // The member's own base is page-aligned, so biasing the
+                // segment's file offset by it keeps the offset aligned and
+                // congruent to the address the segment loads at.
+                if (mmap(reinterpret_cast<void*>(start), alignUp(fileEnd, pageSize) - start, protection, MAP_PRIVATE | MAP_FIXED, file.descriptor_, file.base_ + static_cast<off_t>(alignDown(programHeader.p_offset, pageSize))) == MAP_FAILED) {
                     throwError("%s: mmap segment: %s", image.path.c_str(), strerror(errno));
                 }
             }
@@ -825,7 +843,9 @@ LinkMap* Loader::adopt(const char* path, const Elf64_Phdr* headers, size_t count
     auto imageOwner = std::make_unique<LinkMap>();
     auto& image = *imageOwner;
 
-    image.path = realPath(path).value_or(path);
+    auto resolved = realPath(path);
+
+    image.path = resolved ? resolved->path : path;
     rememberLibraryDirectory(image.path);
 
     // The load bias, anchored by PT_PHDR: the table's runtime address is in
@@ -1307,17 +1327,17 @@ LinkMap* Loader::findByPath(const std::string& path) const noexcept {
     return findByName(path);
 }
 
-std::optional<std::string> Loader::realPath(const std::string& path) {
+std::optional<ImageSource> Loader::realPath(const std::string& path) {
     std::array<char, PATH_MAX> resolved;
 
     if (!realpath(path.c_str(), resolved.data())) {
         return std::nullopt;
     }
 
-    return std::string(resolved.data());
+    return ImageSource{std::string(resolved.data()), -1, 0};
 }
 
-std::optional<std::string> Loader::inDirectory(const std::string_view& directory, const std::string_view& name) {
+std::optional<ImageSource> Loader::inDirectory(const std::string_view& directory, const std::string_view& name) {
     std::string candidate(directory);
 
     if (!candidate.empty() && candidate.back() != '/') {
@@ -1328,7 +1348,7 @@ std::optional<std::string> Loader::inDirectory(const std::string_view& directory
     return realPath(candidate);
 }
 
-std::optional<std::string> Loader::inSearchPath(std::string_view directories, const std::string_view& name, bool emptyIsCurrentDirectory) {
+std::optional<ImageSource> Loader::inSearchPath(std::string_view directories, const std::string_view& name, bool emptyIsCurrentDirectory) {
     while (true) {
         auto separator = directories.find(':');
         auto directory = directories.substr(0, separator);
@@ -1349,7 +1369,7 @@ std::optional<std::string> Loader::inSearchPath(std::string_view directories, co
 // entry table, and a string table the entries' offsets index from the start
 // of the file. This is how ld.so.conf.d directories reach us without parsing
 // the configuration ourselves.
-std::optional<std::string> Loader::inCache(const std::string_view& name) {
+std::optional<ImageSource> Loader::inCache(const std::string_view& name) {
     struct Header {
         char magic[17];
         char version[3];
@@ -1395,7 +1415,7 @@ std::optional<std::string> Loader::inCache(const std::string_view& name) {
         return std::nullopt;
     }
 
-    std::optional<std::string> resolved;
+    std::optional<ImageSource> resolved;
     const auto& header = *reinterpret_cast<const Header*>(data);
 
     if (memcmp(header.magic, "glibc-ld.so.cache", sizeof(header.magic)) == 0 && memcmp(header.version, "1.1", sizeof(header.version)) == 0 && sizeof(Header) + header.count * sizeof(Entry) <= size) {
@@ -1410,7 +1430,7 @@ std::optional<std::string> Loader::inCache(const std::string_view& name) {
                 continue;
             }
             if (std::string_view(data + entry.key) == name) {
-                resolved = std::string(data + entry.value);
+                resolved = ImageSource{std::string(data + entry.value), -1, 0};
             }
         }
     }
@@ -1419,9 +1439,20 @@ std::optional<std::string> Loader::inCache(const std::string_view& name) {
     return resolved;
 }
 
-std::optional<std::string> Loader::resolvePath(const std::string_view& path, const LinkMap* dlopenCaller) const {
+std::optional<ImageSource> Loader::resolvePath(const std::string_view& path, const LinkMap* dlopenCaller) const {
     if (path.find('/') != std::string_view::npos) {
         return realPath(std::string(path));
+    }
+
+    // What the bundle carries, the bundle answers — ahead of the search
+    // paths and ahead of the host's directories. That is the point of
+    // bundling a library: the version shipped with the program wins over
+    // whatever the machine happens to have. A name the bundle does not
+    // carry falls through to the ordinary search below, which is how the
+    // host keeps providing the things that must come from it, its GPU
+    // driver first among them.
+    if (auto member = bundleMember(path); member) {
+        return member;
     }
 
     // A dlopen issued by loaded code searches the calling image's paths;

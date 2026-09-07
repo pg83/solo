@@ -57,6 +57,47 @@ extern "C" {
     void stub_dlregister(const char* lib, const char* symbol, void* ptr);
     int stub_dladdr(const void* addr, Dl_info* info);
 
+    // A bundle is a stub and its guest in one file: the stub is an ordinary
+    // static executable that links this loader, and the guest program —
+    // together with whichever shared objects should come from the bundle
+    // rather than from the machine — is appended to it. The stub finds the
+    // payload through its own /proc/self/exe, so nothing is unpacked and no
+    // path outside the file is consulted for a bundled name.
+    //
+    // This is the `solo run` model, not the PT_INTERP one: the stub stays
+    // the process's main executable, so musl sizes the static TLS from the
+    // stub's own program headers and the loader's TLS pad exists. An
+    // interpreter has no pad to hand out, which is why a bundle is built
+    // this way.
+    //
+    // A stub is expected to be small:
+    //
+    //     #include <dlfcn.h>
+    //
+    //     int main(int argc, char** argv) {
+    //         return soloBundleMain(argc, argv);
+    //     }
+    //
+    // Link it against this loader and against the static libraries whose
+    // symbols should satisfy the guest's DT_NEEDED: the provider registry
+    // stub_dlregister() builds is consulted before any bundled or host file,
+    // so a library linked into the stub answers for its soname outright.
+
+    // Non-zero when this executable has a payload appended to it. A stub
+    // built for one program can skip the test; solo's own command uses it
+    // to tell a bundle from a plain invocation.
+    int soloHasBundle(void);
+
+    // Runs the bundled guest, with argv passed through exactly as received
+    // — argv[0] included. The stub's file is the program as far as the
+    // guest can tell, so its /proc/self/exe, its argv[0], and any re-exec of
+    // itself all name the bundle and keep working.
+    //
+    // Does not return when the guest starts. On failure the reason is on
+    // stderr and the result is 127, the exit status ld.so uses when it
+    // cannot start a program.
+    int soloBundleMain(int argc, char** argv);
+
 #if defined(__cplusplus)
 }
 #endif

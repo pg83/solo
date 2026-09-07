@@ -73,7 +73,9 @@ symbol_headers = [musl_symbols_header, glibc_symbols_header]
 
 dlfcn_srcs = [
     "$(S)/lib/bionic_shim.cpp",
+    "$(S)/lib/bundle.cpp",
     "$(S)/lib/dlfcn.cpp",
+    "$(S)/lib/enter.cpp",
     "$(S)/lib/elf_loader.S",
     "$(S)/lib/elf_loader.cpp",
     "$(S)/lib/fts.cpp",
@@ -1115,6 +1117,7 @@ arch_smoke = command(
         "DLFCN_GLIBC_GUEST_TEST_SOURCE": "$(S)/tst/glibc_guest_test.c",
         "DLFCN_SMOKE": "$(B)/tst/smoke",
         "DLFCN_SOLO": "$(B)/bin/solo/solo",
+        "DLFCN_SOLO_PACK": "$(S)/dev/solo_pack.py",
         "DLFCN_SYSROOT_LIB": sysroot_lib,
         "DLFCN_SYSROOT_INCLUDES": sysroot_includes,
     },

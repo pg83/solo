@@ -429,6 +429,7 @@ def main():
             if trace.returncode:
                 raise SystemExit(f"traced run failed: {trace.returncode}")
             run_solo_checks(root, sysroot_lib, environment)
+            run_bundle_checks(root, sysroot_lib, environment)
 
     print(result.stdout, end="")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -543,6 +544,130 @@ def run_solo_checks(root, sysroot_lib, environment):
         if ldd.returncode:
             print(ldd.stdout, file=sys.stderr)
             raise SystemExit(f"solo ldd exited {ldd.returncode}")
+
+
+def run_bundle_checks(root, sysroot_lib, environment):
+    """A bundle: solo with a guest and one of the guest's libraries appended
+    to it, run as one file. The library is reachable through nothing else —
+    it sits in a directory no search path names, and a bundled program never
+    lends its own directory to the search — so resolving it at all proves
+    the member was mapped out of the stub's own file."""
+    solo = os.path.abspath(os.environ["DLFCN_SOLO"])
+    ld_so = sorted((root / sysroot_lib).glob("ld-linux-*.so*"))
+    if not ld_so:
+        raise SystemExit(f"no ld-linux in the sysroot under {sysroot_lib}")
+    library = root / "ld-library-path" / "libdlfcn-test-glibc.so"
+
+    guest = root / "dlfcn-test-guest-bundle"
+    subprocess.run(
+        [
+            *shlex.split(os.environ["DLFCN_CC"]),
+            "-O2",
+            "-fPIE",
+            "-pie",
+            "-fno-stack-protector",
+            "-nostdlib",
+            "-Wl,--no-as-needed",
+            str(root / sysroot_lib / "Scrt1.o"),
+            str(root / sysroot_lib / "crti.o"),
+            os.environ["DLFCN_GLIBC_GUEST_TEST_SOURCE"],
+            str(root / sysroot_lib / "libc.so.6"),
+            str(ld_so[0]),
+            # A DT_NEEDED the guest never calls into: the loader still has
+            # to find and map it, and only the bundle carries it.
+            str(library),
+            str(root / sysroot_lib / "crtn.o"),
+            "-o",
+            str(guest),
+        ],
+        check=True,
+    )
+
+    bundle = root / "dlfcn-test-bundle"
+    subprocess.run(
+        [
+            sys.executable,
+            os.environ["DLFCN_SOLO_PACK"],
+            "--stub",
+            solo,
+            "--program",
+            f"dlfcn-test-guest-bundle={guest}",
+            "--library",
+            str(library),
+            "--output",
+            str(bundle),
+        ],
+        check=True,
+    )
+
+    # No LD_LIBRARY_PATH: the bundle answers for the library or nothing does.
+    bundle_environment = {
+        **{name: value for name, value in environment.items() if name != "LD_LIBRARY_PATH"},
+        "SOLO_GUEST_ENV": "smoke-value",
+    }
+    run = subprocess.run(
+        [str(bundle), "alpha", "beta"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=bundle_environment,
+    )
+    for needle in (
+        "guest init",
+        "guest main argc=3",
+        "guest argv alpha",
+        "guest argv beta",
+        "guest stdout env=smoke-value",
+        "guest environ present",
+        # The executable's own local-exec TLS, served from the pad solo
+        # donates as the process's main program — the reason a bundle runs
+        # this way instead of as a PT_INTERP.
+        "guest tls=51106011 bss=0",
+        "guest thread tls=51106011 bss=0",
+        "guest tls after thread=600d",
+        "guest atexit",
+    ):
+        if needle not in run.stdout:
+            print(run.stdout, file=sys.stderr)
+            raise SystemExit(f"solo bundle misses: {needle}")
+    if run.returncode != 42:
+        print(run.stdout, file=sys.stderr)
+        raise SystemExit(f"solo bundle exited {run.returncode}, wanted the guest's 42")
+
+    trace = subprocess.run(
+        [str(bundle)],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env={**bundle_environment, "LD_TRACE_LOADED_OBJECTS": "1"},
+    )
+    # A bundled member reports the bundle it came out of, so ldd's output
+    # says plainly which names the file answers for and which it leaves to
+    # the host.
+    needle = f"libdlfcn-test-glibc.so => {bundle}/libdlfcn-test-glibc.so"
+    if needle not in trace.stdout:
+        print(trace.stdout, file=sys.stderr)
+        raise SystemExit(f"solo bundle trace misses: {needle}")
+    if "guest main" in trace.stdout:
+        raise SystemExit("solo bundle ran the guest instead of only tracing it")
+    if trace.returncode:
+        print(trace.stdout, file=sys.stderr)
+        raise SystemExit(f"solo bundle trace exited {trace.returncode}")
+
+    # An unbundled solo must stay the ordinary command it was.
+    plain = subprocess.run(
+        [solo],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=bundle_environment,
+    )
+    if "usage: solo" not in plain.stdout:
+        print(plain.stdout, file=sys.stderr)
+        raise SystemExit("solo without a payload no longer prints its usage")
 
 
 def rerun_under_gdb(command, environment):

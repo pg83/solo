@@ -78,6 +78,16 @@ namespace dyn {
     };
 
     ElfExecutable loadExecutable(std::string_view path);
+    // The System V hand-off to a guest solo loaded itself: the process
+    // stack a kernel would have built — argc, the pointers, and an
+    // auxiliary vector describing the guest rather than solo — is laid out
+    // on this thread's real stack, so the guest keeps the whole growable
+    // stack below it and solo's frames above are never returned to.
+    [[noreturn]] void enterExecutable(const ElfExecutable& executable, const char* path, int argc, char** argv);
+    // The same hand-off when a usable stack already exists: the kernel's
+    // own, in interpreter mode, where the auxiliary vector already
+    // describes the guest. The stack pointer must sit on argc.
+    [[noreturn]] void enterExecutableStack(uintptr_t entry, uintptr_t stack);
     // The PT_INTERP entry: the kernel mapped the guest and started solo as
     // its interpreter, and the auxiliary vector carries the guest's program
     // headers, entry point, and execution path. The kernel's mapping is
