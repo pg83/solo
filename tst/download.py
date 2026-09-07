@@ -21,6 +21,10 @@ BACKOFF_CEILING = 60
 TIMEOUT = 60
 
 
+class ContentMismatch(RuntimeError):
+    """The transfer finished and delivered the wrong bytes."""
+
+
 def retriable(error):
     """Whether waiting could plausibly change the answer.
 
@@ -84,15 +88,21 @@ def main():
         for attempt in range(ATTEMPTS):
             try:
                 actual = fetch(url, temporary)
+                # A mirror under load answers 200 with a truncated body or
+                # an error page often enough that the wrong bytes have to
+                # count as a failed transfer rather than a wrong pin: the
+                # snapshot a URL names cannot change, so the next attempt
+                # is very likely to bring the file this one promised. A pin
+                # that really is wrong still fails, just after the retries.
+                if actual != expected:
+                    raise ContentMismatch(f"SHA-256 mismatch: {actual} != {expected}")
                 break
-            except (urllib.error.URLError, ConnectionError, TimeoutError) as error:
+            except (urllib.error.URLError, ConnectionError, TimeoutError, ContentMismatch) as error:
                 if attempt == ATTEMPTS - 1 or not retriable(error):
                     raise
                 delay = min(2**attempt, BACKOFF_CEILING) + random.random()
                 print(f"download.py: {url}: {error}; retrying in {delay:.0f}s", file=sys.stderr)
                 time.sleep(delay)
-        if actual != expected:
-            raise RuntimeError(f"SHA-256 mismatch: {actual} != {expected}")
         os.replace(temporary, output)
     finally:
         temporary.unlink(missing_ok=True)
