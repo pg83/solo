@@ -10,13 +10,34 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-ATTEMPTS = 8
+# snapshot.debian.org goes through stretches of answering 503 to everything,
+# and a cold corpus cache asks it for a thousand packages at once. The budget
+# is about six minutes per package, which rides out the outages seen in CI
+# and still leaves the job's half hour far from spent.
+ATTEMPTS = 12
+BACKOFF_CEILING = 60
+# A stalled connection must fail into the retry loop rather than sit until
+# the job times out; downloads here are single-digit megabytes.
+TIMEOUT = 60
+
+
+def retriable(error):
+    """Whether waiting could plausibly change the answer.
+
+    A 4xx says the archive does not have this file and is not going to grow
+    it — a rotated snapshot, say — so retrying only delays a clear failure.
+    429 is the exception: that one is the server asking to be waited for.
+    """
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code == 429 or error.code >= 500
+
+    return True
 
 
 def fetch(url, temporary):
     digest = hashlib.sha256()
     request = urllib.request.Request(url, headers={"User-Agent": "dlfcn-test/1"})
-    with urllib.request.urlopen(request) as response, temporary.open("wb") as target:
+    with urllib.request.urlopen(request, timeout=TIMEOUT) as response, temporary.open("wb") as target:
         while chunk := response.read(1024 * 1024):
             digest.update(chunk)
             target.write(chunk)
@@ -65,9 +86,9 @@ def main():
                 actual = fetch(url, temporary)
                 break
             except (urllib.error.URLError, ConnectionError, TimeoutError) as error:
-                if attempt == ATTEMPTS - 1:
+                if attempt == ATTEMPTS - 1 or not retriable(error):
                     raise
-                delay = min(2**attempt, 30) + random.random()
+                delay = min(2**attempt, BACKOFF_CEILING) + random.random()
                 print(f"download.py: {url}: {error}; retrying in {delay:.0f}s", file=sys.stderr)
                 time.sleep(delay)
         if actual != expected:

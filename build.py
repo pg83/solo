@@ -1297,6 +1297,10 @@ rootfs_smoke = command(
 # bringing up journald, sysusers, the serial getty, and the battery unit.
 # Not part of the test group — it needs a qemu and a kernel image, which
 # the CI job that invokes it provides through DLFCN_QEMU and DLFCN_KERNEL.
+# The pool keeps only the version a release currently ships, so a security
+# update deletes the file these pins name and the fetch starts answering 404.
+# When that happens the fix is to bump the pin to the version the pool holds
+# now, within the same Ubuntu series as the rootfs above.
 qemu_ubuntu_pool = "https://archive.ubuntu.com/ubuntu/pool/main"
 qemu_systemd_packages = {
     "x86_64": [
@@ -1305,7 +1309,7 @@ qemu_systemd_packages = {
         ("libsystemd0_deb", f"{qemu_ubuntu_pool}/s/systemd/libsystemd0_255.4-1ubuntu8.17_amd64.deb", "libsystemd0_255.4-1ubuntu8.17_amd64.deb", "4776d2ac7e21efe2ae31f3f7955a7ccd97277225eecf36910a26faf4544979ae"),
         ("libapparmor1_deb", f"{qemu_ubuntu_pool}/a/apparmor/libapparmor1_4.0.1really4.0.1-0ubuntu0.24.04.7_amd64.deb", "libapparmor1_4.0.1really4.0.1-0ubuntu0.24.04.7_amd64.deb", "4205351c37f4e813f1ca81b6d59a00071f0f70869e652f4ab9e5ba7e5e895d34"),
         ("libcryptsetup12_deb", f"{qemu_ubuntu_pool}/c/cryptsetup/libcryptsetup12_2.7.0-1ubuntu4.2_amd64.deb", "libcryptsetup12_2.7.0-1ubuntu4.2_amd64.deb", "f6f6a7f35104da711997b52c92ab91ce1f47dd039d276d5beb797d713447c9f2"),
-        ("libfdisk1_deb", f"{qemu_ubuntu_pool}/u/util-linux/libfdisk1_2.39.3-9ubuntu6.5_amd64.deb", "libfdisk1_2.39.3-9ubuntu6.5_amd64.deb", "a67f2ed8b8a0323ab3c1e33a8caf81b9bf8ceb1d3586ec5600f40e1406c48f6a"),
+        ("libfdisk1_deb", f"{qemu_ubuntu_pool}/u/util-linux/libfdisk1_2.39.3-9ubuntu6.6_amd64.deb", "libfdisk1_2.39.3-9ubuntu6.6_amd64.deb", "7f67b127d239f51218c1eb63c3b0c219bbf26f450349bed9ad5d9f10a6b80c1b"),
         ("libkmod2_deb", f"{qemu_ubuntu_pool}/k/kmod/libkmod2_31+20240202-2ubuntu7.2_amd64.deb", "libkmod2_31+20240202-2ubuntu7.2_amd64.deb", "a9cbdc424bc0a5c8af3d6445488a48de76df5ff4d76b7dab8aaf88f712358bbc"),
         ("dbus_deb", f"{qemu_ubuntu_pool}/d/dbus/dbus_1.14.10-4ubuntu4.1_amd64.deb", "dbus_1.14.10-4ubuntu4.1_amd64.deb", "0d59be1393d5b01552edbf16c7b9357c473bf625aa47365ce2e8eef6da1dd2e1"),
         ("dbus_bin_deb", f"{qemu_ubuntu_pool}/d/dbus/dbus-bin_1.14.10-4ubuntu4.1_amd64.deb", "dbus-bin_1.14.10-4ubuntu4.1_amd64.deb", "0d2c7e425967039594ea099f6128231769e1ed2cc2f6fd7d895fea135c9e1964"),
