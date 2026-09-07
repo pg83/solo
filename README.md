@@ -4,7 +4,6 @@
 [![codecov](https://codecov.io/gh/pg83/solo/graph/badge.svg)](https://app.codecov.io/gh/pg83/solo)
 [![release](https://img.shields.io/github/v/release/pg83/solo?label=release&color=blue)](https://github.com/pg83/solo/releases/latest)
 [![license](https://img.shields.io/github/license/pg83/solo?color=blue)](LICENSE)
-
 [![linux](https://img.shields.io/badge/linux-x86--64%20%7C%20aarch64-informational)](#scope)
 [![libcs in the process](https://img.shields.io/badge/libcs%20in%20the%20process-1-success)](#how-this-differs-from-prior-work)
 [![host DSOs loaded in CI](https://img.shields.io/badge/host%20DSOs%20loaded%20in%20CI-2100%2B-success)](#scope)
