@@ -20,11 +20,11 @@ import hashlib
 import importlib.util
 import json
 import os
+import queue
 import re
 import shlex
 import shutil
 import signal
-import sqlite3
 import stat
 import subprocess
 import sysconfig
@@ -36,6 +36,13 @@ import uuid
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Iterable
+
+# sqlite backs only the strace input index; a build box whose python lacks
+# the module still runs every untraced build
+try:
+    import sqlite3
+except ImportError:
+    sqlite3 = None
 
 
 S = "$(S)"
@@ -204,6 +211,9 @@ class Node:
     include_roots: list[str] = dataclasses.field(default_factory=list)
     scan_sources: bool = False
     source_inputs: set[str] = dataclasses.field(default_factory=set)
+    # A local node never leaves this machine under --dist: it needs the
+    # network, the real source root, or something else a remote lacks.
+    local: bool = False
     uid: str | None = None
 
     def __post_init__(self) -> None:
@@ -243,6 +253,7 @@ class Target:
     color: str = "yellow"
     linker: str | None = None
     enabled: bool = True
+    local: bool = False
     host_deps: list["Target"] = dataclasses.field(default_factory=list)
     root: Node | None = None
     nodes: list[Node] = dataclasses.field(default_factory=list)
@@ -509,7 +520,8 @@ class BuildContext:
         return target
 
     def command(self, *, inputs=(), outputs, cmd, deps=(), name=None, cwd=B, env=None,
-                cflags=(), cxxflags=(), cppflags=(), ldflags=(), descr="GN", color="yellow") -> Target:
+                cflags=(), cxxflags=(), cppflags=(), ldflags=(), descr="GN", color="yellow",
+                local=False) -> Target:
         commands = cmd
         if not commands or isinstance(commands[0], (str, bytes)):
             commands = [commands]
@@ -520,7 +532,7 @@ class BuildContext:
             env=dict(env or {}),
             public_cflags=_items(cflags), public_cxxflags=_items(cxxflags),
             public_cppflags=_items(cppflags), ldflags=_items(ldflags),
-            descr=str(descr), color=str(color),
+            descr=str(descr), color=str(color), local=bool(local),
         )
         self._validate_deps(target)
         self.targets.append(target)
@@ -863,7 +875,7 @@ class BuildContext:
 
     def import_build(self, path: str, output_name: str,
                      extra_cflags=(), extra_cxxflags=(),
-                     extra_cppflags=(), deps=()) -> Target:
+                     extra_cppflags=(), deps=(), namespace=None) -> Target:
         path = str(path)
         if path.startswith(S + "/"):
             build_file = self.physical(path)
@@ -875,16 +887,18 @@ class BuildContext:
         if not build_file.is_file():
             raise BuildError(f"imported build file does not exist: {build_file}")
         try:
-            namespace = build_file.parent.relative_to(self.source_root).as_posix()
+            source_namespace = build_file.parent.relative_to(self.source_root).as_posix()
         except ValueError as exc:
             raise BuildError(
                 f"imported build file is outside the source tree: {build_file}"
             ) from exc
-        if namespace in ("", "."):
+        if source_namespace in ("", "."):
             raise BuildError("cannot import the root build file into itself")
 
-        source_prefix = f"{S}/{namespace}"
-        build_prefix = f"{B}/{namespace}"
+        # An explicit namespace gives the import its own build prefix, so the
+        # same build file can be imported more than once with different flags.
+        source_prefix = f"{S}/{source_namespace}"
+        build_prefix = f"{B}/{namespace or source_namespace}"
         graph = self._load_imported_graph(
             build_file,
             self.target,
@@ -1133,7 +1147,7 @@ class BuildContext:
                 inputs=target.inputs.copy(), outputs=target.outputs.copy(),
                 commands=[x.copy() for x in target.commands], deps=dep_nodes,
                 cwd=target.cwd, env=target.env.copy(),
-                descr=target.descr, color=target.color,
+                descr=target.descr, color=target.color, local=target.local,
             )
             for inp in node.inputs:
                 if inp.startswith(S + "/") or os.path.isabs(inp):
@@ -1218,7 +1232,14 @@ class BuildContext:
                 ]],
                 deps=deps,
                 descr="CC", color="green", include_roots=source_include_roots,
-                scan_sources=src.startswith(S + "/") or os.path.isabs(src),
+                # Generated sources cannot be scanned (they may not exist at
+                # graph time), but their declared source-tree inputs can: a
+                # generated .cpp that includes a source header lists it via
+                # the srcs dict and gets the header's include closure here.
+                scan_sources=any(
+                    path.startswith(S + "/") or os.path.isabs(path)
+                    for path in inputs
+                ),
             )
             for source_input in inputs:
                 if source_input.startswith(S + "/") or os.path.isabs(source_input):
@@ -1414,7 +1435,10 @@ class BuildContext:
         self.file_hashes[path] = digest
         return digest
 
-    def calculate_uids(self, roots: Iterable[Node]) -> None:
+    def calculate_uids(self, roots: Iterable[Node], *, resolve_tools: bool = True) -> None:
+        """With resolve_tools a command's tool becomes the path PATH gives it
+        here, which pins the toolchain into the uid.  A distributed build
+        keeps the bare name: every host looks it up in its own PATH."""
         active: set[Node] = set()
         def calc(node: Node) -> str:
             if node.uid is not None:
@@ -1424,7 +1448,7 @@ class BuildContext:
             active.add(node)
             for command in node.commands:
                 head = command[0] if command else ""
-                if head and not head.startswith((S + "/", B + "/")) and not os.path.isabs(head):
+                if resolve_tools and head and not head.startswith((S + "/", B + "/")) and not os.path.isabs(head):
                     command[0] = self.resolve_tool(head)
             dep_uids = [calc(dep) for dep in node.deps]
             inputs = [[path, self.source_hash(path)] for path in sorted(node.source_inputs)]
@@ -1995,10 +2019,613 @@ def strace_main(argv: list[str]) -> int:
             pass
 
 
+# --- distributed execution -------------------------------------------------
+#
+# `build --dist=HOST,...` runs nodes on remote hosts over ssh.  Each host gets
+# one ssh session whose stdin/stdout carry a framed protocol: a JSON line per
+# frame, and a `blob` frame is followed by exactly `size` raw bytes.  The
+# remote side is this same script, sent as the first stdin line and started
+# as `build exec SESSION`; it keeps a per-session content-addressed cache in
+# its working directory so every dependency crosses the link at most once.
+# The local side is the single source of truth about what a host holds
+# (`RemoteHost.sent`); a `missing` reply is the safety net, not the fast path.
+
+DIST_BOOTSTRAP = (
+    'import sys,base64;'
+    'exec(compile(base64.b64decode(sys.stdin.buffer.readline()),"build","exec"))'
+)
+DIST_STALE_SESSION_SECONDS = 24 * 3600
+DIST_CHUNK = 1024 * 1024
+
+
+class HostLost(Exception):
+    """The ssh session to a host went away while a node was in flight."""
+
+
+class Requeue(Exception):
+    """The node did not run; put it back on the ready queue."""
+
+
+def _dist_write(stream, frame: dict[str, Any], payload: Path | None = None) -> None:
+    stream.write(json.dumps(frame, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+    if payload is not None:
+        with payload.open("rb") as source:
+            shutil.copyfileobj(source, stream, DIST_CHUNK)
+    stream.flush()
+
+
+def _dist_read(stream) -> dict[str, Any] | None:
+    """Next frame, or None at end of stream.  Non-JSON lines are skipped: a
+    login shell may print before the service takes over stdout."""
+    while True:
+        line = stream.readline()
+        if not line:
+            return None
+        try:
+            frame = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(frame, dict) and isinstance(frame.get("t"), str):
+            return frame
+
+
+def _dist_receive(stream, size: int, destination: Path, mode: int) -> None:
+    """Read `size` payload bytes into `destination` (skipping the write if it
+    already exists; the payload is consumed either way)."""
+    keep = not destination.exists()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name("." + destination.name + "." + uuid.uuid4().hex)
+    try:
+        with temporary.open("wb") if keep else open(os.devnull, "wb") as sink:
+            remaining = size
+            while remaining:
+                chunk = stream.read(min(DIST_CHUNK, remaining))
+                if not chunk:
+                    raise EOFError("blob payload truncated")
+                sink.write(chunk)
+                remaining -= len(chunk)
+        if keep:
+            os.chmod(temporary, mode)
+            try:
+                os.link(temporary, destination)
+            except FileExistsError:
+                pass
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _dist_physical(symbolic: str, work: Path) -> Path:
+    if symbolic == S:
+        return work / "S"
+    if symbolic.startswith(S + "/"):
+        return work / "S" / symbolic[len(S) + 1:]
+    if symbolic == B:
+        return work / "B"
+    if symbolic.startswith(B + "/"):
+        return work / "B" / symbolic[len(B) + 1:]
+    return Path(symbolic)
+
+
+def _cas_digest(path: Path, mode: int) -> str:
+    digest = hashlib.sha256(f"{mode:o}\0".encode())
+    with path.open("rb") as stream:
+        while chunk := stream.read(DIST_CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _drop_privileges(base: Path) -> None:
+    """As root, hand `base` to `nobody` and become nobody before touching
+    anything else.  The working directory itself is left alone: if nobody
+    cannot traverse it, the service says so instead of changing its mode."""
+    if os.geteuid() != 0:
+        return
+    import pwd
+    account = pwd.getpwnam("nobody")
+    base.mkdir(parents=True, exist_ok=True)
+    os.chown(base, account.pw_uid, account.pw_gid)
+    os.setgroups([])
+    os.setgid(account.pw_gid)
+    os.setuid(account.pw_uid)
+    os.environ["HOME"] = str(base)
+    os.environ["USER"] = os.environ["LOGNAME"] = account.pw_name
+    if not os.access(base, os.R_OK | os.W_OK | os.X_OK):
+        raise BuildError(
+            f"{base} is not usable as {account.pw_name}: TMPDIR must be a "
+            "directory nobody can traverse")
+
+
+class ExecService:
+    """The remote half of --dist: `build exec SESSION`, driven over stdin/stdout."""
+
+    def __init__(self, session: Path, stdin, stdout):
+        self.session = session
+        self.cas = session / "cas"
+        self.tmp = session / "tmp"
+        self.stdin = stdin
+        self.stdout = stdout
+        self.out_lock = threading.Lock()
+        self.cores = os.cpu_count() or 1
+        self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.cores)
+        # A worker hands its finished job to the sender and takes the next
+        # one; the link is written by this one thread, never by a worker.
+        self.outbox: queue.Queue[list[tuple[dict[str, Any], Path | None]] | None] = queue.Queue()
+        self.sender = threading.Thread(target=self._send_loop, daemon=True)
+        self.sender.start()
+        self.children: set[subprocess.Popen] = set()
+        self.children_lock = threading.Lock()
+        self.stopping = False
+
+    def _send_loop(self) -> None:
+        while True:
+            batch = self.outbox.get()
+            if batch is None:
+                return
+            try:
+                with self.out_lock:
+                    for frame, payload in batch:
+                        _dist_write(self.stdout, frame, payload)
+            except OSError:
+                return
+
+    def _flush_sender(self) -> None:
+        self.outbox.put(None)
+        self.sender.join(timeout=60)
+
+    def _send(self, frame: dict[str, Any], payload: Path | None = None) -> None:
+        with self.out_lock:
+            _dist_write(self.stdout, frame, payload)
+
+    def _cas_path(self, digest: str) -> Path:
+        return self.cas / digest[:2] / digest
+
+    def _touch(self) -> None:
+        try:
+            os.utime(self.session)
+        except OSError:
+            pass
+
+    def _sweep_stale_sessions(self) -> None:
+        cutoff = time.time() - DIST_STALE_SESSION_SECONDS
+        try:
+            siblings = list(self.session.parent.iterdir())
+        except OSError:
+            return
+        for sibling in siblings:
+            if sibling == self.session:
+                continue
+            try:
+                if sibling.is_dir() and sibling.stat().st_mtime < cutoff:
+                    shutil.rmtree(sibling, ignore_errors=True)
+            except OSError:
+                pass
+
+    def run(self) -> int:
+        self.cas.mkdir(parents=True, exist_ok=True)
+        self.tmp.mkdir(parents=True, exist_ok=True)
+        self._sweep_stale_sessions()
+        self._touch()
+        self._send({"t": "hello", "cores": self.cores, "session": self.session.name})
+        while True:
+            frame = _dist_read(self.stdin)
+            if frame is None:
+                # The controller went away: keep the cache for a reconnect,
+                # kill what is running, leave.
+                self._stop()
+                return 0
+            kind = frame["t"]
+            if kind == "blob":
+                _dist_receive(self.stdin, int(frame["size"]),
+                              self._cas_path(frame["digest"]), int(frame.get("mode", 0o644)))
+            elif kind == "have":
+                present = [d for d in frame["digests"] if self._cas_path(d).is_file()]
+                self._send({"t": "have", "digests": present})
+            elif kind == "job":
+                self._touch()
+                self.pool.submit(self._guarded_job, frame, time.monotonic())
+            elif kind == "bye":
+                self.pool.shutdown(wait=True)
+                self._flush_sender()
+                shutil.rmtree(self.session, ignore_errors=True)
+                self._send({"t": "bye"})
+                return 0
+
+    def _stop(self) -> None:
+        self.stopping = True
+        with self.children_lock:
+            for child in self.children:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        self.pool.shutdown(wait=True, cancel_futures=True)
+        self._flush_sender()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _guarded_job(self, frame: dict[str, Any], received: float) -> None:
+        uid = frame["uid"]
+        try:
+            self._job(frame, received)
+        except BaseException as exc:
+            if not self.stopping:
+                self._send({"t": "result", "uid": uid, "rc": 1, "stdout": "",
+                            "stderr": f"build exec: {exc!r}", "manifest": {}})
+
+    def _job(self, frame: dict[str, Any], received: float) -> None:
+        uid = frame["uid"]
+        started = time.monotonic()
+        # How long the job waited for a worker here, and how long it ran:
+        # the controller reports both, so a slow host and a slow link are
+        # told apart.
+        timing = {"queued": started - received}
+        work = self.tmp / uid
+        shutil.rmtree(work, ignore_errors=True)
+        work.mkdir(parents=True)
+        try:
+            files: dict[str, dict[str, Any]] = frame["files"]
+            missing = sorted({
+                entry["cas"] for entry in files.values()
+                if "cas" in entry and not self._cas_path(entry["cas"]).is_file()
+            })
+            if missing:
+                self._send({"t": "missing", "uid": uid, "digests": missing})
+                return
+            for symbolic, entry in files.items():
+                target = _dist_physical(symbolic, work)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if "link" in entry:
+                    os.symlink(entry["link"], target)
+                else:
+                    source = self._cas_path(entry["cas"])
+                    try:
+                        os.link(source, target)
+                    except OSError:
+                        shutil.copy2(source, target)
+            for output in frame["outputs"]:
+                _dist_physical(output, work).parent.mkdir(parents=True, exist_ok=True)
+
+            def mount(value: str) -> str:
+                return value.replace(S, str(work / "S")).replace(B, str(work / "B"))
+
+            env = os.environ.copy()
+            env.update({key: mount(value) for key, value in frame["env"].items()})
+            env["BUILD_JOBS"] = str(self.cores)
+            env["TMPDIR"] = str(work / "B")
+            # The build's PATH is the controller's: tools are looked up in the
+            # same places on every host, and this host's own PATH follows.
+            if frame.get("path"):
+                env["PATH"] = frame["path"] + ":" + env.get("PATH", "")
+            (work / "B").mkdir(exist_ok=True)
+            cwd = mount(frame["cwd"])
+            Path(cwd).mkdir(parents=True, exist_ok=True)
+            stdout_text = ""
+            stderr_text = ""
+            for command in frame["cmd"]:
+                args = [mount(arg) for arg in command]
+                child = subprocess.Popen(
+                    args, cwd=cwd, env=env,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    start_new_session=True,
+                )
+                with self.children_lock:
+                    self.children.add(child)
+                try:
+                    out, err = child.communicate()
+                finally:
+                    with self.children_lock:
+                        self.children.discard(child)
+                stdout_text += out.decode("utf-8", "surrogateescape")
+                stderr_text += err.decode("utf-8", "surrogateescape")
+                if child.returncode != 0:
+                    message = f"command exited {child.returncode}: {shlex.join(args)}"
+                    detail = stderr_text.rstrip()
+                    if detail:
+                        message += "\n" + detail
+                    self._send({"t": "result", "uid": uid, "rc": child.returncode,
+                                "stdout": stdout_text, "stderr": message, "manifest": {}})
+                    return
+            manifest: dict[str, dict[str, Any]] = {}
+            try:
+                for output in frame["outputs"]:
+                    self._collect(_dist_physical(output, work), output, manifest)
+            except BuildError as exc:
+                self._send({"t": "result", "uid": uid, "rc": 1, "stdout": stdout_text,
+                            "stderr": str(exc), "manifest": {}})
+                return
+            # Outputs are in the cache already: the batch reads them from
+            # there, so the work directory can go while the batch is in the
+            # outbox and this worker is on to the next job.
+            batch: list[tuple[dict[str, Any], Path | None]] = []
+            for entry in manifest.values():
+                if "cas" in entry:
+                    path = self._cas_path(entry["cas"])
+                    batch.append(({
+                        "t": "blob", "digest": entry["cas"],
+                        "size": path.stat().st_size, "mode": entry["mode"],
+                    }, path))
+            timing["ran"] = time.monotonic() - started
+            batch.append(({
+                "t": "result", "uid": uid, "rc": 0, "stdout": stdout_text,
+                "stderr": stderr_text, "manifest": manifest, "timing": timing,
+            }, None))
+            self.outbox.put(batch)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def _collect(self, physical: Path, symbolic: str, manifest: dict[str, dict[str, Any]]) -> None:
+        try:
+            info = physical.lstat()
+        except OSError as exc:
+            raise BuildError(f"declared output was not produced: {symbolic}: {exc}") from exc
+        if stat.S_ISLNK(info.st_mode):
+            manifest[symbolic] = {"link": os.readlink(physical)}
+            return
+        if stat.S_ISDIR(info.st_mode):
+            for child in physical.iterdir():
+                self._collect(child, symbolic + "/" + child.name, manifest)
+            return
+        mode = stat.S_IMODE(info.st_mode)
+        digest = _cas_digest(physical, mode)
+        destination = self._cas_path(digest)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(physical, destination)
+        except FileExistsError:
+            pass
+        except OSError:
+            temporary = destination.with_name("." + destination.name + "." + uuid.uuid4().hex)
+            shutil.copy2(physical, temporary)
+            try:
+                os.link(temporary, destination)
+            except FileExistsError:
+                pass
+            finally:
+                temporary.unlink(missing_ok=True)
+        manifest[symbolic] = {"cas": digest, "mode": mode}
+
+
+def exec_main(argv: list[str]) -> int:
+    session_id = argv[0] if argv else uuid.uuid4().hex
+    if not re.fullmatch(r"[0-9a-f]{32}", session_id):
+        print("build exec: session id must be 32 hex digits", file=sys.stderr)
+        return 2
+    # The service lives under the host's TMPDIR (the login directory only
+    # when there is none) and creates one directory of its own there.
+    base = Path(os.environ.get("TMPDIR") or os.getcwd()) / ".build-exec"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        _drop_privileges(base)
+    except (OSError, KeyError, BuildError) as exc:
+        print(f"build exec: {exc}", file=sys.stderr)
+        return 1
+    stdin = sys.stdin.buffer
+    stdout = sys.stdout.buffer
+    # stdout is the protocol channel: everything else that would print goes
+    # to stderr, which ssh carries to the controller's terminal.
+    sys.stdout = sys.stderr
+    return ExecService(base / session_id, stdin, stdout).run()
+
+
+class DistReply:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.frame: dict[str, Any] | None = None
+        self.lost = False
+
+
+class RemoteHost:
+    """One ssh session to a --dist host, reconnecting on loss.
+
+    `cores` is 0 while the host is down; the executor schedules nothing
+    there.  `sent` is the set of CAS digests the host's session cache holds,
+    kept locally so a job's dependencies are shipped without a round trip."""
+
+    def __init__(self, executor: "Executor", spec: str, session: str, script: bytes):
+        self.executor = executor
+        host, _, slots = spec.partition(":")
+        self.name = host
+        self.slots_override = int(slots) if slots else 0
+        self.session = session
+        self.script = script
+        self.process: subprocess.Popen | None = None
+        self.cores = 0
+        self.sent: set[str] = set()
+        self.write_lock = threading.Lock()
+        self.state_lock = threading.Lock()
+        self.pending: dict[str, DistReply] = {}
+        self.closing = False
+        self.reconnector = threading.Thread(target=self._reconnect_loop, daemon=True)
+        self.reconnector.start()
+
+    def _ssh_command(self) -> list[str]:
+        base = shlex.split(os.environ.get("BUILD_DIST_SSH", "ssh"))
+        options: list[str] = []
+        if base and Path(base[0]).name == "ssh":
+            options = ["-o", "BatchMode=yes", "-o", "ServerAliveInterval=10",
+                       "-o", "ServerAliveCountMax=3"]
+        remote = shlex.join(["python3", "-c", DIST_BOOTSTRAP, "exec", self.session])
+        return [*base, *options, self.name, remote]
+
+    def _reconnect_loop(self) -> None:
+        delay = 1.0
+        while not self.closing:
+            if self._connect():
+                return
+            deadline = time.monotonic() + delay
+            while not self.closing and time.monotonic() < deadline:
+                time.sleep(0.1)
+            delay = min(delay * 2, 30.0)
+
+    def _connect(self) -> bool:
+        try:
+            process = subprocess.Popen(
+                self._ssh_command(),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            self.executor._report(f"dist {self.name}: cannot start ssh: {exc}")
+            return False
+        threading.Thread(target=self._forward_stderr, args=(process,), daemon=True).start()
+        try:
+            process.stdin.write(self.script + b"\n")
+            process.stdin.flush()
+            hello = _dist_read(process.stdout)
+            if hello is None or hello.get("t") != "hello":
+                raise OSError("no hello from remote")
+            cores = self.slots_override or int(hello["cores"])
+            with self.state_lock:
+                sent = sorted(self.sent)
+            if sent:
+                _dist_write(process.stdin, {"t": "have", "digests": sent})
+                reply = _dist_read(process.stdout)
+                if reply is None or reply.get("t") != "have":
+                    raise OSError("no have reply from remote")
+                kept = set(reply["digests"])
+            else:
+                kept = set()
+        except (OSError, ValueError, KeyError) as exc:
+            self.executor._report(f"dist {self.name}: connect failed: {exc}")
+            process.kill()
+            return False
+        with self.state_lock:
+            self.process = process
+            self.sent = kept
+            self.cores = max(1, cores)
+        threading.Thread(target=self._reader, args=(process,), daemon=True).start()
+        self.executor._report(f"dist {self.name}: connected, {self.cores} slots")
+        return True
+
+    def _forward_stderr(self, process: subprocess.Popen) -> None:
+        for raw in process.stderr:
+            line = raw.decode("utf-8", "surrogateescape").rstrip("\n")
+            if line:
+                self.executor._report(f"dist {self.name}: {line}")
+
+    def _reader(self, process: subprocess.Popen) -> None:
+        try:
+            while True:
+                frame = _dist_read(process.stdout)
+                if frame is None:
+                    break
+                kind = frame["t"]
+                if kind == "blob":
+                    _dist_receive(process.stdout, int(frame["size"]),
+                                  self.executor._cas_path(frame["digest"]),
+                                  int(frame.get("mode", 0o644)))
+                elif kind in ("result", "missing"):
+                    with self.state_lock:
+                        reply = self.pending.pop(frame["uid"], None)
+                    if reply is not None:
+                        reply.frame = frame
+                        reply.event.set()
+                elif kind == "bye":
+                    break
+        except (OSError, ValueError, KeyError, EOFError) as exc:
+            self.executor._report(f"dist {self.name}: protocol error: {exc}")
+        self._lost(process)
+
+    def _lost(self, process: subprocess.Popen) -> None:
+        with self.state_lock:
+            if self.process is not process:
+                return
+            self.process = None
+            self.cores = 0
+            replies = list(self.pending.values())
+            self.pending.clear()
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        for reply in replies:
+            reply.lost = True
+            reply.event.set()
+        if not self.closing:
+            self.executor._report(f"dist {self.name}: connection lost, reconnecting")
+            self.reconnector = threading.Thread(target=self._reconnect_loop, daemon=True)
+            self.reconnector.start()
+
+    def free_slots(self, used: int) -> int:
+        """Jobs the host can take: one per core running, and as many again
+        waiting in its queue, so a result in transit never leaves a core
+        idle.  The host's own pool is still one worker per core."""
+        with self.state_lock:
+            return 2 * self.cores - used
+
+    def execute(self, uid: str, job: dict[str, Any],
+                blobs: dict[str, tuple[Path, int, int]]) -> dict[str, Any]:
+        """Run one job; returns its `result` frame.  Raises HostLost."""
+        while True:
+            reply = DistReply()
+            with self.state_lock:
+                process = self.process
+                if process is None:
+                    raise HostLost(self.name)
+                self.pending[uid] = reply
+            sent_at = time.monotonic()
+            needed: list[str] = []
+            try:
+                with self.write_lock:
+                    # Claim the blobs under the write lock: every write to the
+                    # host goes through it, so a job that finds a digest here
+                    # writes its frame only after that blob has gone over.
+                    with self.state_lock:
+                        needed = [d for d in blobs if d not in self.sent]
+                        self.sent.update(needed)
+                    for digest in needed:
+                        path, mode, size = blobs[digest]
+                        _dist_write(process.stdin, {
+                            "t": "blob", "digest": digest, "size": size, "mode": mode,
+                        }, path)
+                    _dist_write(process.stdin, job)
+            except OSError:
+                with self.state_lock:
+                    self.sent.difference_update(needed)
+                self._lost(process)
+                raise HostLost(self.name)
+            reply.event.wait()
+            if reply.lost or reply.frame is None:
+                raise HostLost(self.name)
+            frame = reply.frame
+            if frame["t"] == "missing":
+                # The safety net: the host lost blobs the ledger says it has.
+                self.executor._report(
+                    f"dist {self.name}: resending {len(frame['digests'])} blob(s) for {uid}")
+                with self.state_lock:
+                    self.sent.difference_update(frame["digests"])
+                continue
+            with self.state_lock:
+                for entry in frame["manifest"].values():
+                    if "cas" in entry:
+                        self.sent.add(entry["cas"])
+            if "timing" in frame:
+                # Round trip minus the host's own accounting: link and queues.
+                timing = frame["timing"]
+                timing["transit"] = time.monotonic() - sent_at - timing["queued"] - timing["ran"]
+            return frame
+
+    def close(self) -> None:
+        self.closing = True
+        # A connect still in flight would otherwise complete after we leave,
+        # and the remote would take the EOF path and keep its session.
+        self.reconnector.join(timeout=60)
+        with self.state_lock:
+            process = self.process
+            self.process = None
+            self.cores = 0
+        if process is None:
+            return
+        try:
+            with self.write_lock:
+                _dist_write(process.stdin, {"t": "bye"})
+            process.wait(timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            process.kill()
+
+
 class Executor:
     def __init__(self, context: BuildContext, jobs: int, verbose: bool, keep_going: bool,
                  ninja: bool = False, strace: bool = False,
-                 cache_root: Path | None = None):
+                 cache_root: Path | None = None, dist: list[str] | None = None):
         self.context = context
         self.jobs = max(1, jobs)
         self.verbose = verbose
@@ -2020,12 +2647,23 @@ class Executor:
         self.strace_index: Path | None = None
         self.strace_node_ids: dict[Node, int] = {}
         self.strace_ignore_roots: list[str] = []
+        self.dist = list(dist or [])
+        self.hosts: list[RemoteHost] = []
+        self.source_digests: dict[str, tuple[str, int, int]] = {}
+        self.source_digests_lock = threading.Lock()
 
     def run(self, roots: list[Node]) -> None:
         self._start_garbage_collector()
+        if self.dist:
+            session = uuid.uuid4().hex
+            script = base64.b64encode(Path(__file__).resolve().read_bytes())
+            self.hosts = [RemoteHost(self, spec, session, script) for spec in self.dist]
         try:
             self._run(roots)
         finally:
+            for host in self.hosts:
+                host.close()
+            self.hosts = []
             self._finish_progress()
             if self.strace_index is not None:
                 try:
@@ -2054,34 +2692,57 @@ class Executor:
         self.progress_total = len(executed)
         errors: dict[Node, BaseException] = {}
         blocked: set[Node] = set()
-        running: dict[concurrent.futures.Future[None], Node] = {}
+        # A worker is None (this machine) or a RemoteHost; each runs at most
+        # its slot count at once.  Remote slot counts change as hosts come
+        # and go, so the wait below polls instead of blocking indefinitely.
+        running: dict[concurrent.futures.Future[None], tuple[Node, RemoteHost | None]] = {}
+        used: dict[RemoteHost | None, int] = defaultdict(int)
         completed = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.jobs) as pool:
+        workers = self.jobs + 512 * max(1, len(self.hosts))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
             while ready or running:
-                while ready and len(running) < self.jobs:
-                    node = ready.popleft()
-                    future = pool.submit(
-                        self._execute,
-                        node,
-                        node in executed,
-                        not self.strace or node in uncached,
-                    )
-                    running[future] = node
+                while ready:
+                    picked = self._pick(ready, used)
+                    if picked is None:
+                        break
+                    node, worker = picked
+                    used[worker] += 1
+                    if worker is None:
+                        future = pool.submit(
+                            self._execute,
+                            node,
+                            node in executed,
+                            not self.strace or node in uncached,
+                        )
+                    else:
+                        future = pool.submit(self._execute_remote, node, worker, node in executed)
+                    running[future] = (node, worker)
                 if not running:
+                    if ready and self.hosts:
+                        time.sleep(0.2)
+                        continue
                     break
-                done, _ = concurrent.futures.wait(running, return_when=concurrent.futures.FIRST_COMPLETED)
+                timeout = 0.5 if self.hosts else None
+                done, _ = concurrent.futures.wait(
+                    running, timeout=timeout, return_when=concurrent.futures.FIRST_COMPLETED)
                 for future in done:
-                    node = running.pop(future)
-                    completed += 1
+                    node, worker = running.pop(future)
+                    used[worker] -= 1
                     try:
                         future.result()
+                    except Requeue:
+                        ready.appendleft(node)
+                        continue
                     except BaseException as exc:
+                        completed += 1
                         errors[node] = exc
                         self._report(f"FAIL {self._node_name(node)}: {exc}")
                         if not self.keep_going:
                             for other in running:
                                 other.cancel()
                             raise BuildError(str(exc)) from exc
+                    else:
+                        completed += 1
                     for consumer in consumers[node]:
                         remaining[consumer] -= 1
                         if node in errors or node in blocked:
@@ -2113,6 +2774,26 @@ class Executor:
             out.add(node)
             stack.extend(node.deps)
         return out
+
+    def _pick(self, ready: deque[Node],
+              used: dict[RemoteHost | None, int]) -> tuple[Node, RemoteHost | None] | None:
+        """The first ready node some worker has a slot for, with the worker
+        that has the most free slots.  Local nodes only run here."""
+        local_free = self.jobs - used[None]
+        remote = [(host.free_slots(used[host]), host) for host in self.hosts]
+        best_remote = max(remote, key=lambda item: item[0], default=(0, None))
+        for index, node in enumerate(ready):
+            if node.local or best_remote[0] <= 0:
+                if local_free <= 0:
+                    continue
+                worker = None
+            elif local_free >= best_remote[0]:
+                worker = None
+            else:
+                worker = best_remote[1]
+            del ready[index]
+            return node, worker
+        return None
 
     def _execute(self, node: Node, expected_miss: bool = True,
                  store_result: bool = True) -> None:
@@ -2195,6 +2876,107 @@ class Executor:
                 if not result.stderr.endswith("\n"):
                     sys.stderr.write("\n")
                 sys.stderr.flush()
+
+    def _execute_remote(self, node: Node, host: RemoteHost, expected_miss: bool = True) -> None:
+        assert node.uid is not None
+        if self._cached(node.uid):
+            if self.verbose:
+                self._report(f"HIT  {node.descr} {self._node_name(node)}")
+            return
+        if not expected_miss:
+            with self.print_lock:
+                self.progress_total += 1
+        locks = self.tmp / ".locks"
+        locks.mkdir(parents=True, exist_ok=True)
+        fd = os.open(locks / node.uid, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            if self._cached(node.uid):
+                return
+            files: dict[str, dict[str, Any]] = {}
+            blobs: dict[str, tuple[Path, int, int]] = {}
+            for dep in node.deps:
+                assert dep.uid is not None
+                manifest = json.loads(self._manifest_path(dep.uid).read_text())
+                for symbolic, entry in manifest.items():
+                    files[symbolic] = entry
+                    if "cas" in entry:
+                        path = self._cas_path(entry["cas"])
+                        blobs[entry["cas"]] = (path, entry["mode"], path.stat().st_size)
+            for path in sorted(node.source_inputs):
+                if path.startswith(S + "/"):
+                    self._describe_source(self.context.physical(path), path, files, blobs)
+            job = {
+                "t": "job", "uid": node.uid, "name": self._node_name(node),
+                "cmd": node.commands, "cwd": node.cwd,
+                # The toolchain the build was configured with, for commands
+                # that spawn a compiler themselves, and its PATH.
+                "env": {
+                    "CC": self.context.cc, "CXX": self.context.cxx, "AR": self.context.ar,
+                    **node.env,
+                },
+                "path": os.environ.get("PATH", ""),
+                "outputs": node.outputs, "files": files,
+            }
+            if self.verbose:
+                self._report(f"RUN  {node.descr} {self._node_name(node)} @{host.name}")
+            try:
+                result = host.execute(node.uid, job, blobs)
+            except HostLost:
+                raise Requeue()
+            if result["stdout"]:
+                with self.print_lock:
+                    self._clear_progress()
+                    sys.stdout.write(result["stdout"])
+                    sys.stdout.flush()
+            if result["rc"] != 0:
+                raise BuildError(f"[{host.name}] {result['stderr']}")
+            if result["stderr"]:
+                with self.print_lock:
+                    self._clear_progress()
+                    sys.stderr.write(result["stderr"])
+                    if not result["stderr"].endswith("\n"):
+                        sys.stderr.write("\n")
+                    sys.stderr.flush()
+            manifest = result["manifest"]
+            for symbolic, entry in manifest.items():
+                if "cas" in entry and not self._cas_path(entry["cas"]).is_file():
+                    raise BuildError(f"[{host.name}] output blob missing after transfer: {symbolic}")
+            self._write_manifest(node.uid, manifest)
+            if self.verbose and "timing" in result:
+                timing = result["timing"]
+                self._report(
+                    f"DONE {node.descr} {self._node_name(node)} @{host.name}"
+                    f" queued {timing['queued']:.1f}s ran {timing['ran']:.1f}s"
+                    f" transit {timing['transit']:.1f}s")
+            self._progress(node)
+        finally:
+            os.close(fd)
+
+    def _describe_source(self, physical: Path, symbolic: str,
+                         files: dict[str, dict[str, Any]],
+                         blobs: dict[str, tuple[Path, int, int]]) -> None:
+        """Manifest entries for a declared source input, following symlinks
+        so the remote gets the content the local build would read."""
+        try:
+            info = physical.stat()
+        except OSError as exc:
+            raise BuildError(f"cannot read input {symbolic}: {exc}") from exc
+        if stat.S_ISDIR(info.st_mode):
+            for child in sorted(physical.iterdir()):
+                self._describe_source(child, symbolic + "/" + child.name, files, blobs)
+            return
+        key = str(physical)
+        with self.source_digests_lock:
+            entry = self.source_digests.get(key)
+        if entry is None:
+            mode = stat.S_IMODE(info.st_mode)
+            entry = (_cas_digest(physical, mode), mode, info.st_size)
+            with self.source_digests_lock:
+                self.source_digests[key] = entry
+        digest, mode, size = entry
+        files[symbolic] = {"cas": digest, "mode": mode}
+        blobs[digest] = (physical, mode, size)
 
     def _strace_payload(self, node: Node, work: Path, cwd: str) -> dict[str, Any]:
         assert self.strace_index is not None
@@ -2297,9 +3079,12 @@ class Executor:
         manifest: dict[str, dict[str, Any]] = {}
         for output in node.outputs:
             self._store_path(self.context.physical(output, work), output, manifest)
-        path = self._manifest_path(node.uid)
+        self._write_manifest(node.uid, manifest)
+
+    def _write_manifest(self, uid: str, manifest: dict[str, dict[str, Any]]) -> None:
+        path = self._manifest_path(uid)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix="." + node.uid + ".", dir=path.parent)
+        fd, temporary = tempfile.mkstemp(prefix="." + uid + ".", dir=path.parent)
         try:
             with os.fdopen(fd, "w") as stream:
                 json.dump(manifest, stream, sort_keys=True, separators=(",", ":"))
@@ -2346,11 +3131,7 @@ class Executor:
 
     @staticmethod
     def _cas_digest(path: Path, mode: int) -> str:
-        digest = hashlib.sha256(f"{mode:o}\0".encode())
-        with path.open("rb") as stream:
-            while chunk := stream.read(1024 * 1024):
-                digest.update(chunk)
-        return digest.hexdigest()
+        return _cas_digest(path, mode)
 
     def _restore(self, uid: str, where: Path, symlink: bool) -> None:
         path = self._manifest_path(uid)
@@ -2512,6 +3293,11 @@ def make_parser() -> argparse.ArgumentParser:
         "--strace", action="store_true",
         help="rerun nodes under strace and reject undeclared source reads",
     )
+    parser.add_argument(
+        "--dist", action="append", default=[], metavar="HOST[:SLOTS],...",
+        help="also run nodes on these ssh hosts (repeatable, comma-separated; "
+             "SLOTS overrides the host's core count)",
+    )
     parser.add_argument("--clear", action="store_true")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("-G", "--graph", action="store_true")
@@ -2611,7 +3397,10 @@ def main(argv: list[str] | None = None) -> int:
             publish.extend(selected)
         selected = _uniq(selected)
         roots = _uniq(target.root for target in selected if target.root is not None)
-        context.calculate_uids(roots)
+        dist = [host.strip() for spec in args.dist for host in spec.split(",") if host.strip()]
+        if dist and args.strace:
+            raise BuildError("--strace and --dist are mutually exclusive")
+        context.calculate_uids(roots, resolve_tools=not dist)
         cache_root = (
             source_root / args.cache_dir
             if args.cache_dir is not None
@@ -2621,6 +3410,9 @@ def main(argv: list[str] | None = None) -> int:
             for directory in ("cas", "uid", "tmp", "grb"):
                 shutil.rmtree(cache_root / directory, ignore_errors=True)
         context.build_root.mkdir(parents=True, exist_ok=True)
+        if args.strace and sqlite3 is None:
+            print("build: --strace needs the sqlite3 module", file=sys.stderr)
+            return 2
         Executor(
             context,
             args.jobs,
@@ -2629,6 +3421,7 @@ def main(argv: list[str] | None = None) -> int:
             args.ninja,
             args.strace,
             cache_root,
+            dist,
         ).run(roots)
         if publish:
             context.publish(publish)
@@ -2690,4 +3483,6 @@ def supervised_main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "strace":
         raise SystemExit(strace_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "exec":
+        raise SystemExit(exec_main(sys.argv[2:]))
     raise SystemExit(supervised_main())
