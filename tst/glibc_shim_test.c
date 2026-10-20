@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <fts.h>
 #include <ftw.h>
+#include <getopt.h>
 #include <gnu/libc-version.h>
 #include <inttypes.h>
 #include <langinfo.h>
@@ -1579,6 +1580,102 @@ static void gcompatTail(void) {
     CHECK(getutent_r(&accounting_record, &accounting) == -1 && accounting == NULL);
 }
 
+/* Runs one getopt_long call (getopt when there are no long options) on a
+ * fresh parse with stderr captured, and returns what the parser printed. */
+static const char* getoptMessage(int argc, char** argv, const char* options, const struct option* longs, int* result) {
+    static char message[256];
+    char path[256];
+    snprintf(path, sizeof(path), "%s/solo-shim-XXXXXX", temporary_directory());
+    int descriptor = mkstemp64(path);
+    int saved = dup(2);
+
+    message[0] = 0;
+    fflush(stderr);
+    dup2(descriptor, 2);
+    optind = 0;
+    opterr = 1;
+    *result = longs ? getopt_long(argc, argv, options, longs, NULL) : getopt(argc, argv, options);
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+
+    ssize_t length = pread(descriptor, message, sizeof(message) - 1, 0);
+    message[length > 0 ? length : 0] = 0;
+    close(descriptor);
+    unlink(path);
+
+    return message;
+}
+
+/* glibc's getopt family: every entry point but __posix_getopt permutes the
+ * operands behind the options, a missing argument at the end of argv leaves
+ * the vector and its terminator intact, and the diagnostics carry glibc's
+ * wording, which programs and their test suites match. */
+static void options(void) {
+    static const struct option longs[] = {
+        {"name", required_argument, NULL, 'n'},
+        {"verbose", no_argument, NULL, 'v'},
+        {"version", no_argument, NULL, 'V'},
+        {NULL, 0, NULL, 0},
+    };
+    char program[] = "prog";
+    char file[] = "file";
+    char a[] = "-a";
+    char b[] = "-b";
+    char x[] = "x";
+    char tail[] = "tail";
+    char* mixed[] = {program, file, a, b, x, tail, NULL};
+
+    optind = 0;
+    opterr = 0;
+    CHECK(getopt(6, mixed, "ab:") == 'a');
+    CHECK(getopt(6, mixed, "ab:") == 'b' && optarg == x);
+    CHECK(getopt(6, mixed, "ab:") == -1);
+    CHECK(optind == 4 && mixed[1] == a && mixed[2] == b && mixed[3] == x);
+    CHECK(mixed[4] == file && mixed[5] == tail && mixed[6] == NULL);
+
+    char* ordered[] = {program, file, a, NULL};
+    int __posix_getopt(int, char* const*, const char*);
+    optind = 0;
+    CHECK(getopt(3, ordered, "+a") == -1 && optind == 1);
+    optind = 0;
+    CHECK(__posix_getopt(3, ordered, "a") == -1 && optind == 1 && ordered[1] == file);
+
+    char n[] = "-n";
+    char* missing[] = {program, file, n, NULL};
+    optind = 0;
+    CHECK(getopt_long(3, missing, "n:", longs, NULL) == '?');
+    CHECK(getopt_long(3, missing, "n:", longs, NULL) == -1 && optind == 2);
+    CHECK(missing[1] == n && missing[2] == file && missing[3] == NULL);
+
+    char* last[] = {program, n, NULL};
+    optind = 0;
+    CHECK(getopt(2, last, "n:") == '?' && optind == 2 && optopt == 'n');
+
+    int result;
+    char unknown[] = "-Z";
+    char* invalid[] = {program, unknown, NULL};
+    CHECK(strcmp(getoptMessage(2, invalid, "n:", NULL, &result), "prog: invalid option -- 'Z'\n") == 0 && result == '?');
+    CHECK(strcmp(getoptMessage(2, last, "n:", longs, &result), "prog: option requires an argument -- 'n'\n") == 0 && result == '?');
+    CHECK(getoptMessage(2, invalid, ":n:", NULL, &result)[0] == 0 && result == '?');
+
+    char bogus[] = "--bogus=1";
+    char* unrecognized[] = {program, bogus, NULL};
+    CHECK(strcmp(getoptMessage(2, unrecognized, "", longs, &result), "prog: unrecognized option '--bogus=1'\n") == 0);
+    char ver[] = "--ver";
+    char* ambiguous[] = {program, ver, NULL};
+    CHECK(strcmp(getoptMessage(2, ambiguous, "", longs, &result), "prog: option '--ver' is ambiguous; possibilities: '--verbose' '--version'\n") == 0);
+    char verbose[] = "--verbose=1";
+    char* argued[] = {program, verbose, NULL};
+    CHECK(strcmp(getoptMessage(2, argued, "", longs, &result), "prog: option '--verbose' doesn't allow an argument\n") == 0);
+    char name[] = "--name";
+    char* unargued[] = {program, name, NULL};
+    CHECK(strcmp(getoptMessage(2, unargued, "", longs, &result), "prog: option '--name' requires an argument\n") == 0);
+
+    optind = 1;
+    opterr = 1;
+}
+
 int glibc_shim_test(void) {
 
     failures = 0;
@@ -1607,6 +1704,7 @@ int glibc_shim_test(void) {
     dynamicLinking();
     distributionTail();
     gcompatTail();
+    options();
 
     return failures;
 }

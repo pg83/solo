@@ -1600,40 +1600,192 @@ namespace {
         }
     }
 
-    static int sh_getopt(int argc, char* const argv[], const char* options) {
+    enum class GetoptKind {
+        Short,
+        Posix,
+        Long,
+        LongOnly,
+    };
+
+    static bool sh_getopt_is_option(const char* argument) {
+        return argument[0] == '-' && argument[1];
+    }
+
+    // Moves the parsed elements [first, end) in front of the operands
+    // [skipped, first) that the scan stepped over, the way glibc's exchange
+    // leaves them.
+    static void sh_getopt_rotate(char* const argv[], int skipped, int first, int end) {
+        auto** vector = const_cast<char**>(argv);
+
+        for (int index = first; index < end; ++index, ++skipped) {
+            auto* parsed = vector[index];
+
+            memmove(vector + skipped + 1, vector + skipped, (index - skipped) * sizeof(char*));
+            vector[skipped] = parsed;
+        }
+    }
+
+    // glibc's wording for the diagnostics musl was told to keep quiet about.
+    // The element is classified the way musl's parser just classified it:
+    // a long option, or failing that its short-option fallback.
+    static void sh_getopt_complain(const char* program, const char* element, const char* options, const struct option* longOptions, GetoptKind kind) {
+        if (longOptions && element[0] == '-' && ((kind == GetoptKind::LongOnly && element[1] && element[1] != '-') || (element[1] == '-' && element[2]))) {
+            const char* prefix = element[1] == '-' ? "--" : "-";
+            const char* start = element + strlen(prefix);
+            size_t length = strcspn(start, "=");
+            int count = 0;
+            int match = -1;
+
+            for (int index = 0; longOptions[index].name; ++index) {
+                if (strncmp(longOptions[index].name, start, length)) {
+                    continue;
+                }
+                match = index;
+                if (!longOptions[index].name[length]) {
+                    count = 1;
+                    break;
+                }
+                ++count;
+            }
+            // musl's long-only tie-break: a one-character name that is also a
+            // short option goes to the short parser.
+            if (count == 1 && kind == GetoptKind::LongOnly && element[1] != '-' && (int)length == mblen(start, MB_LEN_MAX)) {
+                for (const char* option = options; *option; ++option) {
+                    if (!strncmp(option, start, length)) {
+                        ++count;
+                        break;
+                    }
+                }
+            }
+            if (count == 1) {
+                const auto& option = longOptions[match];
+
+                if (start[length] == '=') {
+                    fprintf(stderr, "%s: option '%s%s' doesn't allow an argument\n", program, prefix, option.name);
+                } else {
+                    fprintf(stderr, "%s: option '%s%s' requires an argument\n", program, prefix, option.name);
+                }
+                return;
+            }
+            if (element[1] == '-') {
+                if (!count) {
+                    fprintf(stderr, "%s: unrecognized option '%s'\n", program, element);
+                    return;
+                }
+                fprintf(stderr, "%s: option '%s' is ambiguous; possibilities:", program, element);
+                for (int index = 0; longOptions[index].name; ++index) {
+                    if (!strncmp(longOptions[index].name, start, length)) {
+                        fprintf(stderr, " '--%s'", longOptions[index].name);
+                    }
+                }
+                fputc('\n', stderr);
+                return;
+            }
+        }
+
+        char spelled[MB_LEN_MAX + 1] = {};
+        int length = wctomb(spelled, optopt);
+        const char* specification = optopt != ':' && length == 1 ? strchr(options, optopt) : nullptr;
+
+        if (length < 1) {
+            spelled[0] = '?';
+        }
+        if (specification && specification[1] == ':') {
+            fprintf(stderr, "%s: option requires an argument -- '%s'\n", program, spelled);
+        } else {
+            fprintf(stderr, "%s: invalid option -- '%s'\n", program, spelled);
+        }
+    }
+
+    // glibc's getopt family differs from musl's beyond the variables above.
+    // Every glibc entry point but __posix_getopt permutes, collecting the
+    // options in front of the operands unless the string starts with '+' or
+    // '-' or POSIXLY_CORRECT is set; musl's getopt never permutes, and its
+    // getopt_long, permuting past a missing short-option argument at the end
+    // of argv, rotates argv's NULL terminator into the vector. glibc also
+    // leaves optind at argc there, not past it, and words its diagnostics
+    // its own way. So the bridge finds the next option element itself, has
+    // musl parse only that element with musl's messages off, rotates what it
+    // consumed in front of the skipped operands, and prints glibc's message.
+    static int sh_getopt_run(int argc, char* const argv[], const char* options, const struct option* longOptions, int* longIndex, GetoptKind kind) {
         auto state = sh_getopt_state();
 
         sh_getopt_pull(state);
+        if (!optind) {
+            // musl's reinitialization, for which a zero argc returns at once.
+            getopt(0, argv, options);
+        }
+        if (optind >= argc || !argv[optind]) {
+            sh_getopt_push(state);
+            return -1;
+        }
 
-        auto result = getopt(argc, argv, options);
+        bool permute = kind != GetoptKind::Posix && options[0] != '+' && options[0] != '-' && !getenv("POSIXLY_CORRECT");
+        int skipped = optind;
+        int first = optind;
 
+        if (permute) {
+            while (first < argc && argv[first] && !sh_getopt_is_option(argv[first])) {
+                ++first;
+            }
+            if (first >= argc || !argv[first]) {
+                sh_getopt_push(state);
+                return -1;
+            }
+            optind = first;
+        } else if (options[0] != '-' && !sh_getopt_is_option(argv[optind])) {
+            sh_getopt_push(state);
+            return -1;
+        }
+
+        const char* element = argv[first];
+        const char* bare = options + (options[0] == '+' || options[0] == '-');
+        int report = opterr;
+        int result;
+
+        opterr = 0;
+        switch (kind) {
+            case GetoptKind::Short:
+            case GetoptKind::Posix:
+                result = getopt(argc, argv, options);
+                break;
+            case GetoptKind::Long:
+                result = getopt_long(argc, argv, options, longOptions, longIndex);
+                break;
+            case GetoptKind::LongOnly:
+                result = getopt_long_only(argc, argv, options, longOptions, longIndex);
+                break;
+        }
+        opterr = report;
+        if (optind > argc) {
+            optind = argc;
+        }
+        if (permute) {
+            sh_getopt_rotate(argv, skipped, first, optind);
+            optind = skipped + (optind - first);
+        }
+        if (result == '?' && report && bare[0] != ':') {
+            sh_getopt_complain(argv[0], element, bare, longOptions, kind);
+        }
         sh_getopt_push(state);
 
         return result;
+    }
+
+    static int sh_getopt(int argc, char* const argv[], const char* options) {
+        return sh_getopt_run(argc, argv, options, nullptr, nullptr, GetoptKind::Short);
+    }
+
+    static int sh_posix_getopt(int argc, char* const argv[], const char* options) {
+        return sh_getopt_run(argc, argv, options, nullptr, nullptr, GetoptKind::Posix);
     }
 
     static int sh_getopt_long(int argc, char* const argv[], const char* options, const struct option* longOptions, int* longIndex) {
-        auto state = sh_getopt_state();
-
-        sh_getopt_pull(state);
-
-        auto result = getopt_long(argc, argv, options, longOptions, longIndex);
-
-        sh_getopt_push(state);
-
-        return result;
+        return sh_getopt_run(argc, argv, options, longOptions, longIndex, GetoptKind::Long);
     }
 
     static int sh_getopt_long_only(int argc, char* const argv[], const char* options, const struct option* longOptions, int* longIndex) {
-        auto state = sh_getopt_state();
-
-        sh_getopt_pull(state);
-
-        auto result = getopt_long_only(argc, argv, options, longOptions, longIndex);
-
-        sh_getopt_push(state);
-
-        return result;
+        return sh_getopt_run(argc, argv, options, longOptions, longIndex, GetoptKind::LongOnly);
     }
 
     // glibc's getaddrinfo grew IDN flag bits musl's rejects outright with
@@ -5327,6 +5479,7 @@ namespace {
         SH_FUNCTION("memset_explicit", "GLIBC_2.43", sh_memset_explicit),
         SH_FUNCTION("__memset_explicit_chk", "GLIBC_2.43", sh_memset_explicit_chk),
         SH_FUNCTION("getopt", "GLIBC_2.2.5", sh_getopt),
+        SH_FUNCTION("__posix_getopt", "GLIBC_2.10", sh_posix_getopt),
         SH_FUNCTION("getopt_long", "GLIBC_2.2.5", sh_getopt_long),
         SH_FUNCTION("getopt_long_only", "GLIBC_2.2.5", sh_getopt_long_only),
         SH_OBJECT("_libc_intl_domainname", "GLIBC_2.2.5", sh_libc_intl_domainname),
@@ -5689,6 +5842,7 @@ GlibcAdapter::GlibcAdapter()
         "setbuf",
         "setbuffer",
         "setvbuf",
+        "__posix_getopt",
         "getopt",
         "getopt_long",
         "getopt_long_only",

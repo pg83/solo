@@ -10,10 +10,12 @@ typedef struct guest_file FILE;
 
 extern FILE* stdout;
 extern char** environ;
+extern int optind;
 
 int printf(const char* format, ...);
 int fprintf(FILE* stream, const char* format, ...);
 char* getenv(const char* name);
+int __posix_getopt(int argc, char* const argv[], const char* options);
 /* atexit itself lives in glibc's libc_nonshared.a, which a -nostdlib link
  * has no business pulling in; the underlying exported call serves. */
 int __cxa_atexit(void (*function)(void*), void* argument, void* handle);
@@ -58,6 +60,13 @@ int main(int argc, char** argv, char** envp) {
     if (__cxa_atexit(guest_atexit, 0, 0)) {
         printf("guest atexit registration failed\n");
     }
+
+    /* musl exports its own __posix_getopt, and optind is one more variable
+     * the executable may hold a copy of. */
+    char* options[] = {argv[0], "-q", "operand", 0};
+    int option = __posix_getopt(3, options, "q");
+
+    printf("guest getopt %c optind=%d\n", option, optind);
 
     printf("guest tls=%lx bss=%ld\n", guest_tls_data, guest_tls_bss[0]);
     guest_tls_data = 0x600d;
