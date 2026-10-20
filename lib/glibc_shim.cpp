@@ -4724,6 +4724,12 @@ namespace {
         } else {
             address = reinterpret_cast<GlibcHandle*>(handle)->lookup(name, {});
         }
+        if (!address && !strcmp(name, "errno")) {
+            // glibc's libc exports errno itself, a TLS object dlsym resolves
+            // to the calling thread's instance; FFIs reach it by name. musl
+            // has only __errno_location.
+            address = &errno;
+        }
         if (!address) {
             copyStubError("symbol not found");
         } else {
