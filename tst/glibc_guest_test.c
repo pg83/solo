@@ -22,6 +22,35 @@ typedef unsigned long guest_pthread_t;
 int pthread_create(guest_pthread_t* thread, const void* attributes, void* (*function)(void*), void* argument);
 int pthread_join(guest_pthread_t thread, void** result);
 
+void* malloc(unsigned long size);
+void free(void* pointer);
+char* realpath(const char* path, char* resolved);
+int asprintf(char** result, const char* format, ...);
+
+/* One heap for the whole process, whichever allocator serves it: the guest
+ * frees what musl allocated on its behalf, and what another thread
+ * allocated. */
+static void* guest_heap_thread(void* argument) {
+    free(argument);
+    return malloc(24);
+}
+
+static void guest_heap_check(void) {
+    char* resolved = realpath("/", 0);
+    char* formatted = 0;
+    int shared = resolved && asprintf(&formatted, "%s", "heap") > 0;
+
+    free(resolved);
+    free(formatted);
+
+    guest_pthread_t thread;
+    void* returned = 0;
+
+    shared = shared && !pthread_create(&thread, 0, guest_heap_thread, malloc(48)) && !pthread_join(thread, &returned);
+    free(returned);
+    printf("guest heap %s\n", shared ? "shared" : "split");
+}
+
 /* The executable's own TLS: the static linker burns these offsets into the
  * instructions against the ABI's thread-pointer layout, and the loader must
  * have put the blocks exactly there — in the main thread and in every thread
@@ -68,6 +97,8 @@ int main(int argc, char** argv, char** envp) {
         printf("guest thread failed\n");
     }
     printf("guest tls after thread=%lx\n", guest_tls_data);
+
+    guest_heap_check();
 
     return 42;
 }

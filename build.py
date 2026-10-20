@@ -18,6 +18,10 @@ build.cxxflags += [
 ]
 
 build.flags.allow({
+    "mimalloc": {
+        "descr": "serve malloc in the solo stub from the vendored mimalloc "
+                 "instead of musl's mallocng",
+    },
     "use_corpus": {
         "descr": "directory with pre-fetched package archives; downloads copy "
                  "from it and fall back to the network on a miss",
@@ -785,6 +789,27 @@ solo_crti = muslCrt("solo", "crti", f"{musl_root}/crt/{machine}/crti.s", "$(B)/b
 solo_crtn = muslCrt("solo", "crtn", f"{musl_root}/crt/{machine}/crtn.s", "$(B)/bin/solo", ["-fPIE"])
 solo_crtend = muslCrt("solo", "crtend", "$(S)/lib/crtend.s", "$(B)/bin/solo", ["-fPIE"])
 
+# mimalloc replaces musl's malloc in the whole process when asked for: musl's
+# own callers (strdup, realpath, getaddrinfo, ...), the glibc bridge and every
+# guest allocate from one heap, so memory crosses the bridge either way.
+# mallocng serializes on one lock, which multithreaded guests feel first.
+solo_mimalloc = library(
+    name="solo_mimalloc",
+    srcs=[{"src": f"{ext_root}/mimalloc.cpp", "inputs": [libcxx_config_path]}],
+    deps=runtime_generated,
+    includes=[f"{ext_root}/mimalloc/include", ext_root, *vendored_includes],
+    cflags=[*c_runtime_flags, "-fPIE"],
+    cxxflags=[
+        *cxx_runtime_flags,
+        "-w",
+        "-DNDEBUG",
+        "-DMI_MALLOC_OVERRIDE",
+        # Transparent huge pages stay the host's decision.
+        "-DMI_DEFAULT_ALLOW_THP=0",
+    ],
+    output="$(B)/bin/solo/lib/libsolo_mimalloc.a",
+) if build.flags.mimalloc else None
+
 solo_app = library(
     name="solo_app",
     srcs=[{"src": "$(S)/bin/solo/main.cpp", "inputs": [libcxx_config_path]}],
@@ -811,9 +836,10 @@ solo_cli = command(
         solo_crtn.output,
         solo_crtend.output,
         *[archive.output for archive in solo_archives],
+        *([solo_mimalloc.output] if solo_mimalloc else []),
     ],
     outputs=["$(B)/bin/solo/solo"],
-    deps=[solo_rcrt1, solo_crti, solo_crtn, solo_crtend, *solo_archives],
+    deps=[solo_rcrt1, solo_crti, solo_crtn, solo_crtend, *solo_archives, *([solo_mimalloc] if solo_mimalloc else [])],
     cmd=[
         cc,
         *linker_flags,
@@ -833,6 +859,7 @@ solo_cli = command(
         "-Wl,--start-group",
         "-Wl,--whole-archive",
         solo_app.output,
+        *([solo_mimalloc.output] if solo_mimalloc else []),
         "-Wl,--no-whole-archive",
         *[archive.output for archive in solo_archives[1:]],
         "-Wl,--end-group",
@@ -1307,7 +1334,7 @@ qemu_systemd_packages = {
         ("systemd_deb", f"{qemu_ubuntu_pool}/s/systemd/systemd_255.4-1ubuntu8.17_amd64.deb", "systemd_255.4-1ubuntu8.17_amd64.deb", "250345b73e42a97ee71cae7c1e470897dfad3c639eb0a7aafe4f9a3a29871cb2"),
         ("libsystemd_shared_deb", f"{qemu_ubuntu_pool}/s/systemd/libsystemd-shared_255.4-1ubuntu8.17_amd64.deb", "libsystemd-shared_255.4-1ubuntu8.17_amd64.deb", "8722a69d99c1a7e6f72c5389e9c6d8053d95d2f5f4fede5dc83118f735812518"),
         ("libsystemd0_deb", f"{qemu_ubuntu_pool}/s/systemd/libsystemd0_255.4-1ubuntu8.17_amd64.deb", "libsystemd0_255.4-1ubuntu8.17_amd64.deb", "4776d2ac7e21efe2ae31f3f7955a7ccd97277225eecf36910a26faf4544979ae"),
-        ("libapparmor1_deb", f"{qemu_ubuntu_pool}/a/apparmor/libapparmor1_4.0.1really4.0.1-0ubuntu0.24.04.7_amd64.deb", "libapparmor1_4.0.1really4.0.1-0ubuntu0.24.04.7_amd64.deb", "4205351c37f4e813f1ca81b6d59a00071f0f70869e652f4ab9e5ba7e5e895d34"),
+        ("libapparmor1_deb", f"{qemu_ubuntu_pool}/a/apparmor/libapparmor1_4.0.1really4.0.1-0ubuntu0.24.04.9_amd64.deb", "libapparmor1_4.0.1really4.0.1-0ubuntu0.24.04.9_amd64.deb", "75b570d7517e24c3693c4503b4691ac1fd82934d93faa91460309f22104c5617"),
         ("libcryptsetup12_deb", f"{qemu_ubuntu_pool}/c/cryptsetup/libcryptsetup12_2.7.0-1ubuntu4.2_amd64.deb", "libcryptsetup12_2.7.0-1ubuntu4.2_amd64.deb", "f6f6a7f35104da711997b52c92ab91ce1f47dd039d276d5beb797d713447c9f2"),
         ("libfdisk1_deb", f"{qemu_ubuntu_pool}/u/util-linux/libfdisk1_2.39.3-9ubuntu6.6_amd64.deb", "libfdisk1_2.39.3-9ubuntu6.6_amd64.deb", "7f67b127d239f51218c1eb63c3b0c219bbf26f450349bed9ad5d9f10a6b80c1b"),
         ("libkmod2_deb", f"{qemu_ubuntu_pool}/k/kmod/libkmod2_31+20240202-2ubuntu7.2_amd64.deb", "libkmod2_31+20240202-2ubuntu7.2_amd64.deb", "a9cbdc424bc0a5c8af3d6445488a48de76df5ff4d76b7dab8aaf88f712358bbc"),
@@ -1317,7 +1344,7 @@ qemu_systemd_packages = {
         ("dbus_session_bus_common_deb", f"{qemu_ubuntu_pool}/d/dbus/dbus-session-bus-common_1.14.10-4ubuntu4.1_all.deb", "dbus-session-bus-common_1.14.10-4ubuntu4.1_all.deb", "aa88bf2f2107e7d948d0e01001b447fc6cae81b285a6e7daf33dcb62737de62f"),
         ("dbus_system_bus_common_deb", f"{qemu_ubuntu_pool}/d/dbus/dbus-system-bus-common_1.14.10-4ubuntu4.1_all.deb", "dbus-system-bus-common_1.14.10-4ubuntu4.1_all.deb", "4db2e3e18c6abee1a1d1e2f91289e229dd862e6e1ef00463c5533c612c4f1809"),
         ("libdbus_1_3_deb", f"{qemu_ubuntu_pool}/d/dbus/libdbus-1-3_1.14.10-4ubuntu4.1_amd64.deb", "libdbus-1-3_1.14.10-4ubuntu4.1_amd64.deb", "5d630480f04b4b442300ce847a3fa705ea4d14d80ba6de91f99b51a4e4953b08"),
-        ("libexpat1_deb", f"{qemu_ubuntu_pool}/e/expat/libexpat1_2.6.1-2ubuntu0.4_amd64.deb", "libexpat1_2.6.1-2ubuntu0.4_amd64.deb", "126a5612e652bdc2edee19ae8fe4308db72b5b3b0a5581bf885b44a093baf3e5"),
+        ("libexpat1_deb", f"{qemu_ubuntu_pool}/e/expat/libexpat1_2.6.1-2ubuntu0.6_amd64.deb", "libexpat1_2.6.1-2ubuntu0.6_amd64.deb", "494b8e672f722130c6bca6a7bc4cc31a43ca891a31d60d868bfdd699a3c20b13"),
     ],
     "aarch64": [],
 }[machine]
