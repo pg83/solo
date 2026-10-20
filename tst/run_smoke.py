@@ -512,6 +512,7 @@ def run_solo_checks(root, sysroot_lib, environment):
             "guest tls=51106011 bss=0",
             "guest thread tls=51106011 bss=0",
             "guest tls after thread=600d",
+            "guest old versions glob64=1 clocklock=0",
             "guest atexit",
         ):
             if needle not in run.stdout:
@@ -626,6 +627,7 @@ def run_bundle_checks(root, sysroot_lib, environment):
         "guest tls=51106011 bss=0",
         "guest thread tls=51106011 bss=0",
         "guest tls after thread=600d",
+        "guest old versions glob64=1 clocklock=0",
         "guest atexit",
     ):
         if needle not in run.stdout:
