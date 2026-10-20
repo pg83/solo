@@ -920,6 +920,38 @@ static int countPhdrs(struct dl_phdr_info* info, size_t size, void* data) {
     return 0;
 }
 
+/* Counts the images whose dynamic section still holds link-time offsets:
+ * ld.so leaves DT_STRTAB an address inside the image, vDSO aside. */
+static int unrebasedDynamic(struct dl_phdr_info* info, size_t size, void* data) {
+    (void)size;
+    if (info->dlpi_addr == getauxval(AT_SYSINFO_EHDR)) {
+        return 0;
+    }
+    for (int index = 0; index < info->dlpi_phnum; ++index) {
+        if (info->dlpi_phdr[index].p_type != PT_DYNAMIC) {
+            continue;
+        }
+        for (const ElfW(Dyn)* entry = (const ElfW(Dyn)*)(info->dlpi_addr + info->dlpi_phdr[index].p_vaddr); entry->d_tag != DT_NULL; ++entry) {
+            if (entry->d_tag == DT_STRTAB && entry->d_un.d_ptr < info->dlpi_addr) {
+                ++*(int*)data;
+            }
+        }
+    }
+    return 0;
+}
+
+/* The lowest dlpi_adds any image reports: every object that ever joined the
+ * list counts, so it covers at least the images walked now. */
+static int lowestAdds(struct dl_phdr_info* info, size_t size, void* data) {
+    unsigned long long* lowest = data;
+
+    (void)size;
+    if (info->dlpi_adds < *lowest) {
+        *lowest = info->dlpi_adds;
+    }
+    return 0;
+}
+
 static void dynamicLinking(void) {
     void* handle = dlopen(NULL, RTLD_LAZY);
 
@@ -951,6 +983,12 @@ static void dynamicLinking(void) {
     int images = 0;
     CHECK(dl_iterate_phdr(countPhdrs, &images) == 0);
     CHECK(images >= 2);
+    int unrebased = 0;
+    CHECK(dl_iterate_phdr(unrebasedDynamic, &unrebased) == 0);
+    CHECK(unrebased == 0);
+    unsigned long long adds = ~0ULL;
+    CHECK(dl_iterate_phdr(lowestAdds, &adds) == 0);
+    CHECK(adds >= (unsigned long long)images);
 
     /* dlmopen: the base namespace is plain dlopen, a fresh namespace is
      * declined through dlerror (libcuda imports it and probes). */

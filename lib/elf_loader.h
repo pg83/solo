@@ -123,6 +123,8 @@ namespace dyn {
         static ElfImage* loadElfForCaller(unsigned callerIndex, std::string_view path, int flags);
         static bool findAddress(const void* address, ElfAddress* res);
         static int iterateProgramHeaders(ElfProgramHeaderCallback& callback);
+        // How many images the loader has ever completed; nothing unloads.
+        static uint64_t loadCount();
 
         // The RTLD_DEFAULT search over images loaded with RTLD_GLOBAL.
         static void* lookupGlobal(std::string_view symbol);
