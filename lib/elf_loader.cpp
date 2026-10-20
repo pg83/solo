@@ -1549,9 +1549,8 @@ void Loader::allocateStaticTls(LinkMap& image) {
 
 // The loading thread's own copy of a placed block, seeded after relocations
 // so relocated template bytes land in it — and only then registered with
-// musl, so threads created later are seeded from relocated bytes too.
-// Threads already running keep zeroes, like ld.so: dlopen libraries with TLS
-// before spawning threads that use them.
+// musl, which seeds the threads already running and those created later
+// from the same relocated bytes, like ld.so's _dl_init_static_tls.
 void Loader::seedStaticTls(LinkMap& image) {
     if (!image.staticTlsOffset) {
         return;
