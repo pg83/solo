@@ -438,6 +438,15 @@ def main():
         raise SystemExit(result.returncode)
 
 
+def sysroot_libgcc_s(root):
+    """The sysroot's libgcc_s.so.1: the guest imports _Unwind_* and
+    __register_frame from it, as a JIT compiler does."""
+    found = sorted(root.glob("**/libgcc_s.so.1"))
+    if not found:
+        raise SystemExit("no libgcc_s.so.1 in the sysroot")
+    return found[0]
+
+
 def run_solo_checks(root, sysroot_lib, environment):
     """A whole glibc executable through the solo command: linked against the
     sysroot's own crt objects and libc.so.6, so its _start is glibc's crt and
@@ -477,6 +486,7 @@ def run_solo_checks(root, sysroot_lib, environment):
                     str(root / sysroot_lib / "crti.o"),
                     os.environ["DLFCN_GLIBC_GUEST_TEST_SOURCE"],
                     str(root / sysroot_lib / "libc.so.6"),
+                    str(sysroot_libgcc_s(root)),
                     str(ld_so[0]),
                     str(root / sysroot_lib / "crtn.o"),
                     "-o",
@@ -512,6 +522,7 @@ def run_solo_checks(root, sysroot_lib, environment):
             "guest tls=51106011 bss=0",
             "guest thread tls=51106011 bss=0",
             "guest tls after thread=600d",
+            "guest unwind personality=called cfa=ok",
             "guest atexit",
         ):
             if needle not in run.stdout:
@@ -572,6 +583,7 @@ def run_bundle_checks(root, sysroot_lib, environment):
             str(root / sysroot_lib / "crti.o"),
             os.environ["DLFCN_GLIBC_GUEST_TEST_SOURCE"],
             str(root / sysroot_lib / "libc.so.6"),
+            str(sysroot_libgcc_s(root)),
             str(ld_so[0]),
             # A DT_NEEDED the guest never calls into: the loader still has
             # to find and map it, and only the bundle carries it.
@@ -594,6 +606,8 @@ def run_bundle_checks(root, sysroot_lib, environment):
             f"dlfcn-test-guest-bundle={guest}",
             "--library",
             str(library),
+            "--library",
+            str(sysroot_libgcc_s(root)),
             "--output",
             str(bundle),
         ],
@@ -626,6 +640,7 @@ def run_bundle_checks(root, sysroot_lib, environment):
         "guest tls=51106011 bss=0",
         "guest thread tls=51106011 bss=0",
         "guest tls after thread=600d",
+        "guest unwind personality=called cfa=ok",
         "guest atexit",
     ):
         if needle not in run.stdout:
