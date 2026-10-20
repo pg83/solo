@@ -9,6 +9,7 @@
 typedef struct guest_file FILE;
 
 extern FILE* stdout;
+extern FILE* stderr;
 extern char** environ;
 
 int printf(const char* format, ...);
@@ -47,6 +48,9 @@ static void guest_atexit(void* argument) {
 
 int main(int argc, char** argv, char** envp) {
     printf("guest main argc=%d\n", argc);
+    /* stdout is a pipe here, so glibc buffers it fully from the first line:
+     * this stderr line lands ahead of everything the guest printed. */
+    fprintf(stderr, "guest stderr\n");
     for (int index = 1; index < argc; ++index) {
         printf("guest argv %s\n", argv[index]);
     }

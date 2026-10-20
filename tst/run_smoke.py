@@ -505,6 +505,7 @@ def run_solo_checks(root, sysroot_lib, environment):
         for needle in (
             "guest init",
             "guest main argc=3",
+            "guest stderr",
             "guest argv alpha",
             "guest argv beta",
             "guest stdout env=smoke-value",
@@ -517,6 +518,9 @@ def run_solo_checks(root, sysroot_lib, environment):
             if needle not in run.stdout:
                 print(run.stdout, file=sys.stderr)
                 raise SystemExit(f"solo run misses: {needle}")
+        if run.stdout.find("guest stderr") > run.stdout.find("guest init"):
+            print(run.stdout, file=sys.stderr)
+            raise SystemExit("solo run flushed the guest's piped stdout line by line")
         if run.returncode != 42:
             print(run.stdout, file=sys.stderr)
             raise SystemExit(f"solo run exited {run.returncode}, wanted the guest's 42")
