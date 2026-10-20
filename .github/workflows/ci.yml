@@ -225,6 +225,14 @@ jobs:
           key: corpus-x86_64-${{ hashFiles('tst/corpus_x86_64.json', 'build.py') }}
           restore-keys: corpus-x86_64-
 
+      # Ubuntu's GCC defaults to -fcf-protection, which the static world
+      # has to opt out of; no other job builds with it.
+      - name: GCC
+        env:
+          CC: gcc
+          CXX: g++
+        run: ./build -j12 solo
+
       - name: Bridge
         env:
           CC: clang
