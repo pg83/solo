@@ -775,6 +775,39 @@ static int compareWithContext(const void* left, const void* right, void* context
     return *(const int*)left - *(const int*)right;
 }
 
+static void* pipeRounds(void* argument) {
+    int* failed = argument;
+
+    for (int round = 0; round < 150; ++round) {
+        FILE* pipe = popen("true", "r");
+
+        if (!pipe) {
+            __atomic_add_fetch(failed, 1, __ATOMIC_RELAXED);
+            continue;
+        }
+        pclose(pipe);
+    }
+
+    return NULL;
+}
+
+/* popen from several threads at once: a pclose that closed its descriptor
+ * but had not yet left the open file list used to hand a reused descriptor
+ * number to a concurrent popen's child as one to close, and the child's
+ * dup2 of its own pipe then failed with EBADF. */
+static void concurrentPipes(void) {
+    pthread_t threads[8];
+    int failed = 0;
+
+    for (int index = 0; index < 8; ++index) {
+        CHECK(pthread_create(&threads[index], NULL, pipeRounds, &failed) == 0);
+    }
+    for (int index = 0; index < 8; ++index) {
+        pthread_join(threads[index], NULL);
+    }
+    CHECK(failed == 0);
+}
+
 static void sorting(void) {
     int values[] = {3, 1, 2};
 
@@ -1600,6 +1633,7 @@ int glibc_shim_test(void) {
     localesAndWide();
     timeKeeping();
     sorting();
+    concurrentPipes();
     processAndSystem();
     inlinedStdio();
     jumps();
