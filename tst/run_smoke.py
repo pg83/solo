@@ -513,6 +513,7 @@ def run_solo_checks(root, sysroot_lib, environment):
             "guest thread tls=51106011 bss=0",
             "guest tls after thread=600d",
             "guest atexit",
+            "guest fini",
         ):
             if needle not in run.stdout:
                 print(run.stdout, file=sys.stderr)
@@ -539,7 +540,8 @@ def run_solo_checks(root, sysroot_lib, environment):
         if "libc.so.6 => the glibc ABI bridge" not in ldd.stdout:
             print(ldd.stdout, file=sys.stderr)
             raise SystemExit("solo ldd misses the bridged libc.so.6 line")
-        if "guest main" in ldd.stdout:
+        if "guest main" in ldd.stdout or "guest fini" in ldd.stdout:
+            print(ldd.stdout, file=sys.stderr)
             raise SystemExit("solo ldd ran the guest instead of only tracing it")
         if ldd.returncode:
             print(ldd.stdout, file=sys.stderr)
@@ -627,6 +629,7 @@ def run_bundle_checks(root, sysroot_lib, environment):
         "guest thread tls=51106011 bss=0",
         "guest tls after thread=600d",
         "guest atexit",
+        "guest fini",
     ):
         if needle not in run.stdout:
             print(run.stdout, file=sys.stderr)

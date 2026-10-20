@@ -271,6 +271,9 @@ namespace {
         // headers feed the auxiliary vector, and its initializers wait for
         // the bridge's __libc_start_main instead of the load-time queue.
         bool executable = false;
+        // Set once the image's initializers have started, like ld.so's
+        // l_init_called: only such images get their finalizers at exit.
+        bool initialized = false;
         uintptr_t entry = 0;
         uintptr_t programHeadersAddress = 0;
 
@@ -2454,6 +2457,7 @@ void LinkMap::runInitializers() {
     if (executable) {
         return;
     }
+    initialized = true;
     if (initializer) {
         reinterpret_cast<void (*)()>(initializer)();
     }
@@ -2488,7 +2492,10 @@ void Loader::runAllFinalizers() {
 
         images.reserve(loader.images_.size());
         for (const auto& image : loader.images_) {
-            if (image->state == LinkMap::State::Ready) {
+            // Under LD_TRACE_LOADED_OBJECTS nothing was initialized, and a
+            // finalizer must never run against state its initializer never
+            // built.
+            if (image->state == LinkMap::State::Ready && image->initialized) {
                 images.push_back(image.get());
             }
         }
@@ -2585,6 +2592,7 @@ void dyn::runExecutableInitializers(int argc, char** argv, char** envp) {
     if (!image) {
         return;
     }
+    image->initialized = true;
 
     using Initializer = void (*)(int, char**, char**);
     auto* preinitializers = reinterpret_cast<uintptr_t*>(image->preinitializerArray);
