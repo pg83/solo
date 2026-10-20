@@ -1600,6 +1600,109 @@ namespace {
         }
     }
 
+    // environ is ABI as well, and a glibc executable carries a COPY
+    // relocation for it: the guest may repoint its copy — setproctitle
+    // implementations move the environment to the heap and clobber the
+    // original strings — while musl keeps reading its own. The environment
+    // wrappers pull the guest's pointer into musl before every call and push
+    // musl's back after the ones that may reallocate it. A library-only
+    // process has no guest copy, and musl's variable is the ABI.
+    static char*** sh_guest_environ(void) {
+        static char*** guest;
+
+        if (!guest) {
+            for (auto* name : {"environ", "__environ"}) {
+                if (auto* found = static_cast<char***>(ElfImage::lookupGlobal(name)); found && found != &environ) {
+                    guest = found;
+                    break;
+                }
+            }
+        }
+
+        return guest;
+    }
+
+    static void sh_environ_pull(void) {
+        if (auto* guest = sh_guest_environ(); guest) {
+            environ = *guest;
+        }
+    }
+
+    static void sh_environ_push(void) {
+        if (auto* guest = sh_guest_environ(); guest) {
+            *guest = environ;
+        }
+    }
+
+    static char* sh_getenv(const char* name) {
+        sh_environ_pull();
+
+        return getenv(name);
+    }
+
+    static int sh_setenv(const char* name, const char* value, int overwrite) {
+        sh_environ_pull();
+
+        auto result = setenv(name, value, overwrite);
+
+        sh_environ_push();
+
+        return result;
+    }
+
+    static int sh_unsetenv(const char* name) {
+        sh_environ_pull();
+
+        auto result = unsetenv(name);
+
+        sh_environ_push();
+
+        return result;
+    }
+
+    static int sh_putenv(char* string) {
+        sh_environ_pull();
+
+        auto result = putenv(string);
+
+        sh_environ_push();
+
+        return result;
+    }
+
+    static int sh_clearenv(void) {
+        sh_environ_pull();
+
+        auto result = clearenv();
+
+        sh_environ_push();
+
+        return result;
+    }
+
+    static int sh_execvp(const char* file, char* const argv[]) {
+        sh_environ_pull();
+
+        return execvp(file, argv);
+    }
+
+    static int sh_system(const char* command) {
+        sh_environ_pull();
+
+        return system(command);
+    }
+
+    static FILE* sh_popen(const char* command, const char* mode) {
+        sh_environ_pull();
+
+        return popen(command, mode);
+    }
+
+    static void sh_tzset(void) {
+        sh_environ_pull();
+        tzset();
+    }
+
     static int sh_getopt(int argc, char* const argv[], const char* options) {
         auto state = sh_getopt_state();
 
@@ -4949,7 +5052,7 @@ namespace {
         SH_FUNCTION("wcsftime_l", "GLIBC_2.3", sh_wcsftime_l),
         SH_FUNCTION("strerror_l", "GLIBC_2.6", sh_strerror_l),
         SH_FUNCTION("__strerror_l", "GLIBC_2.6", sh_strerror_l),
-        SH_FUNCTION("tzset", "GLIBC_2.2.5", tzset),
+        SH_FUNCTION("tzset", "GLIBC_2.2.5", sh_tzset),
         SH_FUNCTION("localtime_r", "GLIBC_2.2.5", localtime_r),
         SH_FUNCTION("gmtime_r", "GLIBC_2.2.5", gmtime_r),
         SH_FUNCTION("__isoc99_sscanf", "GLIBC_2.7", sscanf),
@@ -5014,7 +5117,14 @@ namespace {
         SH_FUNCTION("wctrans_l", "GLIBC_2.3", sh_wctrans_l),
         SH_FUNCTION("towctrans_l", "GLIBC_2.3", sh_towctrans_l),
         SH_FUNCTION("__strcat_chk", "GLIBC_2.3.4", sh_strcat_chk),
-        SH_FUNCTION("getenv", "GLIBC_2.2.5", getenv),
+        SH_FUNCTION("getenv", "GLIBC_2.2.5", sh_getenv),
+        SH_FUNCTION("setenv", "GLIBC_2.2.5", sh_setenv),
+        SH_FUNCTION("unsetenv", "GLIBC_2.2.5", sh_unsetenv),
+        SH_FUNCTION("putenv", "GLIBC_2.2.5", sh_putenv),
+        SH_FUNCTION("clearenv", "GLIBC_2.2.5", sh_clearenv),
+        SH_FUNCTION("execvp", "GLIBC_2.2.5", sh_execvp),
+        SH_FUNCTION("system", "GLIBC_2.2.5", sh_system),
+        SH_FUNCTION("popen", "GLIBC_2.2.5", sh_popen),
         SH_FUNCTION("__isoc23_strtoul", "GLIBC_2.38", sh_isoc23_strtoul),
         SH_FUNCTION("__snprintf_chk", "GLIBC_2.3.4", sh_snprintf_chk),
         SH_FUNCTION("dlerror", "GLIBC_2.34", stub_dlerror),
@@ -5726,6 +5836,15 @@ GlibcAdapter::GlibcAdapter()
         "_Unwind_Resume_or_Rethrow",
         "_Unwind_SetGR",
         "_Unwind_SetIP",
+        "clearenv",
+        "execvp",
+        "getenv",
+        "popen",
+        "putenv",
+        "setenv",
+        "system",
+        "tzset",
+        "unsetenv",
         "alphasort64",
         "dl_iterate_phdr",
         "dladdr",

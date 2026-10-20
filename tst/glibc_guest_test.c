@@ -55,6 +55,16 @@ int main(int argc, char** argv, char** envp) {
 
     fprintf(stdout, "guest stdout env=%s\n", value ? value : "(unset)");
     printf("guest environ %s\n", environ && *environ && envp ? "present" : "absent");
+
+    /* Repointing environ, the way setproctitle implementations move the
+     * environment, must reach getenv and setenv. */
+    static char* repointed[] = {"SOLO_GUEST_ENV=repointed", 0};
+    char** original = environ;
+
+    environ = repointed;
+    value = getenv("SOLO_GUEST_ENV");
+    printf("guest environ repointed=%s\n", value ? value : "(unset)");
+    environ = original;
     if (__cxa_atexit(guest_atexit, 0, 0)) {
         printf("guest atexit registration failed\n");
     }
