@@ -5,6 +5,9 @@
  * floating-point arguments live in registers. */
 
 extern int getpid(void);
+extern int getppid(void);
+extern void* dlopen(const char* path, int flags);
+extern char* dlerror(void);
 
 extern int dlfcn_lazy_undefined_function(void);
 
@@ -26,4 +29,16 @@ double glibc_lazy_mix(int a, double b, long c, double d) {
 
 int glibc_lazy_pid(void) {
     return getpid();
+}
+
+/* A failed dlopen's message must survive the lazy binding of the calls that
+ * follow it, getppid's and dlerror's own, as it does under ld.so. */
+int glibc_lazy_dlerror_kept(void) {
+    if (dlopen("/nonexistent/libdlfcn-test-missing.so", 2)) {
+        return 1;
+    }
+    if (getppid() < 0) {
+        return 2;
+    }
+    return dlerror() ? 0 : 3;
 }

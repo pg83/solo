@@ -2716,9 +2716,27 @@ void* ElfImage::lookupNext(const void* caller, std::string_view symbol, std::str
 // The C half of the lazy binder: called from elfPltResolveEntry with the
 // caller's registers saved. A resolution failure cannot unwind through the
 // PLT frames, so it aborts with the loader's error instead.
+//
+// Binding is invisible to dlerror under ld.so, and programs rely on it:
+// they read dlerror after a failed dlopen with calls in between, each of
+// which may be a first call through the PLT. The bridge's lookups run
+// through the public dl* entry points, which reset the error, so a pending
+// one is set aside for the duration.
 extern "C" void* elfPltResolve(void* image, uint64_t index) {
     try {
-        return Loader::instance().pltResolve(*static_cast<LinkMap*>(image), index);
+        auto* tls = ThreadTls::current();
+        auto* pending = tls->takeDlError();
+
+        if (!pending) {
+            return Loader::instance().pltResolve(*static_cast<LinkMap*>(image), index);
+        }
+
+        std::string error(pending);
+        auto* address = Loader::instance().pltResolve(*static_cast<LinkMap*>(image), index);
+
+        tls->setDlError(error);
+
+        return address;
     } catch (const std::exception& error) {
         fprintf(stderr, "solo: lazy binding failed: %s\n", error.what());
     } catch (...) {

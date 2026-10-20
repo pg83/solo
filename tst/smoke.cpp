@@ -302,7 +302,8 @@ int main() {
     auto lazyValue = reinterpret_cast<LazyValue>(requiredSymbol(lazy, "glibc_lazy_value"));
     auto lazyMix = reinterpret_cast<LazyMix>(requiredSymbol(lazy, "glibc_lazy_mix"));
     auto lazyPid = reinterpret_cast<GlibcTest>(requiredSymbol(lazy, "glibc_lazy_pid"));
-    if (!lazyValue || !lazyMix || !lazyPid || !requiredSymbol(lazy, "glibc_lazy_missing_caller")) {
+    auto lazyDlerrorKept = reinterpret_cast<GlibcTest>(requiredSymbol(lazy, "glibc_lazy_dlerror_kept"));
+    if (!lazyValue || !lazyMix || !lazyPid || !lazyDlerrorKept || !requiredSymbol(lazy, "glibc_lazy_missing_caller")) {
         return 1;
     }
     if (lazyValue(12) != 42) {
@@ -315,6 +316,10 @@ int main() {
     }
     if (lazyPid() <= 0) {
         fprintf(stderr, "lazy cross-library call failed\n");
+        return 1;
+    }
+    if (auto result = lazyDlerrorKept(); result != 0) {
+        fprintf(stderr, "lazy binding lost the pending dlerror: %d\n", result);
         return 1;
     }
 
