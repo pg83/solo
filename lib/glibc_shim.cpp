@@ -30,6 +30,7 @@
 #include <fenv.h>
 #include <ftw.h>
 #include <getopt.h>
+#include <iconv.h>
 #include <inttypes.h>
 #include <langinfo.h>
 #include <libgen.h>
@@ -3026,6 +3027,350 @@ namespace {
         return used;
     }
 
+    // glibc's iconv is the gconv framework, and programs lean on corners of
+    // it musl's converter does not share. A code may carry //TRANSLIT and
+    // //IGNORE — or any other suffix, which glibc disregards — where musl
+    // rejects the name outright. A character the target lacks fails with
+    // EILSEQ at that character, where musl writes '*' and counts an
+    // irreversible conversion; //IGNORE drops it, and invalid input with it,
+    // and reports EILSEQ once the buffer is through; //TRANSLIT writes '?'.
+    // UTF-16 and UTF-32 without a byte order mean a BOM and the host's order
+    // on output and the host's order on unmarked input, where musl means
+    // big-endian throughout, and UCS-2 is the host's order outright.
+    //
+    // The bridge's descriptor wraps musl's. Unicode targets convert directly;
+    // the others convert a character at a time through wchar_t, which is
+    // where the bridge sees each '*' musl substitutes.
+    struct GlibcIconv {
+        iconv_t direct;
+        iconv_t decode;
+        iconv_t encode;
+        // The source code unit //IGNORE steps over invalid input by.
+        size_t unit;
+        // The width of the BOM the target writes before its first
+        // character, and whether it still owes one.
+        size_t bomSize;
+        bool bomOwed;
+        // A UTF-16 or UTF-32 source settles its byte order from a BOM.
+        size_t detect;
+        bool detected;
+        bool lossy;
+        bool narrow;
+        bool ignore;
+        bool translit;
+        char from[64];
+        char to[64];
+    };
+
+    // musl's charset matching: case and punctuation do not count.
+    static void sh_iconv_normalize(const char* name, char* normal, size_t size) {
+        size_t length = 0;
+
+        for (; *name && length + 1 < size; ++name) {
+            if (isalnum((unsigned char)*name)) {
+                normal[length++] = (char)tolower((unsigned char)*name);
+            }
+        }
+        normal[length] = 0;
+    }
+
+    // Splits "NAME//SUFFIX,SUFFIX" into the bare name and the error modes;
+    // false for a name no charset musl knows comes close to.
+    static bool sh_iconv_parse(const char* code, char* name, size_t size, bool* ignore, bool* translit) {
+        const char* suffix = strstr(code, "//");
+        size_t length = suffix ? (size_t)(suffix - code) : strlen(code);
+
+        if (length >= size) {
+            return false;
+        }
+        memcpy(name, code, length);
+        name[length] = 0;
+        for (const char* word = suffix; word && *word;) {
+            word += strspn(word, "/,");
+
+            size_t span = strcspn(word, "/,");
+
+            if (span == 8 && !strncasecmp(word, "TRANSLIT", 8)) {
+                *translit = true;
+            } else if (span == 6 && !strncasecmp(word, "IGNORE", 6)) {
+                *ignore = true;
+            }
+            word += span;
+        }
+
+        return true;
+    }
+
+    static void sh_iconv_close_all(GlibcIconv* descriptor) {
+        for (auto inner : {descriptor->direct, descriptor->decode, descriptor->encode}) {
+            if (inner != (iconv_t)-1) {
+                iconv_close(inner);
+            }
+        }
+        free(descriptor);
+    }
+
+    // (Re)opens musl's descriptors for the current source order.
+    static bool sh_iconv_open_inner(GlibcIconv* descriptor) {
+        for (auto* inner : {&descriptor->direct, &descriptor->decode, &descriptor->encode}) {
+            if (*inner != (iconv_t)-1) {
+                iconv_close(*inner);
+                *inner = (iconv_t)-1;
+            }
+        }
+        descriptor->direct = iconv_open(descriptor->to, descriptor->from);
+        if (descriptor->direct == (iconv_t)-1) {
+            return false;
+        }
+        if (descriptor->lossy) {
+            descriptor->decode = iconv_open("WCHAR_T", descriptor->from);
+            descriptor->encode = iconv_open(descriptor->to, "WCHAR_T");
+            if (descriptor->decode == (iconv_t)-1 || descriptor->encode == (iconv_t)-1) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    static iconv_t sh_iconv_open(const char* to, const char* from) {
+        auto* descriptor = static_cast<GlibcIconv*>(calloc(1, sizeof(GlibcIconv)));
+
+        if (!descriptor) {
+            errno = ENOMEM;
+            return (iconv_t)-1;
+        }
+        descriptor->direct = descriptor->decode = descriptor->encode = (iconv_t)-1;
+
+        // glibc reads the error modes from the target alone.
+        bool sourceIgnore = false;
+        bool sourceTranslit = false;
+        char normal[64];
+
+        if (!sh_iconv_parse(to, descriptor->to, sizeof(descriptor->to), &descriptor->ignore, &descriptor->translit) || !sh_iconv_parse(from, descriptor->from, sizeof(descriptor->from), &sourceIgnore, &sourceTranslit)) {
+            sh_iconv_close_all(descriptor);
+            errno = EINVAL;
+            return (iconv_t)-1;
+        }
+        sh_iconv_normalize(descriptor->to, normal, sizeof(normal));
+        if (!strcmp(normal, "utf16") || !strcmp(normal, "unicode")) {
+            strcpy(descriptor->to, "UTF-16LE");
+            descriptor->bomSize = 2;
+        } else if (!strcmp(normal, "utf32")) {
+            strcpy(descriptor->to, "UTF-32LE");
+            descriptor->bomSize = 4;
+        } else if (!strcmp(normal, "ucs2")) {
+            strcpy(descriptor->to, "UCS-2LE");
+        } else if (!strcmp(normal, "ucs4")) {
+            strcpy(descriptor->to, "UTF-32BE");
+        }
+        descriptor->bomOwed = descriptor->bomSize != 0;
+        descriptor->narrow = !strncmp(normal, "ucs2", 4);
+
+        static const char* const unicode[] = {"", "utf8", "utf16", "utf16le", "utf16be", "unicode", "utf32", "utf32le", "utf32be", "ucs4", "ucs4le", "ucs4be", "wchart"};
+
+        descriptor->lossy = true;
+        for (auto* name : unicode) {
+            if (!strcmp(normal, name)) {
+                descriptor->lossy = false;
+            }
+        }
+
+        sh_iconv_normalize(descriptor->from, normal, sizeof(normal));
+        if (!strcmp(normal, "utf16") || !strcmp(normal, "unicode")) {
+            strcpy(descriptor->from, "UTF-16LE");
+            descriptor->detect = 2;
+        } else if (!strcmp(normal, "utf32")) {
+            strcpy(descriptor->from, "UTF-32LE");
+            descriptor->detect = 4;
+        } else if (!strcmp(normal, "ucs2")) {
+            strcpy(descriptor->from, "UCS-2LE");
+        } else if (!strcmp(normal, "ucs4")) {
+            strcpy(descriptor->from, "UTF-32BE");
+        }
+        descriptor->unit = 1;
+        if (!strncmp(normal, "utf16", 5) || !strncmp(normal, "ucs2", 4) || !strcmp(normal, "unicode")) {
+            descriptor->unit = 2;
+        } else if (!strncmp(normal, "utf32", 5) || !strncmp(normal, "ucs4", 4) || !strcmp(normal, "wchart")) {
+            descriptor->unit = 4;
+        }
+        if (!sh_iconv_open_inner(descriptor)) {
+            int error = errno;
+
+            sh_iconv_close_all(descriptor);
+            errno = error;
+            return (iconv_t)-1;
+        }
+
+        return descriptor;
+    }
+
+    static int sh_iconv_close(iconv_t handle) {
+        sh_iconv_close_all(static_cast<GlibcIconv*>(handle));
+
+        return 0;
+    }
+
+    // An unmarked UTF-16 or UTF-32 source is little-endian; a BOM picks the
+    // order and is consumed.
+    static void sh_iconv_detect(GlibcIconv* descriptor, char** input, size_t* inputLeft) {
+        descriptor->detected = true;
+        if (*inputLeft < descriptor->detect) {
+            return;
+        }
+
+        auto* bytes = reinterpret_cast<const unsigned char*>(*input);
+        bool little = descriptor->detect == 2 ? bytes[0] == 0xff && bytes[1] == 0xfe : !memcmp(bytes, "\xff\xfe\0\0", 4);
+        bool big = descriptor->detect == 2 ? bytes[0] == 0xfe && bytes[1] == 0xff : !memcmp(bytes, "\0\0\xfe\xff", 4);
+
+        if (!little && !big) {
+            return;
+        }
+        if (big) {
+            strcpy(descriptor->from, descriptor->detect == 2 ? "UTF-16BE" : "UTF-32BE");
+            sh_iconv_open_inner(descriptor);
+        }
+        *input += descriptor->detect;
+        *inputLeft -= descriptor->detect;
+    }
+
+    static void sh_iconv_reset(GlibcIconv* descriptor) {
+        if (descriptor->detect && strcmp(descriptor->from, descriptor->detect == 2 ? "UTF-16LE" : "UTF-32LE")) {
+            strcpy(descriptor->from, descriptor->detect == 2 ? "UTF-16LE" : "UTF-32LE");
+            sh_iconv_open_inner(descriptor);
+        }
+        descriptor->detected = false;
+        descriptor->bomOwed = descriptor->bomSize != 0;
+        for (auto inner : {descriptor->direct, descriptor->decode, descriptor->encode}) {
+            if (inner != (iconv_t)-1) {
+                iconv(inner, nullptr, nullptr, nullptr, nullptr);
+            }
+        }
+    }
+
+    // One character through wchar_t; returns false with errno set when the
+    // conversion stops at it.
+    static bool sh_iconv_character(GlibcIconv* descriptor, char** input, size_t* inputLeft, char** output, size_t* outputLeft, size_t* irreversible, bool* ignored) {
+        char* start = *input;
+        size_t startLeft = *inputLeft;
+        wchar_t character;
+        char* wide = reinterpret_cast<char*>(&character);
+        size_t wideLeft = sizeof(character);
+
+        if (iconv(descriptor->decode, input, inputLeft, &wide, &wideLeft) == (size_t)-1 && errno != E2BIG) {
+            if (errno != EILSEQ || !descriptor->ignore) {
+                return false;
+            }
+
+            size_t skip = std::min(descriptor->unit, *inputLeft);
+
+            *input += skip;
+            *inputLeft -= skip;
+            *ignored = true;
+            return true;
+        }
+        if (wideLeft) {
+            // Input consumed without a character: a BOM or a shift sequence.
+            return true;
+        }
+
+        char* mark = *output;
+        size_t markLeft = *outputLeft;
+        char* source = reinterpret_cast<char*>(&character);
+        size_t sourceLeft = sizeof(character);
+
+        if (iconv(descriptor->encode, &source, &sourceLeft, output, outputLeft) == (size_t)-1) {
+            *input = start;
+            *inputLeft = startLeft;
+            return false;
+        }
+
+        bool substituted = descriptor->narrow ? character > 0xffff : character != L'*' && *output - mark == 1 && *mark == '*';
+
+        if (!substituted) {
+            return true;
+        }
+        *output = mark;
+        *outputLeft = markLeft;
+        if (descriptor->translit) {
+            wchar_t question = L'?';
+
+            source = reinterpret_cast<char*>(&question);
+            sourceLeft = sizeof(question);
+            if (iconv(descriptor->encode, &source, &sourceLeft, output, outputLeft) == (size_t)-1) {
+                *input = start;
+                *inputLeft = startLeft;
+                return false;
+            }
+            ++*irreversible;
+            return true;
+        }
+        if (descriptor->ignore) {
+            *ignored = true;
+            return true;
+        }
+        *input = start;
+        *inputLeft = startLeft;
+        errno = EILSEQ;
+        return false;
+    }
+
+    static size_t sh_iconv(iconv_t handle, char** input, size_t* inputLeft, char** output, size_t* outputLeft) {
+        auto* descriptor = static_cast<GlibcIconv*>(handle);
+
+        if (!input || !*input) {
+            sh_iconv_reset(descriptor);
+            return 0;
+        }
+        if (descriptor->detect && !descriptor->detected) {
+            sh_iconv_detect(descriptor, input, inputLeft);
+        }
+
+        size_t irreversible = 0;
+        bool ignored = false;
+
+        while (*inputLeft) {
+            if (descriptor->bomOwed) {
+                if (*outputLeft < descriptor->bomSize) {
+                    errno = E2BIG;
+                    return (size_t)-1;
+                }
+                memcpy(*output, "\xff\xfe\0\0", descriptor->bomSize);
+                *output += descriptor->bomSize;
+                *outputLeft -= descriptor->bomSize;
+                descriptor->bomOwed = false;
+            }
+            if (descriptor->lossy) {
+                if (!sh_iconv_character(descriptor, input, inputLeft, output, outputLeft, &irreversible, &ignored)) {
+                    return (size_t)-1;
+                }
+                continue;
+            }
+
+            size_t result = iconv(descriptor->direct, input, inputLeft, output, outputLeft);
+
+            if (result != (size_t)-1) {
+                irreversible += result;
+                break;
+            }
+            if (errno != EILSEQ || !descriptor->ignore) {
+                return (size_t)-1;
+            }
+
+            size_t skip = std::min(descriptor->unit, *inputLeft);
+
+            *input += skip;
+            *inputLeft -= skip;
+            ignored = true;
+        }
+        if (ignored) {
+            errno = EILSEQ;
+            return (size_t)-1;
+        }
+
+        return irreversible;
+    }
+
     // glibc regmatch_t holds int offsets while musl's are 64-bit
     // (dev/abi-diff.txt), so the regex family cannot pass through: the musl
     // object lives behind the buffer field of the caller's glibc regex_t, and
@@ -5418,6 +5763,9 @@ namespace {
         SH_FUNCTION("__res_nclose", "GLIBC_2.2.5", sh_res_nclose),
         SH_FUNCTION("res_nquery", "GLIBC_2.34", sh_res_nquery),
         SH_FUNCTION("parse_printf_format", "GLIBC_2.2.5", sh_parse_printf_format),
+        SH_FUNCTION("iconv_open", "GLIBC_2.2.5", sh_iconv_open),
+        SH_FUNCTION("iconv", "GLIBC_2.2.5", sh_iconv),
+        SH_FUNCTION("iconv_close", "GLIBC_2.2.5", sh_iconv_close),
         SH_FUNCTION("regcomp", "GLIBC_2.2.5", sh_regcomp),
         SH_FUNCTION("regexec", "GLIBC_2.2.5", sh_regexec),
         SH_FUNCTION("regexec", "GLIBC_2.3.4", sh_regexec),
@@ -5807,6 +6155,9 @@ GlibcAdapter::GlibcAdapter()
         "wctrans_l",
         "wctype_l",
         "readdir64",
+        "iconv_open",
+        "iconv",
+        "iconv_close",
         "regcomp",
         "regerror",
         "regexec",

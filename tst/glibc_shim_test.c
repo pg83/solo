@@ -13,6 +13,7 @@
 #include <fts.h>
 #include <ftw.h>
 #include <gnu/libc-version.h>
+#include <iconv.h>
 #include <inttypes.h>
 #include <langinfo.h>
 #include <limits.h>
@@ -785,6 +786,89 @@ static void sorting(void) {
     int more[] = {5, 4};
     qsort_r(more, 2, sizeof(int), compareWithContext, &context);
     CHECK(more[0] == 4 && context > 0);
+}
+
+/* One iconv call on a fresh descriptor: the result, errno, how much input
+ * it consumed, and what it wrote. */
+struct Conversion {
+    size_t result;
+    int error;
+    size_t consumed;
+    size_t written;
+    char output[32];
+};
+
+static struct Conversion convert(const char* to, const char* from, const char* input, size_t length, size_t room) {
+    struct Conversion conversion = {(size_t)-2, 0, 0, 0, {0}};
+    iconv_t descriptor = iconv_open(to, from);
+
+    if (descriptor == (iconv_t)-1) {
+        conversion.error = errno;
+        return conversion;
+    }
+
+    char* in = (char*)input;
+    char* out = conversion.output;
+    size_t left = room;
+
+    errno = 0;
+    conversion.result = iconv(descriptor, &in, &length, &out, &left);
+    conversion.error = conversion.result == (size_t)-1 ? errno : 0;
+    conversion.consumed = in - input;
+    conversion.written = out - conversion.output;
+    iconv_close(descriptor);
+
+    return conversion;
+}
+
+#define CONVERTED(conversion, rc, errno_value, used, bytes) \
+    ((conversion).result == (size_t)(rc) && (conversion).error == (errno_value) && (conversion).consumed == (used) && (conversion).written == sizeof(bytes) - 1 && !memcmp((conversion).output, bytes, sizeof(bytes) - 1))
+
+/* glibc's iconv: a character the target lacks stops the conversion with
+ * EILSEQ instead of turning into '*', //TRANSLIT and //IGNORE are accepted
+ * and honored, and UTF-16, UTF-32 and UCS-2 mean the host's byte order, the
+ * first two with a BOM on output. */
+static void conversions(void) {
+    const char accented[] = "a\xc3\xa9z";
+
+    CHECK(CONVERTED(convert("ASCII", "UTF-8", accented, 4, 16), -1, EILSEQ, 1, "a"));
+    CHECK(CONVERTED(convert("KOI8-R", "UTF-8", "a\xe2\x82\xac", 4, 16), -1, EILSEQ, 1, "a"));
+    CHECK(CONVERTED(convert("ASCII//TRANSLIT", "UTF-8", accented, 4, 16), 1, 0, 4, "a?z"));
+    CHECK(CONVERTED(convert("ascii//translit,ignore", "UTF-8", accented, 4, 16), 1, 0, 4, "a?z"));
+    CHECK(CONVERTED(convert("ASCII//IGNORE", "UTF-8", accented, 4, 16), -1, EILSEQ, 4, "az"));
+    CHECK(CONVERTED(convert("UTF-8//IGNORE", "UTF-8", "a\xff" "b", 3, 16), -1, EILSEQ, 3, "ab"));
+    CHECK(CONVERTED(convert("ASCII//", "UTF-8//IGNORE", "ab", 2, 16), 0, 0, 2, "ab"));
+    CHECK(CONVERTED(convert("ASCII", "UTF-8", "ab", 2, 1), -1, E2BIG, 1, "a"));
+    CHECK(CONVERTED(convert("UTF-8", "UTF-8", "a\xe2\x82", 3, 16), -1, EINVAL, 1, "a"));
+    CHECK(CONVERTED(convert("WINDOWS-1251", "UTF-8", "\xd0\x9f\xd1\x80", 4, 16), 0, 0, 4, "\xcf\xf0"));
+
+    CHECK(CONVERTED(convert("UTF-16", "UTF-8", "a", 1, 16), 0, 0, 1, "\xff\xfe" "a\0"));
+    CHECK(CONVERTED(convert("UTF-32", "UTF-8", "a", 1, 16), 0, 0, 1, "\xff\xfe\0\0" "a\0\0\0"));
+    CHECK(CONVERTED(convert("UCS-2", "UTF-8", "a", 1, 16), 0, 0, 1, "a\0"));
+    CHECK(CONVERTED(convert("UCS-2", "UTF-8", "\xf0\x9f\x98\x80", 4, 16), -1, EILSEQ, 0, ""));
+    CHECK(CONVERTED(convert("UTF-8", "UTF-16", "a\0", 2, 16), 0, 0, 2, "a"));
+    CHECK(CONVERTED(convert("UTF-8", "UTF-16", "\xfe\xff\0a", 4, 16), 0, 0, 4, "a"));
+    CHECK(CONVERTED(convert("UTF-8", "UCS-2", "a\0", 2, 16), 0, 0, 2, "a"));
+
+    /* The BOM comes once per descriptor, and again after a reset. */
+    iconv_t descriptor = iconv_open("UTF-16", "UTF-8");
+    char output[16];
+    char* in = "ab";
+    char* out = output;
+    size_t inLeft = 1;
+    size_t outLeft = sizeof(output);
+
+    CHECK(iconv(descriptor, &in, &inLeft, &out, &outLeft) == 0);
+    inLeft = 1;
+    CHECK(iconv(descriptor, &in, &inLeft, &out, &outLeft) == 0);
+    CHECK(out - output == 6 && !memcmp(output, "\xff\xfe" "a\0b\0", 6));
+    CHECK(iconv(descriptor, NULL, NULL, NULL, NULL) == 0);
+    in = "c";
+    inLeft = 1;
+    out = output;
+    CHECK(iconv(descriptor, &in, &inLeft, &out, &outLeft) == 0);
+    CHECK(out - output == 4 && !memcmp(output, "\xff\xfe" "c\0", 4));
+    CHECK(iconv_close(descriptor) == 0);
 }
 
 static void processAndSystem(void) {
@@ -1596,6 +1680,7 @@ int glibc_shim_test(void) {
     popularData();
     contexts();
     expressions();
+    conversions();
     descriptorsAndLimits();
     localesAndWide();
     timeKeeping();
