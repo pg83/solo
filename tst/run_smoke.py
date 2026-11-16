@@ -429,6 +429,7 @@ def main():
             if trace.returncode:
                 raise SystemExit(f"traced run failed: {trace.returncode}")
             run_solo_checks(root, sysroot_lib, environment)
+            run_environment_checks(root, sysroot_lib, sysroot_includes, environment)
             run_bundle_checks(root, sysroot_lib, environment)
 
     print(result.stdout, end="")
@@ -445,6 +446,40 @@ def sysroot_libgcc_s(root):
     if not found:
         raise SystemExit("no libgcc_s.so.1 in the sysroot")
     return found[0]
+
+
+def run_environment_checks(root, sysroot_lib, sysroot_includes, environment):
+    """Exercise both shared environ storage and each spelling of its COPY."""
+    solo = os.path.abspath(os.environ["DLFCN_SOLO"])
+    compiler = shlex.split(os.environ["DLFCN_CC"])
+    ld_so = sorted((root / sysroot_lib).glob("ld-linux-*.so*"))[0]
+    for symbol in ("environ", "__environ", "_environ"):
+        for model, crt, flags in (
+            ("pie", "Scrt1.o", ["-fPIC", "-pie"]),
+            ("exec", "crt1.o", ["-fno-pie", "-no-pie"]),
+        ):
+            guest = root / f"environ-{symbol}-{model}"
+            subprocess.run(
+                [
+                    *compiler, "-O2", *flags, "-fno-stack-protector",
+                    "-nostdlib", "-nostdinc",
+                    *[flag for include in sysroot_includes for flag in ("-isystem", str(root / include))],
+                    "-isystem", str(builtin_include(compiler)),
+                    f"-DGUEST_ENVIRON={symbol}",
+                    f"-Wl,--dynamic-linker={solo}", "-Wl,--no-as-needed",
+                    str(root / sysroot_lib / crt),
+                    str(root / sysroot_lib / "crti.o"),
+                    os.environ["DLFCN_GLIBC_ENVIRON_TEST_SOURCE"],
+                    str(root / sysroot_lib / "libc.so.6"), str(ld_so),
+                    str(root / sysroot_lib / "crtn.o"), "-o", str(guest),
+                ],
+                check=True,
+            )
+            for command in ([solo, "run", str(guest)], [str(guest)]):
+                run = subprocess.run(command, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                if run.returncode or "guest environment readers=ok mutators=ok exec=ok" not in run.stdout:
+                    print(run.stdout, file=sys.stderr)
+                    raise SystemExit(f"environment test failed: {command} (exit {run.returncode})")
 
 
 def run_solo_checks(root, sysroot_lib, environment):

@@ -447,6 +447,8 @@ namespace {
         return wcstol(text, end, base);
     }
 
+    static char* sh_getenv(const char* name);
+
     static char* sh_secure_getenv(const char* name) {
         // The uid checks alone miss capability-elevated processes, which
         // the kernel reports through AT_SECURE.
@@ -454,7 +456,7 @@ namespace {
             return NULL;
         }
 
-        return getenv(name);
+        return sh_getenv(name);
     }
 
     static void sh_arc4random_buf(void* buffer, size_t size) {
@@ -1649,20 +1651,19 @@ namespace {
         }
     }
 
-    // environ is ABI as well, and a glibc executable carries a COPY
-    // relocation for it: the guest may repoint its copy — setproctitle
-    // implementations move the environment to the heap and clobber the
-    // original strings — while musl keeps reading its own. The environment
-    // wrappers pull the guest's pointer into musl before every call and push
-    // musl's back after the ones that may reallocate it. A library-only
-    // process has no guest copy, and musl's variable is the ABI.
+    // COPY relocations give a guest executable its own environ pointer.
+    // Readers scan that table directly: even concurrent getenv calls must
+    // not write musl's global. Mutating libc calls still pull/push the pointer
+    // and, like native setenv/putenv, require the caller to exclude readers.
     static char*** sh_guest_environ(void) {
-        static char*** guest;
+        static char*** cached;
+        auto* guest = __atomic_load_n(&cached, __ATOMIC_ACQUIRE);
 
         if (!guest) {
-            for (auto* name : {"environ", "__environ"}) {
+            for (auto* name : {"environ", "__environ", "_environ"}) {
                 if (auto* found = static_cast<char***>(ElfImage::lookupGlobal(name)); found && found != &environ) {
                     guest = found;
+                    __atomic_store_n(&cached, guest, __ATOMIC_RELEASE);
                     break;
                 }
             }
@@ -1671,9 +1672,17 @@ namespace {
         return guest;
     }
 
+    static char** sh_environ(void) {
+        auto* guest = sh_guest_environ();
+
+        return guest ? *guest : environ;
+    }
+
     static void sh_environ_pull(void) {
-        if (auto* guest = sh_guest_environ(); guest) {
-            environ = *guest;
+        auto* current = sh_environ();
+
+        if (environ != current) {
+            environ = current;
         }
     }
 
@@ -1684,9 +1693,20 @@ namespace {
     }
 
     static char* sh_getenv(const char* name) {
-        sh_environ_pull();
+        auto length = strlen(name);
 
-        return getenv(name);
+        if (!length || strchr(name, '=')) {
+            return nullptr;
+        }
+        if (auto* entries = sh_environ(); entries) {
+            for (; *entries; ++entries) {
+                if (!strncmp(*entries, name, length) && (*entries)[length] == '=') {
+                    return *entries + length + 1;
+                }
+            }
+        }
+
+        return nullptr;
     }
 
     static int sh_setenv(const char* name, const char* value, int overwrite) {
@@ -1729,10 +1749,60 @@ namespace {
         return result;
     }
 
+    static int sh_execv(const char* path, char* const argv[]) {
+        return execve(path, argv, sh_environ());
+    }
+
     static int sh_execvp(const char* file, char* const argv[]) {
         sh_environ_pull();
 
         return execvp(file, argv);
+    }
+
+    static int sh_execvpe(const char* file, char* const argv[], char* const envp[]) {
+        // PATH comes from the caller's environment, not the explicit envp.
+        sh_environ_pull();
+
+        return execvpe(file, argv, envp);
+    }
+
+    static int sh_exec_list(const char* path, const char* first, va_list arguments, bool search) {
+        va_list countArguments;
+        va_copy(countArguments, arguments);
+        size_t count = 1;
+        while (va_arg(countArguments, char*)) {
+            ++count;
+        }
+        va_end(countArguments);
+
+        // Keep the argument vector on the stack, as musl's execl does:
+        // exec after fork must not allocate through a possibly locked heap.
+        auto** argv = static_cast<char**>(__builtin_alloca((count + 1) * sizeof(char*)));
+        argv[0] = const_cast<char*>(first);
+        for (size_t index = 1; index < count; ++index) {
+            argv[index] = va_arg(arguments, char*);
+        }
+        argv[count] = nullptr;
+
+        return search ? sh_execvp(path, argv) : sh_execv(path, argv);
+    }
+
+    static int sh_execl(const char* path, const char* first, ...) {
+        va_list arguments;
+        va_start(arguments, first);
+        auto result = sh_exec_list(path, first, arguments, false);
+        va_end(arguments);
+
+        return result;
+    }
+
+    static int sh_execlp(const char* file, const char* first, ...) {
+        va_list arguments;
+        va_start(arguments, first);
+        auto result = sh_exec_list(file, first, arguments, true);
+        va_end(arguments);
+
+        return result;
     }
 
     static int sh_system(const char* command) {
@@ -5182,7 +5252,11 @@ namespace {
         SH_FUNCTION("unsetenv", "GLIBC_2.2.5", sh_unsetenv),
         SH_FUNCTION("putenv", "GLIBC_2.2.5", sh_putenv),
         SH_FUNCTION("clearenv", "GLIBC_2.2.5", sh_clearenv),
+        SH_FUNCTION("execv", "GLIBC_2.2.5", sh_execv),
         SH_FUNCTION("execvp", "GLIBC_2.2.5", sh_execvp),
+        SH_FUNCTION("execvpe", "GLIBC_2.11", sh_execvpe),
+        SH_FUNCTION("execl", "GLIBC_2.2.5", sh_execl),
+        SH_FUNCTION("execlp", "GLIBC_2.2.5", sh_execlp),
         SH_FUNCTION("system", "GLIBC_2.2.5", sh_system),
         SH_FUNCTION("popen", "GLIBC_2.2.5", sh_popen),
         SH_FUNCTION("__isoc23_strtoul", "GLIBC_2.38", sh_isoc23_strtoul),
@@ -5922,8 +5996,14 @@ GlibcAdapter::GlibcAdapter()
         "__register_frame",
         "__deregister_frame",
         "clearenv",
+        "execv",
         "execvp",
+        "execvpe",
+        "execl",
+        "execlp",
         "getenv",
+        "secure_getenv",
+        "__secure_getenv",
         "popen",
         "putenv",
         "setenv",
