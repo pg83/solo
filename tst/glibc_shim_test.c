@@ -1200,6 +1200,7 @@ static void dynamicLinking(void) {
 
     CHECK(handle != NULL);
     CHECK(dlsym(handle, "strlen") != NULL);
+    CHECK(dlsym(RTLD_DEFAULT, "errno") == &errno);
 
     void* self = dlopen("libdlfcn-test-shim.so", RTLD_LAZY);
     CHECK(self != NULL);
