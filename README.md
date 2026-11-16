@@ -300,12 +300,12 @@ aarch64.
   how many installations demand each symbol;
 - a load-once runtime (`dlclose` succeeds but does not unload an image);
 - supporting all four TLS models. Initial-exec variables are placed in a
-  16 KiB surplus arena that rides in the executable's own static TLS, so one
-  process-wide offset is valid in every thread without patching musl. The one
-  restriction: threads created *before* a `dlopen` see zero-initialized TLS
-  for the modules it loaded, so load initial-exec libraries before spawning
-  the threads that use them. An initial-exec module that does not fit the
-  arena fails to load with an error naming the image and the byte counts;
+  1 MiB surplus arena that rides in the executable's own static TLS, so one
+  process-wide offset is valid in every thread without patching musl. Like
+  glibc, `dlopen` seeds the new blocks in the threads already running too, so
+  a library may be loaded after the threads that use it. An initial-exec
+  module that does not fit the arena fails to load with an error naming the
+  image and the byte counts;
 - explicit about missing ABI coverage: an unimplemented glibc call aborts and
   names itself.
 

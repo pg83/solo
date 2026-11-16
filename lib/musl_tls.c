@@ -26,6 +26,7 @@
 #include "musl_tls.h"
 
 #include <elf.h>
+#include <string.h>
 
 /* musl's internal headers rely on annotations its own tree defines in
  * src/include/features.h; this file compiles outside that tree. The headers
@@ -185,6 +186,12 @@ void soloTlsRegister(const void* image, size_t length, size_t size, intptr_t off
 		return;
 	}
 
+	/* Thread creation stays out until both halves are done, as around
+	 * musl's own dlopen: pthread_create sizes and copies a new thread's TLS
+	 * before it joins the thread list, so a thread racing this call would
+	 * otherwise miss the template and the seeding below alike. */
+	__inhibit_ptc();
+
 	struct tls_module* module = &soloModules[soloModuleCount++];
 
 	module->image = (void*)image;
@@ -209,6 +216,22 @@ void soloTlsRegister(const void* image, size_t length, size_t size, intptr_t off
 	libc.tls_cnt++;
 	/* One more dtv slot in every thread created from here on. */
 	libc.tls_size += sizeof(uintptr_t);
+
+	/* Threads already running get the block seeded in place, like glibc's
+	 * _dl_init_static_tls: it sits at the same thread-pointer offset in
+	 * each of them, and nothing there has touched it yet. The calling
+	 * thread's copy is the loader's to seed. */
+	pthread_t self = __pthread_self();
+
+	__tl_lock();
+	for (pthread_t thread = self->next; thread != self; thread = thread->next) {
+		unsigned char* block = (unsigned char*)TP_ADJ(thread) + offset;
+
+		memset(block, 0, size);
+		memcpy(block, image, length);
+	}
+	__tl_unlock();
+	__release_ptc();
 }
 
 /* The linker's own symbol on the binary's mapped ELF header; weak, so a

@@ -36,9 +36,8 @@ intptr_t soloStaticTls(size_t size, size_t align);
 intptr_t soloExecutableTls(const void* image, size_t size, size_t align);
 
 // Registers a reserved block's template with musl, after relocations, so
-// threads created later are seeded from relocated bytes. Threads already
-// running keep zeroes: dlopen libraries with TLS before spawning threads
-// that use them.
+// threads created later are seeded from relocated bytes, and seeds the block
+// in every other thread already running, as glibc does on dlopen.
 void soloTlsRegister(const void* image, size_t length, size_t size, intptr_t offset);
 
 // Swaps the stream's polymorphic writer for one that issues a plain

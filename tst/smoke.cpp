@@ -53,8 +53,8 @@ namespace {
         foreignThrow();
     }
 
-    // A thread parked before the initial-exec module loads: the documented
-    // restriction gives it zeroed TLS for that module, never garbage.
+    // A thread parked before the initial-exec module loads: like glibc's
+    // _dl_init_static_tls, the loader seeds its block from the template too.
     struct ParkedThread {
         sem_t start;
         sem_t done;
@@ -356,7 +356,7 @@ int main() {
 
     // Initial-exec TLS: one process-wide GOT offset must be valid in every
     // thread through the static TLS window. The parked thread exists
-    // before the module loads and must see zeroed TLS for it.
+    // before the module loads and must still see the module's template.
     ParkedThread parked = {};
     pthread_t parkedThread;
     if (sem_init(&parked.start, 0, 0) || sem_init(&parked.done, 0, 0) || pthread_create(&parkedThread, nullptr, parkedThreadMain, &parked)) {
@@ -430,11 +430,11 @@ int main() {
         return 1;
     }
 
-    parked.value = ieTdataValue;
+    parked.value = ieSelfcheck;
     sem_post(&parked.start);
     sem_wait(&parked.done);
     if (pthread_join(parkedThread, nullptr) || parked.result != 0) {
-        fprintf(stderr, "pre-existing thread saw %d instead of zeroed TLS\n", parked.result);
+        fprintf(stderr, "pre-existing thread initial-exec selfcheck failed: %d\n", parked.result);
         return 1;
     }
 
