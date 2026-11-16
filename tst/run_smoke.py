@@ -457,6 +457,7 @@ def main():
             run_solo_checks(root, sysroot_lib, environment)
             run_environment_checks(root, sysroot_lib, sysroot_includes, environment)
             run_phdr_checks(root, sysroot_lib, sysroot_includes, environment)
+            run_errno_checks(root, sysroot_lib, sysroot_includes, environment)
             run_tls_concurrency_checks(root, sysroot_lib, environment)
             run_bundle_checks(root, sysroot_lib, environment)
 
@@ -534,6 +535,54 @@ def run_environment_checks(root, sysroot_lib, sysroot_includes, environment):
                 if run.returncode or "guest environment readers=ok mutators=ok exec=ok" not in run.stdout:
                     print(run.stdout, file=sys.stderr)
                     raise SystemExit(f"environment test failed: {command} (exit {run.returncode})")
+
+
+def run_errno_checks(root, sysroot_lib, sysroot_includes, environment):
+    compiler = shlex.split(os.environ["DLFCN_CC"])
+    source = os.environ["DLFCN_GLIBC_ERRNO_TEST_SOURCE"]
+    solo = os.path.abspath(os.environ["DLFCN_SOLO"])
+    libc = root / sysroot_lib / "libc.so.6"
+    ld_so = sorted((root / sysroot_lib).glob("ld-linux-*.so*"))[0]
+    version = root / "errno.map"
+    version.write_text("GLIBC_PRIVATE { global: errno; };\n")
+    libraries = []
+    for name, dependencies, extra in (
+        ("errno-empty.so", [], []),
+        ("errno-libc.so", [str(libc)], []),
+        ("errno-transitive.so", [str(root / "errno-libc.so")], []),
+        ("errno-own.so", [str(libc)], ["-DOWN_ERRNO", f"-Wl,--version-script={version}"]),
+    ):
+        library = root / name
+        subprocess.run(
+            [
+                *compiler, "-O2", "-fPIC", "-shared", "-nostdlib", "-fno-stack-protector", "-DERRNO_LIBRARY",
+                "-Wl,--no-as-needed", f"-Wl,-soname,{name}", f"-Wl,-rpath,{root}",
+                *extra, source, *dependencies, "-o", str(library),
+            ],
+            check=True,
+        )
+        libraries.append(str(library))
+    guest = root / "errno-guest"
+    subprocess.run(
+        [
+            *compiler, "-O2", "-fPIE", "-pie", "-fno-stack-protector", "-nostdlib", "-nostdinc",
+            *[flag for include in sysroot_includes for flag in ("-isystem", str(root / include))],
+            "-isystem", str(builtin_include(compiler)),
+            f"-Wl,--dynamic-linker={solo}", "-Wl,--no-as-needed",
+            str(root / sysroot_lib / "Scrt1.o"), str(root / sysroot_lib / "crti.o"), source,
+            str(libc), str(ld_so), str(root / sysroot_lib / "crtn.o"), "-o", str(guest),
+        ],
+        check=True,
+    )
+    for command in (
+        [str(ld_so), "--library-path", str(root / sysroot_lib), str(guest)],
+        [solo, "run", str(guest)],
+        [str(guest)],
+    ):
+        run = subprocess.run([*command, *libraries], env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        if run.returncode or "errno lookup: scopes, versions, own definition, per-thread storage: ok" not in run.stdout:
+            print(run.stdout, file=sys.stderr)
+            raise SystemExit(f"errno checks failed: {command} (exit {run.returncode})")
 
 
 def empty_relocation_table(path, rela):

@@ -414,7 +414,7 @@ namespace {
         static bool isGlibcDependency(const std::string_view& name) noexcept;
         void loadDependencies(LinkMap& image);
 
-        static Definition searchScope(LinkMap& image, const std::string_view& name, const std::string_view& version, bool skipSelf);
+        static Definition searchScope(LinkMap& image, const std::string_view& name, const std::string_view& version, bool skipSelf, bool* glibcScope = nullptr);
         Definition resolveSymbol(LinkMap& image, size_t symbolIndex);
         void debugBinding(const LinkMap& image, const std::string_view& name, const char* provider) const;
         static void* materialize(Definition definition);
@@ -1141,14 +1141,25 @@ void* Loader::lookupNext(const void* caller, std::string_view name, std::string_
 
 void* Loader::lookup(LinkMap& image, std::string_view name, std::string_view version) {
     std::lock_guard lock(mutex_);
+    bool glibcScope = false;
+    auto definition = searchScope(image, name, version, false, &glibcScope);
 
-    return materialize(searchScope(image, name, version, false));
+    if (definition) {
+        return materialize(definition);
+    }
+    // glibc runtime dependencies have no LinkMap of their own. Resolve this
+    // per-thread symbol only when that provider belongs to the handle's
+    // dependency closure, after all real ELF definitions have been tried.
+    if (name == "errno" && glibcScope) {
+        return resolveGlibcSymbol(name, version, true);
+    }
+    return nullptr;
 }
 
 // Breadth-first over the image and its dependency closure, in load order at
 // each depth, matching the search order of ld.so. A dependency backed by a
 // static provider is probed at its depth through its handle.
-Definition Loader::searchScope(LinkMap& image, const std::string_view& name, const std::string_view& version, bool skipSelf) {
+Definition Loader::searchScope(LinkMap& image, const std::string_view& name, const std::string_view& version, bool skipSelf, bool* glibcScope) {
     // glibc's COPY discipline searches everything but the requesting image:
     // its own symbol table holds the copy's destination, not a definition.
     if (!skipSelf) {
@@ -1160,6 +1171,9 @@ Definition Loader::searchScope(LinkMap& image, const std::string_view& name, con
     std::unordered_set<LinkMap*> visited({&image});
     std::deque<const Dependency*> queue;
     auto enqueue = [&](const LinkMap& parent) {
+        if (glibcScope) {
+            *glibcScope |= parent.glibcAbi;
+        }
         for (const auto& dependency : parent.dependencies) {
             if (!dependency.image || visited.insert(dependency.image).second) {
                 queue.push_back(&dependency);

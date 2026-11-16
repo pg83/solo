@@ -5398,8 +5398,9 @@ void* GlibcHandle::lookup(std::string_view name, std::string_view version) const
             return address;
         }
     }
-    if (!runtime && !version.empty()) {
-        // dlvsym over a loaded image wants the exact version, no fallbacks.
+    if (!runtime && (!version.empty() || name == "errno")) {
+        // Exact versions and libc's per-thread errno must stay in this
+        // image's dependency scope, without the general libc fallback.
         if (auto* image = cast<ElfImage>(static_cast<IfaceHandle*>(stubHandle))) {
             return image->lookupVersion(name, version);
         }
@@ -5581,12 +5582,6 @@ namespace {
             address = GlibcAdapter::instance().defaultHandle()->lookup(name, {});
         } else {
             address = reinterpret_cast<GlibcHandle*>(handle)->lookup(name, {});
-        }
-        if (!address && !strcmp(name, "errno")) {
-            // glibc's libc exports errno itself, a TLS object dlsym resolves
-            // to the calling thread's instance; FFIs reach it by name. musl
-            // has only __errno_location.
-            address = &errno;
         }
         if (!address) {
             copyStubError("symbol not found");
@@ -6797,6 +6792,11 @@ void* GlibcAdapter::findOverride(std::string_view name, std::string_view version
 }
 
 void* GlibcAdapter::findFallback(std::string_view name, std::string_view version) const {
+    if (name == "errno") {
+        // Evaluate on every lookup: caching this address would bind all
+        // callers to the thread that first initialized the adapter.
+        return version.empty() || version == "GLIBC_PRIVATE" ? &errno : nullptr;
+    }
     if (version.empty()) {
         auto provider = providers_.byName.find(name);
 
