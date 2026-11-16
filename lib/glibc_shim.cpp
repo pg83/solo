@@ -3065,6 +3065,14 @@ namespace {
         if (stackEnd) {
             sh_libc_stack_end = stackEnd;
         }
+        // glibc settles stdout's buffering when the stream first allocates
+        // its buffer: lines for a terminal, full blocks for anything else.
+        // musl decides at the first flush, so the first line written to a
+        // pipe went out on its own, ahead of whatever the guest wrote to
+        // stderr after it.
+        if (!isatty(STDOUT_FILENO)) {
+            setvbuf(stdout, nullptr, _IOFBF, 0);
+        }
         runExecutableInitializers(argc, argv, envp, init);
 
         exit(guestMain(argc, argv, envp));
