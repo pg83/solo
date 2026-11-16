@@ -47,7 +47,7 @@ __asm__(".symver guest_glob64_old, glob64@GLIBC_2.17");
 /* libpthread's version, before glibc 2.34 moved the call into libc. */
 __asm__(".symver guest_clocklock_old, pthread_mutex_clocklock@GLIBC_2.30");
 
-static void guest_old_versions_check(void) {
+static int guest_old_versions_check(void) {
     guest_glob_t found = {0};
     int matches = guest_glob64_old("/", 0, 0, &found) == 0 ? (int)found.gl_pathc : -1;
 
@@ -59,16 +59,19 @@ static void guest_old_versions_check(void) {
     _Alignas(16) unsigned char mutex[64] = {0};
     struct guest_timespec deadline;
 
-    clock_gettime(1, &deadline);
+    if (clock_gettime(1, &deadline)) {
+        printf("guest old versions clock_gettime failed\n");
+        return 0;
+    }
     deadline.tv_sec += 1;
 
     int locked = guest_clocklock_old(mutex, 1, &deadline);
+    int unlocked = locked ? -1 : pthread_mutex_unlock(mutex);
 
-    if (!locked) {
-        pthread_mutex_unlock(mutex);
-    }
     printf("guest old versions glob64=%d clocklock=%d\n", matches, locked);
+    return matches == 1 && !locked && !unlocked;
 }
+
 void* mmap(void* address, unsigned long length, int protection, int flags, int fd, long offset);
 int mprotect(void* address, unsigned long length, int protection);
 int munmap(void* address, unsigned long length);
@@ -366,7 +369,9 @@ int main(int argc, char** argv, char** envp) {
     }
     printf("guest tls after thread=%lx\n", guest_tls_data);
 
-    guest_old_versions_check();
+    if (!guest_old_versions_check()) {
+        return 1;
+    }
     if (!guest_unwind_check()) {
         return 1;
     }

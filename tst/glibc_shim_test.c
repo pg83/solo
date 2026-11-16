@@ -149,6 +149,34 @@ extern int fsopen(const char*, unsigned);
 extern struct mallinfo2 mallinfo2(void);
 extern int malloc_trim(size_t);
 
+/* Keep the old imports in addition to the default versions exercised below.
+ * Looking up a name alone would miss a version that still resolves to a stub. */
+extern __typeof__(sem_clockwait) oldSemClockwait;
+extern __typeof__(pthread_cond_clockwait) oldCondClockwait;
+extern __typeof__(pthread_clockjoin_np) oldClockjoin;
+extern __typeof__(pthread_rwlockattr_setkind_np) oldRwlockKind;
+extern __typeof__(pthread_attr_setaffinity_np) oldAttrAffinity;
+extern void oldRegisterCancel(__pthread_unwind_buf_t*);
+extern void oldUnregisterCancel(__pthread_unwind_buf_t*);
+extern void oldUnwindNext(__pthread_unwind_buf_t*);
+
+__asm__(".symver oldSemClockwait, sem_clockwait@GLIBC_2.30");
+__asm__(".symver oldCondClockwait, pthread_cond_clockwait@GLIBC_2.30");
+__asm__(".symver oldClockjoin, pthread_clockjoin_np@GLIBC_2.31");
+#if defined(__x86_64__)
+__asm__(".symver oldRwlockKind, pthread_rwlockattr_setkind_np@GLIBC_2.2.5");
+__asm__(".symver oldAttrAffinity, pthread_attr_setaffinity_np@GLIBC_2.3.4");
+__asm__(".symver oldRegisterCancel, __pthread_register_cancel@GLIBC_2.3.3");
+__asm__(".symver oldUnregisterCancel, __pthread_unregister_cancel@GLIBC_2.3.3");
+__asm__(".symver oldUnwindNext, __pthread_unwind_next@GLIBC_2.3.3");
+#elif defined(__aarch64__)
+__asm__(".symver oldRwlockKind, pthread_rwlockattr_setkind_np@GLIBC_2.17");
+__asm__(".symver oldAttrAffinity, pthread_attr_setaffinity_np@GLIBC_2.17");
+__asm__(".symver oldRegisterCancel, __pthread_register_cancel@GLIBC_2.17");
+__asm__(".symver oldUnregisterCancel, __pthread_unregister_cancel@GLIBC_2.17");
+__asm__(".symver oldUnwindNext, __pthread_unwind_next@GLIBC_2.17");
+#endif
+
 static void strings(void) {
     char buffer[64];
 
@@ -998,6 +1026,111 @@ static void* sleepyThread(void* opaque) {
     return (void*)41;
 }
 
+static void oldCancellationVersion(void) {
+    __pthread_unwind_buf_t buffer = {0};
+    oldRegisterCancel(&buffer);
+    oldUnregisterCancel(&buffer);
+
+    /* This adapter deliberately aborts: verify its specific diagnostic,
+     * since the generic missing-version stub would also send SIGABRT. */
+    int descriptors[2];
+    int piped = pipe(descriptors);
+    CHECK(piped == 0);
+    if (piped) {
+        return;
+    }
+    pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        struct rlimit no_core = {0, 0};
+        close(descriptors[0]);
+        if (setrlimit(RLIMIT_CORE, &no_core) || dup2(descriptors[1], STDERR_FILENO) < 0) {
+            _exit(1);
+        }
+        close(descriptors[1]);
+        oldUnwindNext(&buffer);
+        _exit(2);
+    }
+    close(descriptors[1]);
+    if (child < 0) {
+        close(descriptors[0]);
+        return;
+    }
+
+    char diagnostic[512];
+    size_t used = 0;
+    while (used < sizeof(diagnostic) - 1) {
+        ssize_t count = read(descriptors[0], diagnostic + used, sizeof(diagnostic) - 1 - used);
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+        if (count <= 0) {
+            CHECK(count == 0);
+            break;
+        }
+        used += (size_t)count;
+    }
+    diagnostic[used] = 0;
+    close(descriptors[0]);
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    CHECK(waited == child);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+    CHECK(strstr(diagnostic, "__pthread_unwind_next: glibc-style cancellation is not supported") != NULL);
+}
+
+static void oldSymbolVersions(void) {
+    const struct timespec past = {0, 0};
+    sem_t semaphore;
+    CHECK(sem_init(&semaphore, 0, 1) == 0);
+    CHECK(oldSemClockwait(&semaphore, CLOCK_MONOTONIC, &past) == 0);
+    CHECK(oldSemClockwait(&semaphore, CLOCK_MONOTONIC, &past) == -1 && errno == ETIMEDOUT);
+    CHECK(sem_destroy(&semaphore) == 0);
+
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t condition = PTHREAD_COND_INITIALIZER;
+    CHECK(pthread_mutex_lock(&mutex) == 0);
+    CHECK(oldCondClockwait(&condition, &mutex, CLOCK_MONOTONIC, &past) == ETIMEDOUT);
+    CHECK(pthread_mutex_unlock(&mutex) == 0);
+    CHECK(pthread_cond_destroy(&condition) == 0);
+    CHECK(pthread_mutex_destroy(&mutex) == 0);
+
+    pthread_t thread;
+    int created = pthread_create(&thread, NULL, sleepyThread, NULL);
+    CHECK(created == 0);
+    if (!created) {
+        struct timespec deadline = {0, 0};
+        CHECK(clock_gettime(CLOCK_MONOTONIC, &deadline) == 0);
+        deadline.tv_sec += 5;
+        void* result = NULL;
+        int joined = oldClockjoin(thread, &result, CLOCK_MONOTONIC, &deadline);
+        CHECK(joined == 0);
+        CHECK(result == (void*)41);
+        if (joined) {
+            CHECK(pthread_join(thread, NULL) == 0);
+        }
+    }
+
+    pthread_rwlockattr_t rwlock_attribute;
+    CHECK(pthread_rwlockattr_init(&rwlock_attribute) == 0);
+    CHECK(oldRwlockKind(&rwlock_attribute, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP) == 0);
+    CHECK(oldRwlockKind(&rwlock_attribute, 7) == EINVAL);
+    CHECK(pthread_rwlockattr_destroy(&rwlock_attribute) == 0);
+
+    pthread_attr_t attribute;
+    cpu_set_t affinity;
+    CHECK(pthread_attr_init(&attribute) == 0);
+    CPU_ZERO(&affinity);
+    CPU_SET(0, &affinity);
+    CHECK(oldAttrAffinity(&attribute, sizeof(affinity), &affinity) == 0);
+    CHECK(pthread_attr_destroy(&attribute) == 0);
+
+    oldCancellationVersion();
+}
+
 static ucontext_t coroutine_main;
 static ucontext_t coroutine_side;
 static int coroutine_trace[4];
@@ -1594,6 +1727,7 @@ int glibc_shim_test(void) {
     processors();
     popularCalls();
     popularData();
+    oldSymbolVersions();
     contexts();
     expressions();
     descriptorsAndLimits();
