@@ -94,10 +94,10 @@ namespace dyn {
     // adopted as the main executable and taken through the same closure,
     // relocations, TLS, and RELRO as a loaded one.
     ElfExecutable adoptExecutable(const char* path, const Elf64_Phdr* headers, size_t count, uintptr_t entry);
-    // The executable's DT_PREINIT_ARRAY, DT_INIT, and DT_INIT_ARRAY, with
-    // glibc's initializer arguments; the bridge's __libc_start_main calls
-    // this when the guest's crt passes no init function of its own.
-    void runExecutableInitializers(int argc, char** argv, char** envp);
+    // Start executable initialization and enable its finalizers. Older crts
+    // supply their own init callback; otherwise run DT_PREINIT_ARRAY, DT_INIT,
+    // and DT_INIT_ARRAY with glibc's initializer arguments.
+    void runExecutableInitializers(int argc, char** argv, char** envp, void (*init)(int, char**, char**) = nullptr);
 
     struct ElfImage: public IfaceHandle {
         static constexpr Kind kind = Kind::Image;

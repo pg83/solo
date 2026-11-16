@@ -14,6 +14,7 @@ extern char** environ;
 int printf(const char* format, ...);
 int fprintf(FILE* stream, const char* format, ...);
 char* getenv(const char* name);
+void exit(int status);
 /* atexit itself lives in glibc's libc_nonshared.a, which a -nostdlib link
  * has no business pulling in; the underlying exported call serves. */
 int __cxa_atexit(void (*function)(void*), void* argument, void* handle);
@@ -335,11 +336,15 @@ static int guest_unwind_check(void) {
     printf("guest unwind frames=%d registration=%s deregistration=%s\n", guest_jit_count, registered ? "ok" : "bad", deregistered ? "ok" : "bad");
     return called && sane && registered && deregistered && released;
 }
+
 static int guest_constructed;
 
 __attribute__((constructor)) static void guest_constructor(void) {
     guest_constructed = 1;
     printf("guest init\n");
+    if (getenv("SOLO_EXIT_IN_INIT")) {
+        exit(43);
+    }
 }
 
 /* Finalizers run at exit only for images whose initializers ran: ldd's

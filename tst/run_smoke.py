@@ -11,6 +11,27 @@ import tempfile
 from pathlib import Path
 
 
+LIBRARY_LIFECYCLE = ("library init", "library init array", "library fini array", "library fini")
+
+
+def check_lifecycle(output, expected, context):
+    """Every hook runs once, in order; a prefix match cannot hide a bad fini."""
+    lines = output.splitlines()
+    if "without init" in output or any(lines.count(line) != 1 for line in expected):
+        print(output, file=sys.stderr)
+        raise SystemExit(f"{context}: missing, repeated, or uninitialized lifecycle hook")
+    positions = [lines.index(line) for line in expected]
+    if positions != sorted(positions):
+        print(output, file=sys.stderr)
+        raise SystemExit(f"{context}: lifecycle hooks ran out of order")
+
+
+def check_trace_only(output, context):
+    if any(line.startswith(("guest ", "library ")) for line in output.splitlines()):
+        print(output, file=sys.stderr)
+        raise SystemExit(f"{context}: trace ran guest code")
+
+
 def builtin_include(compiler):
     """The compiler's own header directory (stddef.h and friends)."""
     for flags in (["-print-file-name=include"], ["-print-resource-dir"]):
@@ -72,6 +93,7 @@ def main():
                 "-Wl,--no-as-needed",
                 str(root / sysroot_lib / "libc.so.6"),
                 "-Wl,-soname,libdlfcn-test-glibc.so",
+                "-Wl,-init,glibc_test_init,-fini,glibc_test_fini",
                 os.environ["DLFCN_GLIBC_TEST_SOURCE"],
                 "-o",
                 str(glibc_test),
@@ -409,6 +431,7 @@ def main():
             symbolize_fault(executable, result.stdout)
             rerun_under_gdb([executable], environment)
         else:
+            check_lifecycle(result.stdout, LIBRARY_LIFECYCLE, "shared-library smoke")
             # ldd's arrow format, with every provenance the loader knows:
             # a mapped file, a bridged soname, and a static provider.
             trace = subprocess.run(
@@ -499,10 +522,13 @@ def run_solo_checks(root, sysroot_lib, environment):
     # the guest and starts solo as the interpreter, and the guest runs by
     # plain execution, no solo command in front.
     guests = {}
-    for suffix, model, crt1 in (
-        ("", ["-fPIE", "-pie"], "Scrt1.o"),
-        ("-exec", ["-fno-pie", "-no-pie"], "crt1.o"),
+    for suffix, model, crt1, legacy in (
+        ("", ["-fPIE", "-pie"], "Scrt1.o", False),
+        ("-exec", ["-fno-pie", "-no-pie"], "crt1.o", False),
+        ("-legacy", ["-fPIE", "-pie"], "Scrt1.o", True),
+        ("-legacy-exec", ["-fno-pie", "-no-pie"], "crt1.o", True),
     ):
+        startup = ["-Wl,--wrap=__libc_start_main", os.environ["DLFCN_GLIBC_LEGACY_START_SOURCE"]] if legacy else []
         for interp, linker in (
             ("", []),
             ("-interp", [f"-Wl,--dynamic-linker={os.path.abspath(solo)}"]),
@@ -514,12 +540,14 @@ def run_solo_checks(root, sysroot_lib, environment):
                     "-O2",
                     *model,
                     *linker,
+                    *startup,
                     "-fno-stack-protector",
                     "-nostdlib",
                     "-Wl,--no-as-needed",
                     str(root / sysroot_lib / crt1),
                     str(root / sysroot_lib / "crti.o"),
                     os.environ["DLFCN_GLIBC_GUEST_TEST_SOURCE"],
+                    str(root / "ld-library-path" / "libdlfcn-test-glibc.so"),
                     str(root / sysroot_lib / "libc.so.6"),
                     str(sysroot_libgcc_s(root)),
                     str(ld_so[0]),
@@ -532,69 +560,93 @@ def run_solo_checks(root, sysroot_lib, environment):
             guests[suffix + interp] = guest
 
     guest_environment = {**environment, "SOLO_GUEST_ENV": "smoke-value"}
-    for command in (
-        [solo, "run", str(guests[""]), "alpha", "beta"],
-        [solo, str(guests[""]), "alpha", "beta"],
-        [solo, "run", str(guests["-exec"]), "alpha", "beta"],
-        [str(guests["-interp"]), "alpha", "beta"],
-        [str(guests["-exec-interp"]), "alpha", "beta"],
-    ):
-        run = subprocess.run(
-            command,
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=guest_environment,
-        )
-        for needle in (
-            "guest init",
-            "guest main argc=3",
-            "guest argv alpha",
-            "guest argv beta",
-            "guest stdout env=smoke-value",
-            "guest environ present",
-            "guest environ repointed=repointed",
-            "guest tls=51106011 bss=0",
-            "guest thread tls=51106011 bss=0",
-            "guest tls after thread=600d",
-            "guest old versions glob64=1 clocklock=0",
-            "guest unwind personality=called cfa=ok",
-            "guest unwind frames=2 registration=ok deregistration=ok",
-            "guest atexit",
-            "guest fini",
+    for startup in ("", "-legacy"):
+        for command in (
+            [solo, "run", str(guests[startup]), "alpha", "beta"],
+            [solo, str(guests[startup]), "alpha", "beta"],
+            [solo, "run", str(guests[startup + "-exec"]), "alpha", "beta"],
+            [str(guests[startup + "-interp"]), "alpha", "beta"],
+            [str(guests[startup + "-exec-interp"]), "alpha", "beta"],
         ):
-            if needle not in run.stdout:
+            run = subprocess.run(
+                command,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=guest_environment,
+            )
+            lifecycle = ["guest legacy init"] if startup else []
+            check_lifecycle(run.stdout, [*lifecycle, "guest init", "guest atexit", "guest fini"], "solo run")
+            check_lifecycle(run.stdout, LIBRARY_LIFECYCLE, "solo run library")
+            for needle in (
+                "guest init",
+                "guest main argc=3",
+                "guest argv alpha",
+                "guest argv beta",
+                "guest stdout env=smoke-value",
+                "guest environ present",
+                "guest environ repointed=repointed",
+                "guest tls=51106011 bss=0",
+                "guest thread tls=51106011 bss=0",
+                "guest tls after thread=600d",
+                "guest old versions glob64=1 clocklock=0",
+                "guest unwind personality=called cfa=ok",
+                "guest unwind frames=2 registration=ok deregistration=ok",
+                "guest atexit",
+                "guest fini",
+            ):
+                if needle not in run.stdout:
+                    print(run.stdout, file=sys.stderr)
+                    raise SystemExit(f"solo run misses: {needle}")
+            if run.returncode != 42:
                 print(run.stdout, file=sys.stderr)
-                raise SystemExit(f"solo run misses: {needle}")
-        if run.returncode != 42:
-            print(run.stdout, file=sys.stderr)
-            raise SystemExit(f"solo run exited {run.returncode}, wanted the guest's 42")
+                raise SystemExit(f"solo run exited {run.returncode}, wanted the guest's 42")
+
+    # An initializer may terminate the process before main. Finalizers must
+    # already be enabled, including when the old crt owns the init callback.
+    for startup in ("", "-legacy"):
+        for command in (
+            [solo, "run", str(guests[startup])],
+            [str(guests[startup + "-interp"])],
+        ):
+            run = subprocess.run(
+                command,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env={**guest_environment, "SOLO_EXIT_IN_INIT": "1"},
+            )
+            lifecycle = ["guest legacy init"] if startup else []
+            check_lifecycle(run.stdout, [*lifecycle, "guest init", "guest fini"], "exit in initializer")
+            check_lifecycle(run.stdout, LIBRARY_LIFECYCLE, "exit in initializer library")
+            if run.returncode != 43 or "guest main" in run.stdout or "guest atexit" in run.stdout:
+                print(run.stdout, file=sys.stderr)
+                raise SystemExit(f"exit in initializer continued into main or exited {run.returncode}")
 
     # Trace mode both ways ldd reaches it: the subcommand, and the
     # environment variable against a guest whose interpreter is solo — how a
     # real ldd script drives the interpreter.
-    for command, env in (
-        ([solo, "ldd", str(guests[""])], guest_environment),
-        ([str(guests["-interp"])], {**guest_environment, "LD_TRACE_LOADED_OBJECTS": "1"}),
-    ):
-        ldd = subprocess.run(
-            command,
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=env,
-        )
-        if "libc.so.6 => the glibc ABI bridge" not in ldd.stdout:
-            print(ldd.stdout, file=sys.stderr)
-            raise SystemExit("solo ldd misses the bridged libc.so.6 line")
-        if "guest main" in ldd.stdout or "guest fini" in ldd.stdout:
-            print(ldd.stdout, file=sys.stderr)
-            raise SystemExit("solo ldd ran the guest instead of only tracing it")
-        if ldd.returncode:
-            print(ldd.stdout, file=sys.stderr)
-            raise SystemExit(f"solo ldd exited {ldd.returncode}")
+    for startup in ("", "-legacy"):
+        for command, env in (
+            ([solo, "ldd", str(guests[startup])], guest_environment),
+            ([str(guests[startup + "-interp"])], {**guest_environment, "LD_TRACE_LOADED_OBJECTS": "1"}),
+        ):
+            ldd = subprocess.run(
+                command,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+            if "libc.so.6 => the glibc ABI bridge" not in ldd.stdout:
+                print(ldd.stdout, file=sys.stderr)
+                raise SystemExit("solo ldd misses the bridged libc.so.6 line")
+            check_trace_only(ldd.stdout, "solo ldd")
+            if ldd.returncode:
+                print(ldd.stdout, file=sys.stderr)
+                raise SystemExit(f"solo ldd exited {ldd.returncode}")
 
 
 def run_bundle_checks(root, sysroot_lib, environment):
@@ -667,6 +719,8 @@ def run_bundle_checks(root, sysroot_lib, environment):
         stderr=subprocess.STDOUT,
         env=bundle_environment,
     )
+    check_lifecycle(run.stdout, ["guest init", "guest atexit", "guest fini"], "solo bundle")
+    check_lifecycle(run.stdout, LIBRARY_LIFECYCLE, "solo bundle library")
     for needle in (
         "guest init",
         "guest main argc=3",
@@ -709,8 +763,7 @@ def run_bundle_checks(root, sysroot_lib, environment):
     if needle not in trace.stdout:
         print(trace.stdout, file=sys.stderr)
         raise SystemExit(f"solo bundle trace misses: {needle}")
-    if "guest main" in trace.stdout:
-        raise SystemExit("solo bundle ran the guest instead of only tracing it")
+    check_trace_only(trace.stdout, "solo bundle")
     if trace.returncode:
         print(trace.stdout, file=sys.stderr)
         raise SystemExit(f"solo bundle trace exited {trace.returncode}")

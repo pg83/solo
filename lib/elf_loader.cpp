@@ -273,6 +273,7 @@ namespace {
         bool executable = false;
         // Set once the image's initializers have started, like ld.so's
         // l_init_called: only such images get their finalizers at exit.
+        // Read and written under the loader mutex; callbacks run unlocked.
         bool initialized = false;
         uintptr_t entry = 0;
         uintptr_t programHeadersAddress = 0;
@@ -2457,7 +2458,11 @@ void LinkMap::runInitializers() {
     if (executable) {
         return;
     }
-    initialized = true;
+    {
+        std::lock_guard lock(Loader::instance().mutex_);
+
+        initialized = true;
+    }
     if (initializer) {
         reinterpret_cast<void (*)()>(initializer)();
     }
@@ -2586,13 +2591,27 @@ ElfExecutable dyn::adoptExecutable(const char* path, const Elf64_Phdr* headers, 
     };
 }
 
-void dyn::runExecutableInitializers(int argc, char** argv, char** envp) {
-    auto* image = Loader::instance().mainExecutable_;
+void dyn::runExecutableInitializers(int argc, char** argv, char** envp, void (*init)(int, char**, char**)) {
+    auto& loader = Loader::instance();
+    LinkMap* image;
+    {
+        std::lock_guard lock(loader.mutex_);
 
+        image = loader.mainExecutable_;
+        if (image) {
+            image->initialized = true;
+        }
+    }
+
+    // Both startup protocols must enable finalization before calling guest
+    // code: even an initializer that calls exit() needs its finalizers.
+    if (init) {
+        init(argc, argv, envp);
+        return;
+    }
     if (!image) {
         return;
     }
-    image->initialized = true;
 
     using Initializer = void (*)(int, char**, char**);
     auto* preinitializers = reinterpret_cast<uintptr_t*>(image->preinitializerArray);

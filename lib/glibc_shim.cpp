@@ -2832,11 +2832,7 @@ namespace {
         if (stackEnd) {
             sh_libc_stack_end = stackEnd;
         }
-        if (init) {
-            init(argc, argv, envp);
-        } else {
-            runExecutableInitializers(argc, argv, envp);
-        }
+        runExecutableInitializers(argc, argv, envp, init);
 
         exit(guestMain(argc, argv, envp));
     }

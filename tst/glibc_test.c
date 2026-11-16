@@ -1,5 +1,44 @@
 typedef unsigned long GlibcThread;
 
+int printf(const char* format, ...);
+void _Exit(int status);
+
+/* The linker selects the two exported hooks as DT_INIT and DT_FINI. The
+ * attributes supply the arrays, so the test covers both finalizer paths. */
+static int lifecycle_phase;
+
+void glibc_test_init(void) {
+    if (lifecycle_phase != 0) {
+        _Exit(91);
+    }
+    lifecycle_phase = 1;
+    printf("library init\n");
+}
+
+__attribute__((constructor)) static void glibc_test_constructor(void) {
+    if (lifecycle_phase != 1) {
+        _Exit(92);
+    }
+    lifecycle_phase = 2;
+    printf("library init array\n");
+}
+
+__attribute__((destructor)) static void glibc_test_destructor(void) {
+    if (lifecycle_phase != 2) {
+        _Exit(93);
+    }
+    lifecycle_phase = 3;
+    printf("library fini array\n");
+}
+
+void glibc_test_fini(void) {
+    if (lifecycle_phase != 3) {
+        _Exit(94);
+    }
+    lifecycle_phase = 4;
+    printf("library fini\n");
+}
+
 extern void* dlopen(const char* path, int flags);
 extern void* dlsym(void* handle, const char* name);
 extern int dlclose(void* handle);
