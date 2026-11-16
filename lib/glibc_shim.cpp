@@ -5854,6 +5854,12 @@ namespace {
         // unwinder that walks it.
         SH_FUNCTION("__register_frame", "GCC_3.0", sh_register_frame),
         SH_FUNCTION("__deregister_frame", "GCC_3.0", sh_deregister_frame),
+#if defined(__aarch64__)
+        // AArch64 libgcc exports these two entry points as GLIBC_2.0.
+        // They must still register with the host unwinder used above.
+        SH_FUNCTION("__register_frame", "GLIBC_2.0", sh_register_frame),
+        SH_FUNCTION("__deregister_frame", "GLIBC_2.0", sh_deregister_frame),
+#endif
         SH_FUNCTION("_setjmp", "GLIBC_2.2.5", _setjmp),
         SH_FUNCTION("__longjmp_chk", "GLIBC_2.11", _longjmp),
         SH_OBJECT("__timezone", "GLIBC_2.2.5", timezone),
@@ -6569,7 +6575,7 @@ GlibcAdapter::GlibcAdapter()
         // adapter is registered under the versions the platform's glibc
         // really exports. Names outside the inventory entirely (the GCC_ and
         // CXXABI families of libgcc and libstdc++) keep the hand-written
-        // version: those ABIs do not vary per architecture.
+        // versions, including the architecture-specific frame aliases above.
         auto versions = glibcSymbolVersions(symbol.name);
 
         if (versions.empty() || std::find(versions.begin(), versions.end(), symbol.version) != versions.end()) {
