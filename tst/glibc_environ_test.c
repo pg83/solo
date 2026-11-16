@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <getopt.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +39,39 @@ static const char* table_value(char* const table[], const char* name) {
 
 static int equal(const char* value, const char* expected) {
     return value && !strcmp(value, expected);
+}
+
+/* The parser must read the guest's COPY-relocated environ pointer, and keep
+ * its ordering mode until optind=0 requests a full reinitialization. */
+static int check_getopt(void) {
+    char** original = GUEST_ENVIRON;
+    char* posix[] = {"POSIXLY_CORRECT=1", NULL};
+    char* empty[] = {NULL};
+    char* args[] = {"prog", "file", "-a", NULL};
+    const struct option longs[] = {{"alpha", no_argument, NULL, 'a'}, {NULL, 0, NULL, 0}};
+
+    GUEST_ENVIRON = posix;
+    optind = 0;
+    opterr = 0;
+    CHECK(getopt(3, args, "a") == -1 && optind == 1);
+    CHECK(!strcmp(args[1], "file") && args[3] == NULL);
+    optind = 0;
+    CHECK(getopt_long(3, args, "a", longs, NULL) == -1 && optind == 1);
+    optind = 0;
+    CHECK(getopt_long_only(3, args, "a", longs, NULL) == -1 && optind == 1);
+
+    GUEST_ENVIRON = empty;
+    optind = 1;
+    CHECK(getopt(3, args, "a") == -1 && optind == 1);
+    optind = 0;
+    CHECK(getopt(3, args, "a") == 'a' && optind == 3);
+    CHECK(getopt(3, args, "a") == -1 && optind == 2);
+    CHECK(!strcmp(args[1], "-a") && !strcmp(args[2], "file") && args[3] == NULL);
+
+    GUEST_ENVIRON = original;
+    optind = 0;
+    opterr = 1;
+    return 0;
 }
 
 static pthread_barrier_t readers_ready;
@@ -165,6 +199,7 @@ int main(int argc, char** argv, char** envp) {
         return 0;
     }
     CHECK(argc == 1);
+    CHECK(!check_getopt());
     char** original = GUEST_ENVIRON;
     char* repointed[] = {"SOLO_GUEST_ENV=repointed", NULL};
     GUEST_ENVIRON = repointed;

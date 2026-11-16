@@ -1740,6 +1740,73 @@ static const char* getoptMessage(int argc, char** argv, const char* options, con
     return message;
 }
 
+static int getoptCall(int kind, int argc, char** argv, const char* options) {
+    static const struct option longs[] = {
+        {"alpha", no_argument, NULL, 'a'},
+        {"beta", required_argument, NULL, 'b'},
+        {NULL, 0, NULL, 0},
+    };
+    if (kind == 0) {
+        return getopt(argc, argv, options);
+    }
+    if (kind == 1) {
+        return getopt_long(argc, argv, options, longs, NULL);
+    }
+    return getopt_long_only(argc, argv, options, longs, NULL);
+}
+
+/* Observe every call: glibc leaves a short-option group in place until the
+ * next argv element, and only then exchanges it with preceding operands. */
+static void optionOrdering(void) {
+    char program[] = "prog";
+    char file[] = "file";
+    char group[] = "-ab";
+    char a[] = "-a";
+    char b[] = "-b";
+    char value[] = "value";
+    char tail[] = "tail";
+    char stop[] = "--";
+    char dash[] = "-";
+
+    for (int kind = 0; kind < 3; ++kind) {
+        char* clustered[] = {program, file, group, NULL};
+        optind = 0;
+        opterr = 0;
+        CHECK(getoptCall(kind, 3, clustered, "ab") == 'a' && optind == 2 && optarg == NULL);
+        CHECK(clustered[1] == file && clustered[2] == group);
+        CHECK(getoptCall(kind, 3, clustered, "ab") == 'b' && optind == 3);
+        CHECK(clustered[1] == file && clustered[2] == group);
+        CHECK(getoptCall(kind, 3, clustered, "ab") == -1 && optind == 2);
+        CHECK(clustered[1] == group && clustered[2] == file && clustered[3] == NULL);
+        optind = 1;
+        CHECK(getoptCall(kind, 3, clustered, "ab") == 'a' && optind == 1);
+        CHECK(getoptCall(kind, 3, clustered, "ab") == 'b' && optind == 2);
+        CHECK(getoptCall(kind, 3, clustered, "ab") == -1 && optind == 2);
+
+        char* mixed[] = {program, file, a, tail, b, value, NULL};
+        optind = 0;
+        CHECK(getoptCall(kind, 6, mixed, "ab:") == 'a' && optind == 3);
+        CHECK(mixed[1] == file && mixed[2] == a);
+        CHECK(getoptCall(kind, 6, mixed, "ab:") == 'b' && optind == 6 && optarg == value);
+        CHECK(mixed[1] == a && mixed[2] == file && mixed[3] == tail && mixed[4] == b);
+        CHECK(getoptCall(kind, 6, mixed, "ab:") == -1 && optind == 4 && optarg == NULL);
+        CHECK(mixed[1] == a && mixed[2] == b && mixed[3] == value && mixed[4] == file && mixed[5] == tail && mixed[6] == NULL);
+
+        char* stopped[] = {program, file, a, stop, b, tail, NULL};
+        optind = 0;
+        CHECK(getoptCall(kind, 6, stopped, "ab") == 'a' && optind == 3);
+        CHECK(getoptCall(kind, 6, stopped, "ab") == -1 && optind == 3);
+        CHECK(stopped[1] == a && stopped[2] == stop && stopped[3] == file && stopped[4] == b && stopped[5] == tail && stopped[6] == NULL);
+
+        char* inOrder[] = {program, dash, file, a, NULL};
+        optind = 0;
+        CHECK(getoptCall(kind, 4, inOrder, "-a") == 1 && optind == 2 && optarg == dash);
+        CHECK(getoptCall(kind, 4, inOrder, "-a") == 1 && optind == 3 && optarg == file);
+        CHECK(getoptCall(kind, 4, inOrder, "-a") == 'a' && optind == 4 && optarg == NULL);
+        CHECK(getoptCall(kind, 4, inOrder, "-a") == -1 && optind == 4 && optarg == NULL);
+    }
+}
+
 /* glibc's getopt family: every entry point but __posix_getopt permutes the
  * operands behind the options, a missing argument at the end of argv leaves
  * the vector and its terminator intact, and the diagnostics carry glibc's
@@ -1805,6 +1872,32 @@ static void options(void) {
     char* unargued[] = {program, name, NULL};
     CHECK(strcmp(getoptMessage(2, unargued, "", longs, &result), "prog: option '--name' requires an argument\n") == 0);
 
+    /* '?' is also a valid success value, including for the short -? spelling.
+     * The same value must still diagnose a missing or forbidden argument. */
+    static const struct option questions[] = {
+        {"help", no_argument, NULL, '?'},
+        {"query", required_argument, NULL, '?'},
+        {"minus", required_argument, NULL, -1},
+        {NULL, 0, NULL, 0},
+    };
+    char* help[] = {program, "--help", NULL};
+    CHECK(getoptMessage(2, help, "", questions, &result)[0] == 0 && result == '?');
+    char* query[] = {program, "--query=value", NULL};
+    CHECK(getoptMessage(2, query, "", questions, &result)[0] == 0 && result == '?' && optarg && !strcmp(optarg, "value"));
+    char* shortHelp[] = {program, "-?", NULL};
+    CHECK(getoptMessage(2, shortHelp, "?", NULL, &result)[0] == 0 && result == '?');
+    char* shortQuery[] = {program, "-?value", NULL};
+    CHECK(getoptMessage(2, shortQuery, "?:", NULL, &result)[0] == 0 && result == '?' && optarg && !strcmp(optarg, "value"));
+    CHECK(strcmp(getoptMessage(2, shortHelp, "?:", NULL, &result), "prog: option requires an argument -- '?'\n") == 0 && result == '?');
+    char* helpArgument[] = {program, "--help=value", NULL};
+    CHECK(strcmp(getoptMessage(2, helpArgument, "", questions, &result), "prog: option '--help' doesn't allow an argument\n") == 0 && result == '?');
+    char* missingQuery[] = {program, "--query", NULL};
+    CHECK(strcmp(getoptMessage(2, missingQuery, "", questions, &result), "prog: option '--query' requires an argument\n") == 0 && result == '?');
+    CHECK(getoptMessage(2, missingQuery, ":", questions, &result)[0] == 0 && result == ':');
+    char* missingMinus[] = {program, "--minus", NULL};
+    CHECK(strcmp(getoptMessage(2, missingMinus, "", questions, &result), "prog: option '--minus' requires an argument\n") == 0 && result == '?' && optopt == -1);
+
+    optionOrdering();
     optind = 1;
     opterr = 1;
 }
