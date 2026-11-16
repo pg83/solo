@@ -523,6 +523,7 @@ def run_solo_checks(root, sysroot_lib, environment):
             "guest thread tls=51106011 bss=0",
             "guest tls after thread=600d",
             "guest unwind personality=called cfa=ok",
+            "guest unwind frames=2 registration=ok deregistration=ok",
             "guest atexit",
         ):
             if needle not in run.stdout:
@@ -641,6 +642,7 @@ def run_bundle_checks(root, sysroot_lib, environment):
         "guest thread tls=51106011 bss=0",
         "guest tls after thread=600d",
         "guest unwind personality=called cfa=ok",
+        "guest unwind frames=2 registration=ok deregistration=ok",
         "guest atexit",
     ):
         if needle not in run.stdout:

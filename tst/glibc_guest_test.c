@@ -19,6 +19,8 @@ char* getenv(const char* name);
 int __cxa_atexit(void (*function)(void*), void* argument, void* handle);
 
 void* mmap(void* address, unsigned long length, int protection, int flags, int fd, long offset);
+int mprotect(void* address, unsigned long length, int protection);
+int munmap(void* address, unsigned long length);
 
 typedef unsigned long guest_pthread_t;
 int pthread_create(guest_pthread_t* thread, const void* attributes, void* (*function)(void*), void* argument);
@@ -53,6 +55,13 @@ struct guest_unwind_exception {
 
 int _Unwind_RaiseException(struct guest_unwind_exception* exception);
 guest_uword _Unwind_GetCFA(void* context);
+struct guest_dwarf_bases {
+    guest_uword text;
+    guest_uword data;
+    guest_uword function;
+};
+const void* _Unwind_Find_FDE(const void* pc, struct guest_dwarf_bases* bases);
+void* _Unwind_FindEnclosingFunction(void* pc);
 void __register_frame(const void* section);
 void __deregister_frame(const void* section);
 
@@ -126,10 +135,12 @@ static unsigned char* guest_put_bytes(unsigned char* at, const unsigned char* by
     return at;
 }
 
-/* One CIE and one FDE for the code, then the zero terminator: the shape
- * libgcc's __register_frame takes. The section shares the code's page, as
- * pc_begin is a 32-bit pc-relative offset. */
-static void guest_build_eh_frame(unsigned char* section, const unsigned char* code, unsigned long size) {
+enum { guest_jit_count = 2, guest_jit_stride = 64, guest_jit_mapping_size = 4096 };
+
+/* One CIE shared by two FDEs, then the zero terminator. Both frames must
+ * register and deregister through libgcc's whole-section API. The section
+ * shares the code's mapping, as pc_begin is a 32-bit pc-relative offset. */
+static void guest_build_eh_frame(unsigned char* section, const unsigned char* code, const void** frames) {
     unsigned char* cie = section;
     unsigned char* at = cie + 4;
 
@@ -150,21 +161,24 @@ static void guest_build_eh_frame(unsigned char* section, const unsigned char* co
     }
     guest_put32(cie, (unsigned int)(at - cie - 4));
 
-    unsigned char* fde = at;
+    for (int index = 0; index < guest_jit_count; ++index) {
+        unsigned char* fde = at;
 
-    at = fde + 4;
-    guest_put32(at, (unsigned int)(at - cie));
-    at += 4;
-    guest_put32(at, (unsigned int)(code - at));
-    at += 4;
-    guest_put32(at, (unsigned int)size);
-    at += 4;
-    *at++ = 0;
-    at = guest_put_bytes(at, guest_fde_program, sizeof(guest_fde_program));
-    while ((at - fde) % 8) {
+        frames[index] = fde;
+        at = fde + 4;
+        guest_put32(at, (unsigned int)(at - cie));
+        at += 4;
+        guest_put32(at, (unsigned int)(code + index * guest_jit_stride - at));
+        at += 4;
+        guest_put32(at, sizeof(guest_jit_code));
+        at += 4;
         *at++ = 0;
+        at = guest_put_bytes(at, guest_fde_program, sizeof(guest_fde_program));
+        while ((at - fde) % 8) {
+            *at++ = 0;
+        }
+        guest_put32(fde, (unsigned int)(at - fde - 4));
     }
-    guest_put32(fde, (unsigned int)(at - fde - 4));
     guest_put32(at, 0);
 }
 
@@ -204,33 +218,68 @@ __attribute__((noinline)) static void guest_unwind_frame(void (*jit)(void (*)(vo
     __asm__ volatile("" ::: "memory");
 }
 
-static void guest_unwind_check(void) {
-    unsigned char* code = mmap(0, 4096, 1 | 2 | 4, 2 | 0x20, -1, 0);
+static int guest_unwind_check(void) {
+    unsigned char* code = mmap(0, guest_jit_mapping_size, 1 | 2, 2 | 0x20, -1, 0);
 
     if (code == (unsigned char*)-1) {
         printf("guest unwind mmap failed\n");
-        return;
+        return 0;
     }
-    guest_put_bytes(code, (const unsigned char*)guest_jit_code, sizeof(guest_jit_code));
-    guest_sync_code(code, sizeof(guest_jit_code));
+    for (int index = 0; index < guest_jit_count; ++index) {
+        unsigned char* entry = code + index * guest_jit_stride;
+
+        guest_put_bytes(entry, (const unsigned char*)guest_jit_code, sizeof(guest_jit_code));
+        guest_sync_code(entry, sizeof(guest_jit_code));
+    }
 
     unsigned char* section = code + 256;
+    const void* frames[guest_jit_count];
 
-    guest_build_eh_frame(section, code, sizeof(guest_jit_code));
-    __register_frame(section);
+    guest_build_eh_frame(section, code, frames);
+    if (mprotect(code, guest_jit_mapping_size, 1 | 4)) {
+        printf("guest unwind mprotect failed\n");
+        munmap(code, guest_jit_mapping_size);
+        return 0;
+    }
 
-    volatile guest_uword anchor = 0;
+    int called = 1;
+    int sane = 1;
+    int registered = 1;
+    int deregistered = 1;
 
-    guest_unwind_frame((void (*)(void (*)(void)))code, &anchor);
-    __deregister_frame(section);
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        __register_frame(section);
+        for (int index = 0; index < guest_jit_count; ++index) {
+            unsigned char* entry = code + index * guest_jit_stride;
+            struct guest_dwarf_bases bases = {0, 0, 0};
+            volatile guest_uword anchor = 0;
 
-    /* In a personality, _Unwind_GetCFA is the examined frame's stack pointer
-     * at its call site — libgcc and libunwind agree — so just below
-     * guest_unwind_frame's locals. Another unwinder's context reads as
-     * garbage here. */
-    int sane = guest_personality_cfa <= anchor && anchor - guest_personality_cfa < 4096;
+            registered &= _Unwind_Find_FDE(entry + 4, &bases) == frames[index];
+            registered &= bases.function == (guest_uword)entry;
+            registered &= _Unwind_FindEnclosingFunction(entry + 4) == entry;
+            guest_personality_calls = 0;
+            guest_personality_cfa = 0;
+            guest_unwind_frame((void (*)(void (*)(void)))entry, &anchor);
+            called &= guest_personality_calls != 0;
+            /* Inside a personality the CFA is the examined frame's SP at
+             * its call site, just below guest_unwind_frame's locals. */
+            sane &= guest_personality_cfa <= anchor && anchor - guest_personality_cfa < 4096;
+        }
+        __deregister_frame(section);
+        for (int index = 0; index < guest_jit_count; ++index) {
+            unsigned char* entry = code + index * guest_jit_stride;
+            struct guest_dwarf_bases bases = {0, 0, 0};
 
-    printf("guest unwind personality=%s cfa=%s\n", guest_personality_calls ? "called" : "skipped", sane ? "ok" : "bad");
+            deregistered &= _Unwind_Find_FDE(entry + 4, &bases) == 0;
+            deregistered &= _Unwind_FindEnclosingFunction(entry + 4) == 0;
+        }
+    }
+
+    int released = munmap(code, guest_jit_mapping_size) == 0;
+
+    printf("guest unwind personality=%s cfa=%s\n", called ? "called" : "skipped", sane ? "ok" : "bad");
+    printf("guest unwind frames=%d registration=%s deregistration=%s\n", guest_jit_count, registered ? "ok" : "bad", deregistered ? "ok" : "bad");
+    return called && sane && registered && deregistered && released;
 }
 
 __attribute__((constructor)) static void guest_constructor(void) {
@@ -266,7 +315,9 @@ int main(int argc, char** argv, char** envp) {
     }
     printf("guest tls after thread=%lx\n", guest_tls_data);
 
-    guest_unwind_check();
+    if (!guest_unwind_check()) {
+        return 1;
+    }
 
     return 42;
 }
