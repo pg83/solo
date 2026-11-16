@@ -1297,8 +1297,12 @@ LinkMap* Loader::callerImage(unsigned index) {
 
 int Loader::iterateProgramHeaders(ElfProgramHeaderCallback& callback) {
     std::vector<LinkMap*> images;
+    uint64_t adds;
     {
         std::lock_guard lock(mutex_);
+        // A callback may load more images. Do not count them until a walk
+        // includes them, or consumers can miss that change on the next walk.
+        adds = loads_;
         images.reserve(images_.size());
         for (const auto& image : images_) {
             if (image->state == LinkMap::State::Ready) {
@@ -1321,6 +1325,7 @@ int Loader::iterateProgramHeaders(ElfProgramHeaderCallback& callback) {
             static_cast<Elf64_Half>(image->programHeaders.size()),
             image->tlsModule,
             tlsData,
+            adds,
         };
         if (const int result = callback.call(headers); result) {
             return result;
@@ -1713,12 +1718,17 @@ void LinkMap::rebaseDynamic() {
     }
     for (auto* entry = dynamic; entry->d_tag != DT_NULL; ++entry) {
         switch (entry->d_tag) {
+            case DT_RELA:
+            case DT_REL:
+                // RELR-only objects can retain these tags with no table.
+                if (entry->d_un.d_ptr) {
+                    entry->d_un.d_ptr += base;
+                }
+                break;
             case DT_HASH:
             case DT_PLTGOT:
             case DT_STRTAB:
             case DT_SYMTAB:
-            case DT_RELA:
-            case DT_REL:
             case DT_JMPREL:
             case DT_VERSYM:
             case DT_GNU_HASH:

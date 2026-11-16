@@ -40,6 +40,8 @@ namespace dyn {
         Elf64_Half count;
         size_t tlsModule;
         void* tlsData;
+        // Captured under the same lock as the image list for this walk.
+        uint64_t adds = 0;
     };
 
     struct ElfProgramHeaderCallback {

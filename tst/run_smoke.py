@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -455,6 +456,7 @@ def main():
                 raise SystemExit(f"traced run failed: {trace.returncode}")
             run_solo_checks(root, sysroot_lib, environment)
             run_environment_checks(root, sysroot_lib, sysroot_includes, environment)
+            run_phdr_checks(root, sysroot_lib, sysroot_includes, environment)
             run_tls_concurrency_checks(root, sysroot_lib, environment)
             run_bundle_checks(root, sysroot_lib, environment)
 
@@ -532,6 +534,89 @@ def run_environment_checks(root, sysroot_lib, sysroot_includes, environment):
                 if run.returncode or "guest environment readers=ok mutators=ok exec=ok" not in run.stdout:
                     print(run.stdout, file=sys.stderr)
                     raise SystemExit(f"environment test failed: {command} (exit {run.returncode})")
+
+
+def empty_relocation_table(path, rela):
+    """Keep a valid RELR-only DSO but explicitly describe an empty REL[A].
+
+    GNU ld already emits empty RELA tags; lld omits them. For the latter,
+    reuse three optional tags reserved by the fixture's link command.
+    """
+    data = bytearray(path.read_bytes())
+    if data[:6] != b"\x7fELF\x02\x01":
+        raise SystemExit("program-header fixture requires little-endian ELF64")
+    phoff = struct.unpack_from("<Q", data, 32)[0]
+    phsize, phcount = struct.unpack_from("<HH", data, 54)
+    table, size, entry_size = (7, 8, 9) if rela else (17, 18, 19)
+    expected = {table: 0, size: 0, entry_size: 24 if rela else 16}
+    for index in range(phcount):
+        header = phoff + index * phsize
+        if struct.unpack_from("<I", data, header)[0] != 2:  # PT_DYNAMIC
+            continue
+        offset = struct.unpack_from("<Q", data, header + 8)[0]
+        length = struct.unpack_from("<Q", data, header + 32)[0]
+        entries = {}
+        for position in range(offset, offset + length, 16):
+            tag, value = struct.unpack_from("<qQ", data, position)
+            if tag == 0:
+                break
+            entries[tag] = (position, value)
+        if table in entries:
+            if any(entries.get(tag, (0, None))[1] != value for tag, value in expected.items()):
+                raise SystemExit("fixture unexpectedly contains ordinary relocations")
+            return
+        # SONAME, RUNPATH, FLAGS are optional for these independently opened
+        # fixtures. No loadable segments or relocation records are changed.
+        for reserved, (tag, value) in zip((14, 29, 30), expected.items()):
+            if reserved not in entries:
+                raise SystemExit("linker omitted a reserved dynamic tag")
+            struct.pack_into("<qQ", data, entries[reserved][0], tag, value)
+        path.write_bytes(data)
+        return
+    raise SystemExit("fixture has no PT_DYNAMIC")
+
+
+def run_phdr_checks(root, sysroot_lib, sysroot_includes, environment):
+    compiler = shlex.split(os.environ["DLFCN_CC"])
+    source = os.environ["DLFCN_GLIBC_PHDR_TEST_SOURCE"]
+    solo = os.path.abspath(os.environ["DLFCN_SOLO"])
+    ld_so = sorted((root / sysroot_lib).glob("ld-linux-*.so*"))[0]
+    libraries = []
+    for name, rela in (("phdr-rela.so", True), ("phdr-rel.so", False)):
+        library = root / name
+        subprocess.run(
+            [
+                *compiler, "-O2", "-fPIC", "-shared", "-nostdlib", "-fno-stack-protector",
+                "-DPHDR_LIBRARY", "-Wl,-z,pack-relative-relocs", "-Wl,-z,now", "-Wl,--no-as-needed", "-Wl,--enable-new-dtags",
+                f"-Wl,-soname,{name}", f"-Wl,-rpath,{root}", source,
+                str(root / sysroot_lib / "libc.so.6"), "-o", str(library),
+            ],
+            check=True,
+        )
+        empty_relocation_table(library, rela)
+        libraries.append(str(library))
+    guest = root / "phdr-guest"
+    subprocess.run(
+        [
+            *compiler, "-O2", "-fPIE", "-pie", "-fno-stack-protector", "-nostdlib", "-nostdinc",
+            *[flag for include in sysroot_includes for flag in ("-isystem", str(root / include))],
+            "-isystem", str(builtin_include(compiler)),
+            f"-Wl,--dynamic-linker={solo}", "-Wl,--no-as-needed",
+            str(root / sysroot_lib / "Scrt1.o"), str(root / sysroot_lib / "crti.o"), source,
+            str(root / sysroot_lib / "libc.so.6"), str(ld_so), str(root / sysroot_lib / "crtn.o"),
+            "-o", str(guest),
+        ],
+        check=True,
+    )
+    for command in (
+        [str(ld_so), "--library-path", str(root / sysroot_lib), str(guest), "native"],
+        [solo, "run", str(guest), "solo"],
+        [str(guest), "solo"],
+    ):
+        run = subprocess.run([*command, *libraries], env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        if run.returncode or "program headers: concurrent first walk, load counters, empty relocations: ok" not in run.stdout:
+            print(run.stdout, file=sys.stderr)
+            raise SystemExit(f"program-header checks failed: {command} (exit {run.returncode})")
 
 
 def run_stdout_case(command, environment, initial_terminal, final_terminal, redirect, timing, mode, writer):

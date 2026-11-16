@@ -1129,7 +1129,7 @@ downloads = list(downloadTargets.values())
 
 arch_smoke = command(
     name="arch_smoke",
-    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/glibc_exception_test.cpp", "$(S)/tst/glibc_lazy_test.c", "$(S)/tst/glibc_shim_test.c", "$(S)/tst/glibc_ie_test.c", "$(S)/tst/glibc_interpose_test.c", "$(S)/tst/glibc_overridable_test.c", "$(S)/tst/glibc_caller_test.c", "$(S)/tst/glibc_versioned_test.c", "$(S)/tst/glibc_version_consumer_test.c", "$(S)/tst/glibc_ie_gd_test.c", "$(S)/tst/glibc_ie_ref_test.c", "$(S)/tst/glibc_big_tls_test.c", "$(S)/tst/glibc_runpath_host_test.c", "$(S)/tst/glibc_runpath_sibling_test.c", "$(S)/tst/glibc_guest_test.c", "$(S)/tst/glibc_stdout_test.c", "$(S)/tst/glibc_legacy_start.c", "$(S)/tst/glibc_environ_test.c", "$(S)/tst/glibc_tls_concurrency.c", "$(S)/tst/run_smoke.py", *archives],
+    inputs=["$(S)/tst/glibc_test.c", "$(S)/tst/glibc_exception_test.cpp", "$(S)/tst/glibc_lazy_test.c", "$(S)/tst/glibc_shim_test.c", "$(S)/tst/glibc_ie_test.c", "$(S)/tst/glibc_interpose_test.c", "$(S)/tst/glibc_overridable_test.c", "$(S)/tst/glibc_caller_test.c", "$(S)/tst/glibc_versioned_test.c", "$(S)/tst/glibc_version_consumer_test.c", "$(S)/tst/glibc_ie_gd_test.c", "$(S)/tst/glibc_ie_ref_test.c", "$(S)/tst/glibc_big_tls_test.c", "$(S)/tst/glibc_runpath_host_test.c", "$(S)/tst/glibc_runpath_sibling_test.c", "$(S)/tst/glibc_guest_test.c", "$(S)/tst/glibc_stdout_test.c", "$(S)/tst/glibc_phdr_test.c", "$(S)/tst/glibc_legacy_start.c", "$(S)/tst/glibc_environ_test.c", "$(S)/tst/glibc_tls_concurrency.c", "$(S)/tst/run_smoke.py", *archives],
     outputs=["$(B)/tst/arch-smoke.log"],
     deps=[smoke, tls_concurrency, solo_cli, *downloads],
     cmd=[
@@ -1158,6 +1158,7 @@ arch_smoke = command(
         "DLFCN_GLIBC_TEST_SOURCE": "$(S)/tst/glibc_test.c",
         "DLFCN_GLIBC_GUEST_TEST_SOURCE": "$(S)/tst/glibc_guest_test.c",
         "DLFCN_GLIBC_STDOUT_TEST_SOURCE": "$(S)/tst/glibc_stdout_test.c",
+        "DLFCN_GLIBC_PHDR_TEST_SOURCE": "$(S)/tst/glibc_phdr_test.c",
         "DLFCN_GLIBC_LEGACY_START_SOURCE": "$(S)/tst/glibc_legacy_start.c",
         "DLFCN_GLIBC_ENVIRON_TEST_SOURCE": "$(S)/tst/glibc_environ_test.c",
         "DLFCN_GLIBC_TLS_CONCURRENCY_SOURCE": "$(S)/tst/glibc_tls_concurrency.c",
