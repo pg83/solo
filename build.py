@@ -44,10 +44,15 @@ if build.target != build.host:
 
 # run_smoke.py links its glibc test DSOs with these commands directly, so they
 # need the same linker selection as the graph's own link steps.
-glibc_test_cc = " ".join([os.environ.get("GLIBC_TEST_CC", cc), *linker_flags])
+glibc_test_flags = [*linker_flags]
+if machine == "aarch64":
+    # The fixtures use -nostdlib: compiler-generated outline atomic helpers
+    # would have no libgcc/compiler-rt implementation to link against.
+    glibc_test_flags.append("-mno-outline-atomics")
+glibc_test_cc = " ".join([os.environ.get("GLIBC_TEST_CC", cc), *glibc_test_flags])
 glibc_test_cxx = " ".join([
     os.environ.get("GLIBC_TEST_CXX", os.environ.get("CXX", "c++")),
-    *linker_flags,
+    *glibc_test_flags,
 ])
 
 
@@ -1346,11 +1351,9 @@ rootfs_smoke = command(
 # bringing up journald, sysusers, the serial getty, and the battery unit.
 # Not part of the test group — it needs a qemu and a kernel image, which
 # the CI job that invokes it provides through DLFCN_QEMU and DLFCN_KERNEL.
-# The pool keeps only the version a release currently ships, so a security
-# update deletes the file these pins name and the fetch starts answering 404.
-# When that happens the fix is to bump the pin to the version the pool holds
-# now, within the same Ubuntu series as the rootfs above.
-qemu_ubuntu_pool = "https://archive.ubuntu.com/ubuntu/pool/main"
+# Keep these pins in a dated snapshot: security updates remove superseded
+# versions from the ordinary pool, even though our fixture stays unchanged.
+qemu_ubuntu_pool = "https://snapshot.ubuntu.com/ubuntu/20261021T000000Z/pool/main"
 qemu_systemd_packages = {
     "x86_64": [
         ("systemd_deb", f"{qemu_ubuntu_pool}/s/systemd/systemd_255.4-1ubuntu8.17_amd64.deb", "systemd_255.4-1ubuntu8.17_amd64.deb", "250345b73e42a97ee71cae7c1e470897dfad3c639eb0a7aafe4f9a3a29871cb2"),
