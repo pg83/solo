@@ -815,7 +815,9 @@ static void* pipeRounds(void* argument) {
             __atomic_add_fetch(failed, 1, __ATOMIC_RELAXED);
             continue;
         }
-        pclose(pipe);
+        if (pclose(pipe) != 0) {
+            __atomic_add_fetch(failed, 1, __ATOMIC_RELAXED);
+        }
     }
 
     return NULL;
@@ -828,12 +830,24 @@ static void* pipeRounds(void* argument) {
 static void concurrentPipes(void) {
     pthread_t threads[8];
     int failed = 0;
+    int started = 0;
 
-    for (int index = 0; index < 8; ++index) {
-        CHECK(pthread_create(&threads[index], NULL, pipeRounds, &failed) == 0);
+    for (; started < 8; ++started) {
+        int error = pthread_create(&threads[started], NULL, pipeRounds, &failed);
+
+        CHECK(error == 0);
+        if (error) {
+            break;
+        }
     }
-    for (int index = 0; index < 8; ++index) {
-        pthread_join(threads[index], NULL);
+    for (int index = 0; index < started; ++index) {
+        int error = pthread_join(threads[index], NULL);
+
+        CHECK(error == 0);
+        if (error) {
+            // A worker may still access failed; its storage must stay alive.
+            abort();
+        }
     }
     CHECK(failed == 0);
 }
