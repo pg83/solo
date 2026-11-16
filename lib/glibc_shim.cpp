@@ -6200,7 +6200,9 @@ void* GlibcAdapter::resolveSymbol(std::string_view name, std::string_view versio
     if (hostAddress) {
         return hostAddress;
     }
-    stub_dlerror();
+    // The fallback probe is invisible to dlerror(), including the lifetime
+    // of the message already returned to the caller.
+    ThreadTls::current()->clearDlError();
     if (auto* address = findFallback(name, version); address) {
         return address;
     }

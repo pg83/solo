@@ -303,7 +303,8 @@ int main() {
     auto lazyMix = reinterpret_cast<LazyMix>(requiredSymbol(lazy, "glibc_lazy_mix"));
     auto lazyPid = reinterpret_cast<GlibcTest>(requiredSymbol(lazy, "glibc_lazy_pid"));
     auto lazyDlerrorKept = reinterpret_cast<GlibcTest>(requiredSymbol(lazy, "glibc_lazy_dlerror_kept"));
-    if (!lazyValue || !lazyMix || !lazyPid || !lazyDlerrorKept || !requiredSymbol(lazy, "glibc_lazy_missing_caller")) {
+    auto lazyDlerrorReturned = reinterpret_cast<GlibcTest>(requiredSymbol(lazy, "glibc_lazy_dlerror_returned"));
+    if (!lazyValue || !lazyMix || !lazyPid || !lazyDlerrorKept || !lazyDlerrorReturned || !requiredSymbol(lazy, "glibc_lazy_missing_caller")) {
         return 1;
     }
     if (lazyValue(12) != 42) {
@@ -320,6 +321,10 @@ int main() {
     }
     if (auto result = lazyDlerrorKept(); result != 0) {
         fprintf(stderr, "lazy binding lost the pending dlerror: %d\n", result);
+        return 1;
+    }
+    if (auto result = lazyDlerrorReturned(); result != 0) {
+        fprintf(stderr, "lazy binding corrupted a returned dlerror: %d\n", result);
         return 1;
     }
 

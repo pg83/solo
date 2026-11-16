@@ -1168,7 +1168,9 @@ Definition Loader::searchScope(LinkMap& image, const std::string_view& name, con
             if (auto* address = stub_dlsym(dependency->handle, symbol.c_str()); address) {
                 return {reinterpret_cast<uintptr_t>(address), nullptr, nullptr};
             }
-            stub_dlerror();
+            // A failed internal probe must not replace the string returned
+            // by the caller's last dlerror().
+            ThreadTls::current()->clearDlError();
             continue;
         }
         if (auto definition = dependency->image->findSymbol(name, version); definition) {
