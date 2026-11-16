@@ -19,8 +19,8 @@
  * every thread created afterwards, reading the mapped template after
  * relocations by construction. libc.tls_size grows by one pointer per
  * module, keeping the dtv slots __copy_tls writes for the new entries inside
- * every newborn thread's allocation; threads that already exist are never
- * revisited and never see the new dtv entries.
+ * every newborn thread's allocation. Existing threads are seeded in place;
+ * their dtv stays unchanged because guest TLS lookup uses the pad offset.
  */
 
 #include "musl_tls.h"
@@ -42,6 +42,7 @@
 
 #include "../ext/musl/src/internal/pthread_impl.h"
 #include "../ext/musl/src/internal/stdio_impl.h"
+#include "../ext/musl/src/include/signal.h"
 
 /* The donated span and the ceiling on a block's alignment; the pad's own
  * alignment is what makes every thread pointer a multiple of it. liblsan's
@@ -190,6 +191,10 @@ void soloTlsRegister(const void* image, size_t length, size_t size, intptr_t off
 	 * musl's own dlopen: pthread_create sizes and copies a new thread's TLS
 	 * before it joins the thread list, so a thread racing this call would
 	 * otherwise miss the template and the seeding below alike. */
+	/* The thread-list lock requires application signals to be blocked.
+	 * Keep them blocked through both locks, then restore the caller's mask. */
+	sigset_t set;
+	__block_app_sigs(&set);
 	__inhibit_ptc();
 
 	struct tls_module* module = &soloModules[soloModuleCount++];
@@ -232,6 +237,7 @@ void soloTlsRegister(const void* image, size_t length, size_t size, intptr_t off
 	}
 	__tl_unlock();
 	__release_ptc();
+	__restore_sigs(&set);
 }
 
 /* The linker's own symbol on the binary's mapped ELF header; weak, so a

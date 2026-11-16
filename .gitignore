@@ -16,4 +16,5 @@
 /smoke
 /solo
 /test
+/tls_concurrency
 /vulkan_test

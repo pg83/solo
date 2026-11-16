@@ -453,6 +453,7 @@ def main():
                 raise SystemExit(f"traced run failed: {trace.returncode}")
             run_solo_checks(root, sysroot_lib, environment)
             run_environment_checks(root, sysroot_lib, sysroot_includes, environment)
+            run_tls_concurrency_checks(root, sysroot_lib, environment)
             run_bundle_checks(root, sysroot_lib, environment)
 
     print(result.stdout, end="")
@@ -469,6 +470,32 @@ def sysroot_libgcc_s(root):
     if not found:
         raise SystemExit("no libgcc_s.so.1 in the sysroot")
     return found[0]
+
+
+def run_tls_concurrency_checks(root, sysroot_lib, environment):
+    modules = []
+    for model in ("initial-exec", "global-dynamic"):
+        module = root / f"libdlfcn-test-tls-{model}.so"
+        subprocess.run(
+            [
+                *shlex.split(os.environ["DLFCN_CC"]),
+                "-O2", "-fPIC", "-fno-stack-protector", "-shared", "-nostdlib",
+                f"-ftls-model={model}", "-Wl,--no-as-needed",
+                os.environ["DLFCN_GLIBC_TLS_CONCURRENCY_SOURCE"],
+                str(root / sysroot_lib / "libc.so.6"),
+                "-o", str(module),
+            ],
+            check=True,
+        )
+        modules.append(str(module))
+    run = subprocess.run(
+        [os.environ["DLFCN_TLS_CONCURRENCY"], *modules],
+        env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    if run.returncode or "TLS concurrency: IE/GD, existing/creating/future threads, signals: ok" not in run.stdout:
+        print(run.stdout, file=sys.stderr)
+        raise SystemExit(f"TLS concurrency test failed: {run.returncode}")
 
 
 def run_environment_checks(root, sysroot_lib, sysroot_includes, environment):
