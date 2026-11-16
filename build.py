@@ -271,6 +271,12 @@ target_flags = [
     "-fdata-sections",
     "-fno-stack-protector",
     "-fno-omit-frame-pointer",
+    # Distribution compilers may default to -fcf-protection (Ubuntu's GCC
+    # does), which defines __CET__ and makes libunwind's assembly include
+    # the compiler's <cet.h> — unreachable under -nostdinc. musl carries no
+    # CET markers, so the static world cannot run with IBT or shadow stacks
+    # anyway.
+    "-fcf-protection=none",
 ]
 if machine == "aarch64":
     # The static world links no libgcc, so the LSE outline-atomic helpers
