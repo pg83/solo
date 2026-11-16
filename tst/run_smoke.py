@@ -519,6 +519,7 @@ def run_solo_checks(root, sysroot_lib, environment):
             "guest argv beta",
             "guest stdout env=smoke-value",
             "guest environ present",
+            "guest environ repointed=repointed",
             "guest tls=51106011 bss=0",
             "guest thread tls=51106011 bss=0",
             "guest tls after thread=600d",
@@ -636,6 +637,7 @@ def run_bundle_checks(root, sysroot_lib, environment):
         "guest argv beta",
         "guest stdout env=smoke-value",
         "guest environ present",
+        "guest environ repointed=repointed",
         # The executable's own local-exec TLS, served from the pad solo
         # donates as the process's main program — the reason a bundle runs
         # this way instead of as a PT_INTERP.
