@@ -176,7 +176,8 @@ CMake, Meson, configure, and Make build systems are not invoked.
 <details>
 <summary>Vendored versions</summary>
 
-- musl 1.2.5 (`0784374d561435f7c787a555aeab8ede699ed298`)
+- musl 1.2.5 (`0784374d561435f7c787a555aeab8ede699ed298`), with upstream
+  `f21a965` (the popen/pclose descriptor race) backported
 - LLVM runtimes 15.0.7: libc++, libc++abi, libunwind, and compiler-rt builtins
   (`8dfdcc7b7bf66834a761bd8de445840ef68e4d1a`)
 - Vulkan Headers 1.4.357 (`e3b1eec08173d6b825cd3ac88c885a63b621504a`)
