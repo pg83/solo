@@ -183,6 +183,8 @@ CMake, Meson, configure, and Make build systems are not invoked.
 - Vulkan Loader 1.4.357 (`5f157b62e333c63260d05d81bf66faa216ab0fb8`)
 - zlib 1.3.2 (`da607da739fa6047df13e66a2af6b8bec7c2a498`)
 - libpng 1.6.50 (`2b978915d82377df13fcbb1fb56660195ded868a`)
+- mimalloc 3.5.3 (`d4881d338125e1cb7c47ba4cfb398d6f7c0c8d45`), linked into the solo
+  stub only with `-Dmimalloc`
 
 License files are retained beside the corresponding sources. `shader.inc` is
 the checked-in SPIR-V form of `shader.comp`, so no shader compiler is required.

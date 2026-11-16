@@ -18,6 +18,10 @@ build.cxxflags += [
 ]
 
 build.flags.allow({
+    "mimalloc": {
+        "descr": "serve malloc in the solo stub from the vendored mimalloc "
+                 "instead of musl's mallocng",
+    },
     "use_corpus": {
         "descr": "directory with pre-fetched package archives; downloads copy "
                  "from it and fall back to the network on a miss",
@@ -797,6 +801,27 @@ solo_crti = muslCrt("solo", "crti", f"{musl_root}/crt/{machine}/crti.s", "$(B)/b
 solo_crtn = muslCrt("solo", "crtn", f"{musl_root}/crt/{machine}/crtn.s", "$(B)/bin/solo", ["-fPIE"])
 solo_crtend = muslCrt("solo", "crtend", "$(S)/lib/crtend.s", "$(B)/bin/solo", ["-fPIE"])
 
+# mimalloc replaces musl's malloc in the whole process when asked for: musl's
+# own callers (strdup, realpath, getaddrinfo, ...), the glibc bridge and every
+# guest allocate from one heap, so memory crosses the bridge either way.
+# mallocng serializes on one lock, which multithreaded guests feel first.
+solo_mimalloc = library(
+    name="solo_mimalloc",
+    srcs=[{"src": f"{ext_root}/mimalloc.cpp", "inputs": [libcxx_config_path]}],
+    deps=runtime_generated,
+    includes=[f"{ext_root}/mimalloc/include", ext_root, *vendored_includes],
+    cflags=[*c_runtime_flags, "-fPIE"],
+    cxxflags=[
+        *cxx_runtime_flags,
+        "-w",
+        "-DNDEBUG",
+        "-DMI_MALLOC_OVERRIDE",
+        # Transparent huge pages stay the host's decision.
+        "-DMI_DEFAULT_ALLOW_THP=0",
+    ],
+    output="$(B)/bin/solo/lib/libsolo_mimalloc.a",
+) if build.flags.mimalloc else None
+
 solo_app = library(
     name="solo_app",
     srcs=[{"src": "$(S)/bin/solo/main.cpp", "inputs": [libcxx_config_path]}],
@@ -823,9 +848,10 @@ solo_cli = command(
         solo_crtn.output,
         solo_crtend.output,
         *[archive.output for archive in solo_archives],
+        *([solo_mimalloc.output] if solo_mimalloc else []),
     ],
     outputs=["$(B)/bin/solo/solo"],
-    deps=[solo_rcrt1, solo_crti, solo_crtn, solo_crtend, *solo_archives],
+    deps=[solo_rcrt1, solo_crti, solo_crtn, solo_crtend, *solo_archives, *([solo_mimalloc] if solo_mimalloc else [])],
     cmd=[
         cc,
         *linker_flags,
@@ -845,6 +871,7 @@ solo_cli = command(
         "-Wl,--start-group",
         "-Wl,--whole-archive",
         solo_app.output,
+        *([solo_mimalloc.output] if solo_mimalloc else []),
         "-Wl,--no-whole-archive",
         *[archive.output for archive in solo_archives[1:]],
         "-Wl,--end-group",

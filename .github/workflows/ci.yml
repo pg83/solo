@@ -92,6 +92,12 @@ jobs:
           CXX: g++
         run: ./build -j12 -Duse_corpus="$GITHUB_WORKSPACE/corpus" test
 
+      - name: Test with mimalloc
+        env:
+          CC: gcc
+          CXX: g++
+        run: ./build -j12 -Duse_corpus="$GITHUB_WORKSPACE/corpus" -Dmimalloc test
+
       - name: Corpus
         env:
           CC: gcc
