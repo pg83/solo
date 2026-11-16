@@ -815,6 +815,13 @@ static void* pipeRounds(void* argument) {
             __atomic_add_fetch(failed, 1, __ATOMIC_RELAXED);
             continue;
         }
+        // LD_TRACE_LOADED_OBJECTS makes a glibc shell's loader print its
+        // dependencies. Drain them before closing so it cannot get SIGPIPE.
+        while (fgetc(pipe) != EOF) {
+        }
+        if (ferror(pipe)) {
+            __atomic_add_fetch(failed, 1, __ATOMIC_RELAXED);
+        }
         if (pclose(pipe) != 0) {
             __atomic_add_fetch(failed, 1, __ATOMIC_RELAXED);
         }

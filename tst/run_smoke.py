@@ -445,15 +445,17 @@ def main():
                 stderr=subprocess.STDOUT,
                 env={**environment, "LD_TRACE_LOADED_OBJECTS": "1"},
             )
+            if trace.returncode:
+                print(trace.stdout, file=sys.stderr)
+                raise SystemExit(f"traced run failed: {trace.returncode}")
             for needle in (
                 "libdlfcn-test-glibc.so => /",
                 "libc.so.6 => the glibc ABI bridge",
                 "=> a static provider linked into the executable",
             ):
                 if needle not in trace.stdout:
+                    print(trace.stdout, file=sys.stderr)
                     raise SystemExit(f"LD_TRACE_LOADED_OBJECTS misses: {needle}")
-            if trace.returncode:
-                raise SystemExit(f"traced run failed: {trace.returncode}")
             run_solo_checks(root, sysroot_lib, environment)
             run_environment_checks(root, sysroot_lib, sysroot_includes, environment)
             run_phdr_checks(root, sysroot_lib, sysroot_includes, environment)
