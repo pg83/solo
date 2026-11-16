@@ -335,9 +335,17 @@ static int guest_unwind_check(void) {
     printf("guest unwind frames=%d registration=%s deregistration=%s\n", guest_jit_count, registered ? "ok" : "bad", deregistered ? "ok" : "bad");
     return called && sane && registered && deregistered && released;
 }
+static int guest_constructed;
 
 __attribute__((constructor)) static void guest_constructor(void) {
+    guest_constructed = 1;
     printf("guest init\n");
+}
+
+/* Finalizers run at exit only for images whose initializers ran: ldd's
+ * trace mode maps the guest without initializing it. */
+__attribute__((destructor)) static void guest_destructor(void) {
+    printf(guest_constructed ? "guest fini\n" : "guest fini without init\n");
 }
 
 static void guest_atexit(void* argument) {
