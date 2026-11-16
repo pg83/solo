@@ -187,6 +187,12 @@ jobs:
           sudo sysctl -qw kernel.apparmor_restrict_unprivileged_userns=0 || true
           ./build -j12 -Duse_corpus="$GITHUB_WORKSPACE/corpus" test
 
+      - name: Test with mimalloc
+        env:
+          CC: clang
+          CXX: clang++
+        run: ./build -j12 -Duse_corpus="$GITHUB_WORKSPACE/corpus" -Dmimalloc test
+
       - name: Secure
         env:
           CC: clang

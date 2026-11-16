@@ -816,6 +816,9 @@ solo_mimalloc = library(
         "-w",
         "-DNDEBUG",
         "-DMI_MALLOC_OVERRIDE",
+        # Keep PT_TLS reserved for guest ABI offsets by storing allocator
+        # state in pthread keys on both architectures.
+        "-DMI_TLS_MODEL_PTHREADS=1",
         # Transparent huge pages stay the host's decision.
         "-DMI_DEFAULT_ALLOW_THP=0",
     ],
