@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import bisect
+import contextlib
+import errno
 import os
 import re
 import shlex
@@ -532,11 +534,92 @@ def run_environment_checks(root, sysroot_lib, sysroot_includes, environment):
                     raise SystemExit(f"environment test failed: {command} (exit {run.returncode})")
 
 
+def run_stdout_case(command, environment, initial_terminal, final_terminal, redirect, timing, mode, writer):
+    with contextlib.ExitStack() as descriptors:
+        def sink(terminal):
+            pair = os.openpty() if terminal else os.pipe()
+            for fd in pair:
+                descriptors.callback(os.close, fd)
+            return pair
+
+        def read_output(fd):
+            os.set_blocking(fd, False)
+            output = b""
+            while True:
+                try:
+                    block = os.read(fd, 4096)
+                except OSError as error:
+                    if error.errno in (errno.EAGAIN, errno.EIO):
+                        break
+                    raise
+                if not block:
+                    break
+                output += block
+            return output.replace(b"\r\n", b"\n")
+
+        final_read, final_write = sink(final_terminal)
+        initial_read, initial_write = sink(initial_terminal) if redirect else (final_read, final_write)
+        run = subprocess.run(
+            [*command, str(final_write) if redirect else "-1", timing, mode, writer],
+            stdout=initial_write, stderr=final_write, pass_fds=(final_write,),
+            env=environment, timeout=10,
+        )
+        output = read_output(final_read)
+        initial_output = read_output(initial_read) if redirect else b""
+        return run.returncode, output, initial_output
+
+
+def run_stdout_checks(root, sysroot_lib, environment):
+    solo = os.path.abspath(os.environ["DLFCN_SOLO"])
+    ld_so = sorted((root / sysroot_lib).glob("ld-linux-*.so*"))[0]
+    guest = root / "stdout-guest"
+    subprocess.run(
+        [
+            *shlex.split(os.environ["DLFCN_CC"]),
+            "-O2", "-fno-builtin", "-fPIE", "-pie", "-fno-stack-protector", "-nostdlib",
+            f"-Wl,--dynamic-linker={solo}", "-Wl,--no-as-needed",
+            str(root / sysroot_lib / "Scrt1.o"), str(root / sysroot_lib / "crti.o"),
+            os.environ["DLFCN_GLIBC_STDOUT_TEST_SOURCE"],
+            str(root / sysroot_lib / "libc.so.6"), str(ld_so),
+            str(root / sysroot_lib / "crtn.o"), "-o", str(guest),
+        ],
+        check=True,
+    )
+    # Both sides of the first write matter: redirection before it selects a
+    # new default, while redirection after a buffered byte preserves the mode.
+    cases = (
+        ("pipe", False, False, False, "before", "d", b"err\nout\n"),
+        ("terminal", True, True, False, "before", "d", b"out\nerr\n"),
+        ("pipe to terminal", False, True, True, "before", "d", b"out\nerr\n"),
+        ("terminal to pipe", True, False, True, "before", "d", b"err\nout\n"),
+        ("reopen pipe as terminal", False, True, True, "reopen", "d", b"out\nerr\n"),
+        ("reopen terminal as pipe", True, False, True, "reopen", "d", b"err\nout\n"),
+        ("pipe to terminal after write", False, True, True, "after", "d", b"err\nout\n"),
+        ("terminal to pipe after write", True, False, True, "after", "d", b"out\nerr\n"),
+        ("unbuffered pipe", False, False, False, "before", "u", b"out\nerr\n"),
+        ("line buffered pipe", False, False, False, "before", "l", b"out\nerr\n"),
+        ("fully buffered terminal", True, True, False, "before", "f", b"err\nout\n"),
+        ("explicit full buffering before redirect", False, True, True, "before", "f", b"err\nout\n"),
+        ("explicit line buffering before redirect", True, False, True, "before", "l", b"out\nerr\n"),
+    )
+    for name, *settings, expected in cases:
+        for writer in ("p", "w", "c"):
+            for command in (
+                [str(ld_so), "--library-path", str(root / sysroot_lib), str(guest)],
+                [solo, "run", str(guest)],
+                [str(guest)],
+            ):
+                actual = run_stdout_case(command, environment, *settings, writer)
+                if actual != (0, expected, b""):
+                    raise SystemExit(f"stdout buffering: {name}, writer={writer}, command={command}: {actual!r}, expected {expected!r}")
+
+
 def run_solo_checks(root, sysroot_lib, environment):
     """A whole glibc executable through the solo command: linked against the
     sysroot's own crt objects and libc.so.6, so its _start is glibc's crt and
     startup runs through the bridge's __libc_start_main."""
     solo = os.environ["DLFCN_SOLO"]
+    run_stdout_checks(root, sysroot_lib, environment)
     # Linking an executable against a bare libc.so.6 leaves ld.so's
     # GLIBC_PRIVATE half unresolved; glibc hosts quietly find their own
     # ld-linux for it, musl hosts have none, so the sysroot's is explicit.

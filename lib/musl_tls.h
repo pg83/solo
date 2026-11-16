@@ -40,6 +40,10 @@ intptr_t soloExecutableTls(const void* image, size_t size, size_t align);
 // in every other thread already running, as glibc does on dlopen.
 void soloTlsRegister(const void* image, size_t length, size_t size, intptr_t offset);
 
+// Select stdout's automatic buffering at its first write, after any guest
+// redirection. Explicit setvbuf settings and an already used stream survive.
+void soloPrepareStdout(void);
+
 // Swaps the stream's polymorphic writer for one that issues a plain
 // write(2) per segment. musl's __stdio_write hands writev a leading
 // segment of buffered bytes that an unbuffered stream never has; procfs

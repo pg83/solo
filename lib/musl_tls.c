@@ -27,6 +27,7 @@
 
 #include <elf.h>
 #include <string.h>
+#include <sys/ioctl.h>
 
 /* musl's internal headers rely on annotations its own tree defines in
  * src/include/features.h; this file compiles outside that tree. The headers
@@ -339,6 +340,53 @@ void __init_tls(size_t *aux)
 
 	if (__init_tp(__copy_tls(mem)) < 0)
 		a_crash();
+}
+
+/* Accessed only while operating on stdout, under its normal FILE lock. A
+ * separate flag survives freopen replacing the writer before the first I/O. */
+static int soloStdoutPending;
+
+void soloPrepareStdout(void) {
+    FILE* file = stdout;
+
+    FLOCK(file);
+    if (file->write == __stdout_write && !file->wend) {
+        soloStdoutPending = 1;
+    }
+    FUNLOCK(file);
+}
+
+/* Override musl's static-archive entry point, retaining its read/write
+ * transition. The prepared stdout settles buffering here, under the caller's
+ * FILE lock, before its first byte rather than at musl's first flush.
+ * F_SVB leaves the guest's explicit buffering untouched. Retiring musl's
+ * first-flush writer keeps later dup2 calls from revisiting the decision. */
+int __towrite(FILE* file) {
+    file->mode |= file->mode - 1;
+    if (file->flags & F_NOWR) {
+        file->flags |= F_ERR;
+        return EOF;
+    }
+    if (file == stdout && soloStdoutPending) {
+        struct winsize window;
+
+        soloStdoutPending = 0;
+        if (file->write == __stdout_write) {
+            file->write = __stdio_write;
+        }
+        if (!(file->flags & F_SVB)) {
+            file->lbf = __syscall(SYS_ioctl, file->fd, TIOCGWINSZ, &window) ? -1 : '\n';
+        }
+    }
+    file->rpos = file->rend = 0;
+    file->wpos = file->wbase = file->buf;
+    file->wend = file->buf + file->buf_size;
+    return 0;
+}
+
+/* Preserve musl's archive dependency that enables buffered output at exit. */
+hidden void __towrite_needs_stdio_exit(void) {
+    __stdio_exit_needed();
 }
 
 /* __stdio_write's algorithm with plain writes: the buffered bytes first,
