@@ -613,6 +613,7 @@ def run_solo_checks(root, sysroot_lib, environment):
                 "guest argv beta",
                 "guest stdout env=smoke-value",
                 "guest environ present",
+                "guest getopt q optind=2",
                 "guest environ repointed=repointed",
                 "guest tls=51106011 bss=0",
                 "guest thread tls=51106011 bss=0",
