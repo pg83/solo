@@ -3664,10 +3664,10 @@ namespace {
     // An unmarked UTF-16 or UTF-32 source is little-endian; a BOM picks the
     // order and is consumed.
     static void sh_iconv_detect(GlibcIconv* descriptor, char** input, size_t* inputLeft) {
-        descriptor->detected = true;
         if (*inputLeft < descriptor->detect) {
             return;
         }
+        descriptor->detected = true;
 
         auto* bytes = reinterpret_cast<const unsigned char*>(*input);
         bool little = descriptor->detect == 2 ? bytes[0] == 0xff && bytes[1] == 0xfe : !memcmp(bytes, "\xff\xfe\0\0", 4);
@@ -3704,20 +3704,42 @@ namespace {
         char* start = *input;
         size_t startLeft = *inputLeft;
         wchar_t character;
-        char* wide = reinterpret_cast<char*>(&character);
-        size_t wideLeft = sizeof(character);
+        size_t wideLeft;
+        size_t span = std::min(descriptor->unit, startLeft);
 
-        if (iconv(descriptor->decode, input, inputLeft, &wide, &wideLeft) == (size_t)-1 && errno != E2BIG) {
-            if (errno != EILSEQ || !descriptor->ignore) {
-                return false;
+        // A one-wchar output buffer does not stop musl from inspecting the
+        // next input or consuming a following shift sequence. Grow the input
+        // prefix only until one complete character or shift can be consumed.
+        // Shifts commit separately, so retrying a character after E2BIG or
+        // EILSEQ sees the same decoder state as its original attempt.
+        for (;;) {
+            char* next = start;
+            size_t left = span;
+            char* wide = reinterpret_cast<char*>(&character);
+
+            wideLeft = sizeof(character);
+
+            size_t result = iconv(descriptor->decode, &next, &left, &wide, &wideLeft);
+
+            if (result == (size_t)-1 && errno == EINVAL && span < startLeft) {
+                span += std::min(descriptor->unit, startLeft - span);
+                continue;
             }
+            *input = next;
+            *inputLeft = startLeft - (next - start);
+            if (result == (size_t)-1) {
+                if (errno != EILSEQ || !descriptor->ignore) {
+                    return false;
+                }
 
-            size_t skip = std::min(descriptor->unit, *inputLeft);
+                size_t skip = std::min(descriptor->unit, *inputLeft);
 
-            *input += skip;
-            *inputLeft -= skip;
-            *ignored = true;
-            return true;
+                *input += skip;
+                *inputLeft -= skip;
+                *ignored = true;
+                return true;
+            }
+            break;
         }
         if (wideLeft) {
             // Input consumed without a character: a BOM or a shift sequence.

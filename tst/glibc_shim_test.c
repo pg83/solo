@@ -817,8 +817,8 @@ static void sorting(void) {
     CHECK(more[0] == 4 && context > 0);
 }
 
-/* One iconv call on a fresh descriptor: the result, errno, how much input
- * it consumed, and what it wrote. */
+/* Capture each call so streaming tests check bytes and input positions as
+ * well as the final result. */
 struct Conversion {
     size_t result;
     int error;
@@ -827,15 +827,8 @@ struct Conversion {
     char output[32];
 };
 
-static struct Conversion convert(const char* to, const char* from, const char* input, size_t length, size_t room) {
+static struct Conversion convertStep(iconv_t descriptor, const char* input, size_t length, size_t room) {
     struct Conversion conversion = {(size_t)-2, 0, 0, 0, {0}};
-    iconv_t descriptor = iconv_open(to, from);
-
-    if (descriptor == (iconv_t)-1) {
-        conversion.error = errno;
-        return conversion;
-    }
-
     char* in = (char*)input;
     char* out = conversion.output;
     size_t left = room;
@@ -845,6 +838,21 @@ static struct Conversion convert(const char* to, const char* from, const char* i
     conversion.error = conversion.result == (size_t)-1 ? errno : 0;
     conversion.consumed = in - input;
     conversion.written = out - conversion.output;
+
+    return conversion;
+}
+
+static struct Conversion convert(const char* to, const char* from, const char* input, size_t length, size_t room) {
+    iconv_t descriptor = iconv_open(to, from);
+
+    if (descriptor == (iconv_t)-1) {
+        struct Conversion conversion = {(size_t)-2, errno, 0, 0, {0}};
+
+        return conversion;
+    }
+
+    struct Conversion conversion = convertStep(descriptor, input, length, room);
+
     iconv_close(descriptor);
 
     return conversion;
@@ -852,6 +860,75 @@ static struct Conversion convert(const char* to, const char* from, const char* i
 
 #define CONVERTED(conversion, rc, errno_value, used, bytes) \
     ((conversion).result == (size_t)(rc) && (conversion).error == (errno_value) && (conversion).consumed == (used) && (conversion).written == sizeof(bytes) - 1 && !memcmp((conversion).output, bytes, sizeof(bytes) - 1))
+
+static void conversionBomChunks(void) {
+    const struct {
+        const char* from;
+        const char* input;
+        size_t width;
+    } cases[] = {
+        {"UTF-16", "\xfe\xff\0a", 2},
+        {"UTF-16", "\xff\xfe" "a\0", 2},
+        {"UTF-32", "\0\0\xfe\xff\0\0\0a", 4},
+        {"UTF-32", "\xff\xfe\0\0a\0\0\0", 4},
+    };
+    const char* targets[] = {"UTF-8", "ASCII"};
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        for (size_t target = 0; target < sizeof(targets) / sizeof(targets[0]); ++target) {
+            for (size_t prefix = 0; prefix < cases[i].width; ++prefix) {
+                iconv_t descriptor = iconv_open(targets[target], cases[i].from);
+
+                CHECK(descriptor != (iconv_t)-1);
+                if (descriptor == (iconv_t)-1) {
+                    continue;
+                }
+                struct Conversion partial = convertStep(descriptor, cases[i].input, prefix, 32);
+
+                CHECK(CONVERTED(partial, prefix ? -1 : 0, prefix ? EINVAL : 0, 0, ""));
+                struct Conversion complete = convertStep(descriptor, cases[i].input, 2 * cases[i].width, 32);
+
+                CHECK(CONVERTED(complete, 0, 0, 2 * cases[i].width, "a"));
+                CHECK(iconv_close(descriptor) == 0);
+            }
+        }
+    }
+}
+
+static void conversionRetries(void) {
+    /* The shift back to ASCII follows the character that cannot fit. It
+     * must not change how that character is decoded on the next call. */
+    const char input[] = "$\"\x1b(BA";
+
+    for (size_t room = 0; room < 2; ++room) {
+        iconv_t descriptor = iconv_open("SHIFT_JIS", "ISO-2022-JP");
+
+        CHECK(descriptor != (iconv_t)-1);
+        if (descriptor == (iconv_t)-1) {
+            continue;
+        }
+        struct Conversion shift = convertStep(descriptor, "\x1b$B", 3, 32);
+        struct Conversion shortOutput = convertStep(descriptor, input, sizeof(input) - 1, room);
+        struct Conversion retry = convertStep(descriptor, input, sizeof(input) - 1, 32);
+
+        CHECK(CONVERTED(shift, 0, 0, 3, ""));
+        CHECK(CONVERTED(shortOutput, -1, E2BIG, 0, ""));
+        CHECK(CONVERTED(retry, 0, 0, sizeof(input) - 1, "\x82\xa0" "A"));
+        CHECK(iconv_close(descriptor) == 0);
+    }
+
+    iconv_t descriptor = iconv_open("WINDOWS-1251", "UTF-8");
+
+    CHECK(descriptor != (iconv_t)-1);
+    if (descriptor != (iconv_t)-1) {
+        struct Conversion partial = convertStep(descriptor, "a\xd0", 2, 32);
+        struct Conversion retry = convertStep(descriptor, "\xd0\x9f", 2, 32);
+
+        CHECK(CONVERTED(partial, -1, EINVAL, 1, "a"));
+        CHECK(CONVERTED(retry, 0, 0, 2, "\xcf"));
+        CHECK(iconv_close(descriptor) == 0);
+    }
+}
 
 /* glibc's iconv: a character the target lacks stops the conversion with
  * EILSEQ instead of turning into '*', //TRANSLIT and //IGNORE are accepted
@@ -866,6 +943,9 @@ static void conversions(void) {
     CHECK(CONVERTED(convert("ascii//translit,ignore", "UTF-8", accented, 4, 16), 1, 0, 4, "a?z"));
     CHECK(CONVERTED(convert("ASCII//IGNORE", "UTF-8", accented, 4, 16), -1, EILSEQ, 4, "az"));
     CHECK(CONVERTED(convert("UTF-8//IGNORE", "UTF-8", "a\xff" "b", 3, 16), -1, EILSEQ, 3, "ab"));
+    CHECK(CONVERTED(convert("ASCII", "UTF-8", "a\xff" "b", 3, 16), -1, EILSEQ, 1, "a"));
+    CHECK(CONVERTED(convert("ASCII//IGNORE", "UTF-8", "a\xff" "b", 3, 16), -1, EILSEQ, 3, "ab"));
+    CHECK(CONVERTED(convert("ASCII", "UTF-8", "a\xe2\x82", 3, 16), -1, EINVAL, 1, "a"));
     CHECK(CONVERTED(convert("ASCII//", "UTF-8//IGNORE", "ab", 2, 16), 0, 0, 2, "ab"));
     CHECK(CONVERTED(convert("ASCII", "UTF-8", "ab", 2, 1), -1, E2BIG, 1, "a"));
     CHECK(CONVERTED(convert("UTF-8", "UTF-8", "a\xe2\x82", 3, 16), -1, EINVAL, 1, "a"));
@@ -898,6 +978,9 @@ static void conversions(void) {
     CHECK(iconv(descriptor, &in, &inLeft, &out, &outLeft) == 0);
     CHECK(out - output == 4 && !memcmp(output, "\xff\xfe" "c\0", 4));
     CHECK(iconv_close(descriptor) == 0);
+
+    conversionBomChunks();
+    conversionRetries();
 }
 
 static void processAndSystem(void) {
