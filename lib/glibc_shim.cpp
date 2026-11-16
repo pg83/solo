@@ -95,6 +95,13 @@ extern "C" void _Unwind_Resume();
 extern "C" void _Unwind_Resume_or_Rethrow();
 extern "C" void _Unwind_SetGR();
 extern "C" void _Unwind_SetIP();
+extern "C" void _Unwind_GetCFA();
+extern "C" void _Unwind_GetGR();
+extern "C" void _Unwind_ForcedUnwind();
+extern "C" void _Unwind_FindEnclosingFunction();
+extern "C" void _Unwind_Find_FDE();
+extern "C" void __register_frame(const void* fde);
+extern "C" void __deregister_frame(const void* fde);
 // The two entry points backtrace() rides on, in the vendored
 // libunwind's ABI; the block above only forwards addresses.
 extern "C" int _Unwind_Backtrace(int (*step)(void*, void*), void* opaque);
@@ -1552,6 +1559,48 @@ namespace {
 
     static const char* sh_sigdescr_np(int signal) {
         return strsignal(signal);
+    }
+
+    // libgcc's __register_frame takes a whole .eh_frame section, CIEs and
+    // FDEs up to a zero terminator — what JIT compilers such as LuaJIT hand
+    // it for generated code. The vendored libunwind's takes a single FDE, so
+    // the bridge walks the section and registers its FDEs one by one.
+    template <void (*Apply)(const void*)>
+    static void sh_eh_frame_each(const void* section) {
+        auto* entry = static_cast<const unsigned char*>(section);
+
+        for (;;) {
+            uint32_t length;
+
+            memcpy(&length, entry, sizeof(length));
+            if (!length) {
+                return;
+            }
+
+            size_t header = sizeof(length);
+            uint64_t size = length;
+
+            if (length == UINT32_MAX) {
+                memcpy(&size, entry + header, sizeof(size));
+                header += sizeof(size);
+            }
+
+            uint32_t cieId;
+
+            memcpy(&cieId, entry + header, sizeof(cieId));
+            if (cieId) {
+                Apply(entry);
+            }
+            entry += header + size;
+        }
+    }
+
+    static void sh_register_frame(const void* section) {
+        sh_eh_frame_each<__register_frame>(section);
+    }
+
+    static void sh_deregister_frame(const void* section) {
+        sh_eh_frame_each<__deregister_frame>(section);
     }
 
     // getopt's four state variables are ABI, and glibc executables carry
@@ -4984,6 +5033,17 @@ namespace {
         SH_FUNCTION("_Unwind_Resume_or_Rethrow", "GCC_3.3", _Unwind_Resume_or_Rethrow),
         SH_FUNCTION("_Unwind_SetGR", "GCC_3.0", _Unwind_SetGR),
         SH_FUNCTION("_Unwind_SetIP", "GCC_3.0", _Unwind_SetIP),
+        SH_FUNCTION("_Unwind_GetCFA", "GCC_3.3", _Unwind_GetCFA),
+        SH_FUNCTION("_Unwind_GetIP", "GCC_3.0", _Unwind_GetIP),
+        SH_FUNCTION("_Unwind_GetGR", "GCC_3.0", _Unwind_GetGR),
+        SH_FUNCTION("_Unwind_ForcedUnwind", "GCC_3.0", _Unwind_ForcedUnwind),
+        SH_FUNCTION("_Unwind_Backtrace", "GCC_3.3", _Unwind_Backtrace),
+        SH_FUNCTION("_Unwind_FindEnclosingFunction", "GCC_3.3", _Unwind_FindEnclosingFunction),
+        SH_FUNCTION("_Unwind_Find_FDE", "GCC_3.0", _Unwind_Find_FDE),
+        // Unwind info registered for generated code must land in the
+        // unwinder that walks it.
+        SH_FUNCTION("__register_frame", "GCC_3.0", sh_register_frame),
+        SH_FUNCTION("__deregister_frame", "GCC_3.0", sh_deregister_frame),
         SH_FUNCTION("_setjmp", "GLIBC_2.2.5", _setjmp),
         SH_FUNCTION("__longjmp_chk", "GLIBC_2.11", _longjmp),
         SH_OBJECT("__timezone", "GLIBC_2.2.5", timezone),
@@ -5726,6 +5786,15 @@ GlibcAdapter::GlibcAdapter()
         "_Unwind_Resume_or_Rethrow",
         "_Unwind_SetGR",
         "_Unwind_SetIP",
+        "_Unwind_GetCFA",
+        "_Unwind_GetIP",
+        "_Unwind_GetGR",
+        "_Unwind_ForcedUnwind",
+        "_Unwind_Backtrace",
+        "_Unwind_FindEnclosingFunction",
+        "_Unwind_Find_FDE",
+        "__register_frame",
+        "__deregister_frame",
         "alphasort64",
         "dl_iterate_phdr",
         "dladdr",
